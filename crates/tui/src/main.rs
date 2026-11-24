@@ -97,20 +97,42 @@ fn main() -> ExitCode {
 }
 
 fn demo_devices() -> Vec<DeviceInfo> {
-    let mk = |vid: u16, pid: u16, page: u16, usage: u16, kind: DeviceKind, product: &str| DeviceInfo {
-        path: "demo".into(),
-        vid,
-        pid,
-        product: Some(product.into()),
-        manufacturer: Some("GravaStar (demo)".into()),
-        usage_page: page,
-        usage,
-        kind,
-    };
+    let mk =
+        |vid: u16, pid: u16, page: u16, usage: u16, kind: DeviceKind, product: &str| DeviceInfo {
+            path: "demo".into(),
+            vid,
+            pid,
+            product: Some(product.into()),
+            manufacturer: Some("GravaStar (demo)".into()),
+            usage_page: page,
+            usage,
+            kind,
+        };
     vec![
-        mk(0x1ca6, 11272, 0xffb0, 0, DeviceKind::HeKeyboardV2, "Mercury HE (demo)"),
-        mk(0x3554, 0xf54b, 0xff02, 0, DeviceKind::CompxMouse, "Mercury X Pro (demo)"),
-        mk(0x1ca5, 0x2201, 0xffa0, 1, DeviceKind::SparkPlayJoy, "Mercury HE analog (demo)"),
+        mk(
+            0x1ca6,
+            11272,
+            0xffb0,
+            0,
+            DeviceKind::HeKeyboardV2,
+            "Mercury HE (demo)",
+        ),
+        mk(
+            0x3554,
+            0xf54b,
+            0xff02,
+            0,
+            DeviceKind::CompxMouse,
+            "Mercury X Pro (demo)",
+        ),
+        mk(
+            0x1ca5,
+            0x2201,
+            0xffa0,
+            1,
+            DeviceKind::SparkPlayJoy,
+            "Mercury HE analog (demo)",
+        ),
     ]
 }
 
@@ -125,7 +147,12 @@ enum Screen {
 }
 
 impl Screen {
-    const ALL: [Screen; 4] = [Screen::Devices, Screen::Keyboard, Screen::Mouse, Screen::Spark];
+    const ALL: [Screen; 4] = [
+        Screen::Devices,
+        Screen::Keyboard,
+        Screen::Mouse,
+        Screen::Spark,
+    ];
     fn label(self) -> &'static str {
         match self {
             Screen::Devices => "Devices",
@@ -199,7 +226,11 @@ impl App {
             screen: Screen::Devices,
             help: false,
             demo,
-            status: if demo { "demo mode — synthetic devices, hardware I/O disabled".into() } else { String::new() },
+            status: if demo {
+                "demo mode — synthetic devices, hardware I/O disabled".into()
+            } else {
+                String::new()
+            },
             confirm: None,
             kb: None,
             mouse: None,
@@ -318,7 +349,13 @@ impl App {
                 // with identical fields; convert explicitly.
                 let model_slots: Vec<omg_model::KeySlot> = slots
                     .iter()
-                    .map(|s| omg_model::KeySlot { row: s.row, col: s.col, x: s.x, y: s.y, size: s.size })
+                    .map(|s| omg_model::KeySlot {
+                        row: s.row,
+                        col: s.col,
+                        x: s.x,
+                        y: s.y,
+                        size: s.size,
+                    })
                     .collect();
                 st.layout = omg_model::build_layout(
                     &model_slots,
@@ -427,7 +464,9 @@ impl App {
     fn stage_actuation_edit(&mut self, delta: f32) {
         let (row, col, label) = {
             let Some(kb) = self.kb.as_ref() else { return };
-            let Some(k) = kb.layout.get(kb.selected) else { return };
+            let Some(k) = kb.layout.get(kb.selected) else {
+                return;
+            };
             (k.row, k.col, k.label.clone())
         };
         let Some(perf) = self.kb.as_mut().and_then(|k| k.selected_perf()) else {
@@ -437,7 +476,11 @@ impl App {
         let max_travel = omg_model::max_travel(perf.axis_v2_id);
         // The mode's primary actuation field, same rule as `omg kb perf set`.
         let rt = perf.mode == he::MODE_RAPID;
-        let old = if rt { perf.rt_first_touch } else { perf.normal_press };
+        let old = if rt {
+            perf.rt_first_touch
+        } else {
+            perf.normal_press
+        };
         let step = self.kb.as_ref().map(|k| k.step_mm).unwrap_or(0.1);
         let new = (old + delta * step).clamp(step, max_travel);
         if (new - old).abs() < 0.0005 {
@@ -454,8 +497,15 @@ impl App {
         self.confirm = Some(Confirm {
             summary: format!(
                 "r{row} c{col} '{label}': {field} {old:.3} -> {new:.3} mm ({}) on {}",
-                if rt { "rapid trigger" } else { "fixed actuation" },
-                self.kb.as_ref().map(|k| k.device_label.as_str()).unwrap_or("")
+                if rt {
+                    "rapid trigger"
+                } else {
+                    "fixed actuation"
+                },
+                self.kb
+                    .as_ref()
+                    .map(|k| k.device_label.as_str())
+                    .unwrap_or("")
             ),
             pending: Pending::HePerf { row, col, perf: p },
         });
@@ -480,11 +530,17 @@ impl App {
                     kb.perf_cache.insert((row, col), actual);
                     self.status = format!(
                         "r{row} c{col}: write {} ({})",
-                        if verified { "verified" } else { "MISMATCH — read-back differs" },
+                        if verified {
+                            "verified"
+                        } else {
+                            "MISMATCH — read-back differs"
+                        },
                         c.summary
                     );
                 }
-                Err(e) => self.status = format!("r{row} c{col}: write sent, read-back failed: {e:#}"),
+                Err(e) => {
+                    self.status = format!("r{row} c{col}: write sent, read-back failed: {e:#}")
+                }
             },
             Err(e) => self.status = format!("r{row} c{col}: write failed: {e:#}"),
         }
@@ -523,7 +579,11 @@ impl App {
             rows.sort_unstable();
             rows.dedup();
             let pos = rows.iter().position(|&r| r == cur.row).unwrap_or(0);
-            let target = if dy < 0 { pos.checked_sub(1) } else { (pos + 1 < rows.len()).then_some(pos + 1) };
+            let target = if dy < 0 {
+                pos.checked_sub(1)
+            } else {
+                (pos + 1 < rows.len()).then_some(pos + 1)
+            };
             let Some(t) = target else { return };
             let row = rows[t];
             let mut best: Option<(f32, usize)> = None;
@@ -573,7 +633,10 @@ impl App {
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Char('?') => self.help = true,
             KeyCode::Tab => {
-                let i = Screen::ALL.iter().position(|&s| s == self.screen).unwrap_or(0);
+                let i = Screen::ALL
+                    .iter()
+                    .position(|&s| s == self.screen)
+                    .unwrap_or(0);
                 self.enter(Screen::ALL[(i + 1) % Screen::ALL.len()]);
             }
             KeyCode::Char('1') => self.enter(Screen::Devices),
@@ -606,7 +669,9 @@ impl App {
 fn run(app: &mut App) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen).context("enter alternate screen")?;
+    stdout
+        .execute(EnterAlternateScreen)
+        .context("enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("init terminal")?;
 
@@ -661,15 +726,29 @@ fn demo_render(app: &mut App) -> ExitCode {
 fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     // Header: title + screen tabs.
-    let header = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).split(area);
+    let header = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
     let tabs = Screen::ALL
         .iter()
         .map(|s| {
             let n = Screen::ALL.iter().position(|x| x == s).unwrap() + 1;
             if *s == app.screen {
-                Span::styled(format!(" {n}:{} ", s.label()), Style::default().add_modifier(Modifier::BOLD).fg(Color::Black).bg(Color::Cyan))
+                Span::styled(
+                    format!(" {n}:{} ", s.label()),
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                        .fg(Color::Black)
+                        .bg(Color::Cyan),
+                )
             } else {
-                Span::styled(format!(" {n}:{} ", s.label()), Style::default().fg(Color::DarkGray))
+                Span::styled(
+                    format!(" {n}:{} ", s.label()),
+                    Style::default().fg(Color::DarkGray),
+                )
             }
         })
         .collect::<Vec<_>>();
@@ -679,11 +758,21 @@ fn draw(f: &mut Frame, app: &mut App) {
             Span::raw("GravaStar dashboard — "),
         ]))
         .style(Style::default()),
-        Rect { x: 0, y: 0, width: area.width, height: 1 },
+        Rect {
+            x: 0,
+            y: 0,
+            width: area.width,
+            height: 1,
+        },
     );
     // Draw tabs on the same row after the title.
     // Tabs start after the title text (" omg-tui GravaStar dashboard — ").
-    let tab_area = Rect { x: 30.min(area.width), y: 0, width: area.width.saturating_sub(30), height: 1 };
+    let tab_area = Rect {
+        x: 30.min(area.width),
+        y: 0,
+        width: area.width.saturating_sub(30),
+        height: 1,
+    };
     if tab_area.width > 0 {
         f.render_widget(Paragraph::new(Line::from(tabs)), tab_area);
     }
@@ -700,7 +789,10 @@ fn draw(f: &mut Frame, app: &mut App) {
     let hint = if app.confirm.is_some() {
         "confirm: y write / n cancel".to_string()
     } else {
-        format!("{}  |  Tab screens · hjkl nav · +/- actuation · r refresh · ? help · q quit", app.status)
+        format!(
+            "{}  |  Tab screens · hjkl nav · +/- actuation · r refresh · ? help · q quit",
+            app.status
+        )
     };
     f.render_widget(
         Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
@@ -727,21 +819,36 @@ fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
     for (i, d) in app.devices.iter().enumerate() {
         lines.push(Line::from(vec![
             Span::styled(format!(" {:>2} ", i + 1), Style::default().fg(Color::Cyan)),
-            Span::styled(format!(" {:<10} ", d.vid_pid()), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!(" {:<10} ", d.vid_pid()),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!("{:<38} ", d.kind.label()), Style::default()),
-            Span::styled(d.product.clone().unwrap_or_default(), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                d.product.clone().unwrap_or_default(),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
         let mut detail = vec![
             Span::raw("      path: "),
             Span::styled(d.path.clone(), Style::default().fg(Color::DarkGray)),
             Span::raw("   usage_page: "),
-            Span::styled(format!("0x{:04x}", d.usage_page), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("0x{:04x}", d.usage_page),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::raw(" usage: "),
-            Span::styled(format!("0x{:04x}", d.usage), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("0x{:04x}", d.usage),
+                Style::default().fg(Color::DarkGray),
+            ),
         ];
         if let Some(m) = &d.manufacturer {
             detail.push(Span::raw("   mfr: "));
-            detail.push(Span::styled(m.clone(), Style::default().fg(Color::DarkGray)));
+            detail.push(Span::styled(
+                m.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         lines.push(Line::from(detail));
         lines.push(Line::from(""));
@@ -781,8 +888,18 @@ impl Widget for KeyGrid<'_> {
         if area.width < 4 || area.height < 2 || self.defs.is_empty() {
             return;
         }
-        let units_w = self.defs.iter().map(|k| k.x + k.w).fold(0.0f32, f32::max).max(0.1);
-        let units_h = self.defs.iter().map(|k| k.y + k.h).fold(0.0f32, f32::max).max(0.1);
+        let units_w = self
+            .defs
+            .iter()
+            .map(|k| k.x + k.w)
+            .fold(0.0f32, f32::max)
+            .max(0.1);
+        let units_h = self
+            .defs
+            .iter()
+            .map(|k| k.y + k.h)
+            .fold(0.0f32, f32::max)
+            .max(0.1);
         let sx = (area.width as f32 / units_w).floor();
         let sy = (sx * 0.5).min(area.height as f32 / units_h).max(1.0);
         for (i, k) in self.defs.iter().enumerate() {
@@ -790,13 +907,21 @@ impl Widget for KeyGrid<'_> {
             let y0 = area.y + (k.y * sy).round() as u16;
             let w = ((k.w * sx).round() as u16).max(1);
             let h = ((k.h * sy).round() as u16).max(1);
-            let r = Rect { x: x0, y: y0, width: w.min(area.right().saturating_sub(x0)), height: h.min(area.bottom().saturating_sub(y0)) };
+            let r = Rect {
+                x: x0,
+                y: y0,
+                width: w.min(area.right().saturating_sub(x0)),
+                height: h.min(area.bottom().saturating_sub(y0)),
+            };
             if r.width == 0 || r.height == 0 {
                 continue;
             }
             let selected = i == self.selected;
             let style = if selected {
-                Style::default().bg(Color::Rgb(58, 95, 160)).fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::Rgb(58, 95, 160))
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(Color::Rgb(38, 38, 48)).fg(Color::Gray)
             };
@@ -832,28 +957,60 @@ fn perf_lines(kb: &KbScreen, perf: Option<&he::KeyPerf>) -> Vec<Line<'static>> {
             Span::styled(info.protocol.clone(), Style::default().fg(Color::Cyan)),
         ]));
     } else if let Some(e) = &kb.info_err {
-        v.push(Line::from(Span::styled(format!("info: {e}"), Style::default().fg(Color::Yellow))));
+        v.push(Line::from(Span::styled(
+            format!("info: {e}"),
+            Style::default().fg(Color::Yellow),
+        )));
     }
     v.push(Line::from(""));
     let Some(k) = kb.layout.get(kb.selected) else {
-        v.push(Line::from(Span::styled("no keys in layout", Style::default().fg(Color::Yellow))));
+        v.push(Line::from(Span::styled(
+            "no keys in layout",
+            Style::default().fg(Color::Yellow),
+        )));
         return v;
     };
     v.push(Line::from(vec![
-        Span::styled(format!("key r{} c{}", k.row, k.col), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("key r{} c{}", k.row, k.col),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw(format!("  '{}'  ({}x{})", k.label, k.w, k.h)),
     ]));
     match perf {
         Some(p) => {
-            let mode = if p.mode == he::MODE_RAPID { "rapid trigger" } else { "fixed actuation" };
-            let act = if p.mode == he::MODE_RAPID { p.rt_first_touch } else { p.normal_press };
+            let mode = if p.mode == he::MODE_RAPID {
+                "rapid trigger"
+            } else {
+                "fixed actuation"
+            };
+            let act = if p.mode == he::MODE_RAPID {
+                p.rt_first_touch
+            } else {
+                p.normal_press
+            };
             v.push(Line::from(format!("  mode:          {mode}")));
-            v.push(Line::from(format!("  actuation:     {act:.3} mm   (+/- step {:.3})", kb.step_mm)));
-            v.push(Line::from(format!("  normal press:  {:.3} mm", p.normal_press)));
-            v.push(Line::from(format!("  normal release:{:.3} mm", p.normal_release)));
-            v.push(Line::from(format!("  rt first:      {:.3} mm", p.rt_first_touch)));
+            v.push(Line::from(format!(
+                "  actuation:     {act:.3} mm   (+/- step {:.3})",
+                kb.step_mm
+            )));
+            v.push(Line::from(format!(
+                "  normal press:  {:.3} mm",
+                p.normal_press
+            )));
+            v.push(Line::from(format!(
+                "  normal release:{:.3} mm",
+                p.normal_release
+            )));
+            v.push(Line::from(format!(
+                "  rt first:      {:.3} mm",
+                p.rt_first_touch
+            )));
             v.push(Line::from(format!("  rt press:      {:.3} mm", p.rt_press)));
-            v.push(Line::from(format!("  rt release:    {:.3} mm", p.rt_release)));
+            v.push(Line::from(format!(
+                "  rt release:    {:.3} mm",
+                p.rt_release
+            )));
             v.push(Line::from(format!(
                 "  deadzones:     {:.3} / {:.3} mm",
                 p.press_deadzone, p.release_deadzone
@@ -865,7 +1022,10 @@ fn perf_lines(kb: &KbScreen, perf: Option<&he::KeyPerf>) -> Vec<Line<'static>> {
             )));
         }
         None => {
-            v.push(Line::from(Span::styled("  perf: (unavailable)", Style::default().fg(Color::Yellow))));
+            v.push(Line::from(Span::styled(
+                "  perf: (unavailable)",
+                Style::default().fg(Color::Yellow),
+            )));
         }
     }
     v.push(Line::from(""));
@@ -878,16 +1038,31 @@ fn perf_lines(kb: &KbScreen, perf: Option<&he::KeyPerf>) -> Vec<Line<'static>> {
 
 fn draw_keyboard(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(kb) = app.kb.as_mut() else {
-        f.render_widget(Paragraph::new("keyboard screen not initialised").block(Block::default().borders(Borders::ALL)), area);
+        f.render_widget(
+            Paragraph::new("keyboard screen not initialised")
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
         return;
     };
     let cols = Layout::horizontal([Constraint::Min(30), Constraint::Length(38)]).split(area);
-    let grid_area = Rect { x: cols[0].x + 1, y: cols[0].y + 1, width: cols[0].width.saturating_sub(2), height: cols[0].height.saturating_sub(2) };
+    let grid_area = Rect {
+        x: cols[0].x + 1,
+        y: cols[0].y + 1,
+        width: cols[0].width.saturating_sub(2),
+        height: cols[0].height.saturating_sub(2),
+    };
     let selected = kb.selected.min(kb.layout.len().saturating_sub(1));
     let perf = kb.selected_perf();
     let mut lines = perf_lines(kb, perf.as_ref());
     if let Some(e) = &kb.error {
-        lines.insert(0, Line::from(Span::styled(format!("error: {e}"), Style::default().fg(Color::Red))));
+        lines.insert(
+            0,
+            Line::from(Span::styled(
+                format!("error: {e}"),
+                Style::default().fg(Color::Red),
+            )),
+        );
         lines.insert(1, Line::from(""));
     }
     if kb.layout.is_empty() {
@@ -895,15 +1070,33 @@ fn draw_keyboard(f: &mut Frame, area: Rect, app: &mut App) {
         lines.push(Line::from("no layout data — press r to retry"));
     }
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Performance ")),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Performance "),
+        ),
         cols[1],
     );
     if !kb.layout.is_empty() {
-        f.render_widget(KeyGrid { defs: &kb.layout, selected }, grid_area);
+        f.render_widget(
+            KeyGrid {
+                defs: &kb.layout,
+                selected,
+            },
+            grid_area,
+        );
     } else {
         f.render_widget(
-            Paragraph::new(if kb.error.is_some() { "layout unavailable — see Performance panel" } else { "no keys" })
-                .block(Block::default().borders(Borders::ALL).title(format!(" Keyboard — {} ", kb.device_label))),
+            Paragraph::new(if kb.error.is_some() {
+                "layout unavailable — see Performance panel"
+            } else {
+                "no keys"
+            })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Keyboard — {} ", kb.device_label)),
+            ),
             cols[0],
         );
     }
@@ -918,24 +1111,29 @@ impl MouseScreen {
         // identity
         match m.identify() {
             Ok(id) => {
-                self.lines.push(format!(
-                    "model:      {}",
-                    id.model.unwrap_or("unknown")
-                ));
+                self.lines
+                    .push(format!("model:      {}", id.model.unwrap_or("unknown")));
                 self.lines.push(format!(
                     "sensor:     {} (max {} DPI)",
                     id.sensor.name, id.sensor.max_dpi
                 ));
                 self.lines.push(format!(
                     "link:       {} · max poll {} Hz",
-                    if id.wired { "wired" } else { "2.4 GHz receiver" },
+                    if id.wired {
+                        "wired"
+                    } else {
+                        "2.4 GHz receiver"
+                    },
                     id.max_rate
                 ));
             }
             Err(e) => self.lines.push(format!("identify: error — {e:#}")),
         }
         if let Ok((mouse, dongle)) = m.firmware() {
-            self.lines.push(format!("firmware:   mouse {mouse} · receiver {}", dongle.unwrap_or_else(|| "?".into())));
+            self.lines.push(format!(
+                "firmware:   mouse {mouse} · receiver {}",
+                dongle.unwrap_or_else(|| "?".into())
+            ));
         }
         // battery (may be absent on wired-only units)
         match m.battery() {
@@ -950,11 +1148,16 @@ impl MouseScreen {
         match m.read_config() {
             Ok(cfg) => {
                 self.lines.push(String::new());
-                self.lines.push(format!("polling:    {} Hz (stage {})", cfg.report_rate, cfg.current_stage + 1));
+                self.lines.push(format!(
+                    "polling:    {} Hz (stage {})",
+                    cfg.report_rate,
+                    cfg.current_stage + 1
+                ));
                 self.lines.push(format!("stages:     {}", cfg.stage_count));
                 for i in 0..cfg.stage_count.min(pm::MAX_STAGES) {
                     let mark = if i == cfg.current_stage { "*" } else { " " };
-                    self.lines.push(format!("  {mark} DPI {}: {}", i + 1, cfg.dpi[i]));
+                    self.lines
+                        .push(format!("  {mark} DPI {}: {}", i + 1, cfg.dpi[i]));
                 }
                 let lod_label = self
                     .sensor_lod
@@ -963,7 +1166,10 @@ impl MouseScreen {
                     .map(|(_, l)| (*l).to_string())
                     .unwrap_or_else(|| format!("raw {}", cfg.lod));
                 self.lines.push(format!("LOD:        {}", lod_label));
-                self.lines.push(format!("light:      mode {} · brightness {} · speed {}", cfg.light.mode, cfg.light.brightness, cfg.light.speed));
+                self.lines.push(format!(
+                    "light:      mode {} · brightness {} · speed {}",
+                    cfg.light.mode, cfg.light.brightness, cfg.light.speed
+                ));
                 self.lines.push(format!("debounce:   {} ms", cfg.debounce));
                 self.lines.push(format!(
                     "flags:      motion_sync={} angle_snap={} ripple={} sleep={}x10s",
@@ -977,12 +1183,17 @@ impl MouseScreen {
 
 fn draw_mouse(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(st) = app.mouse.as_mut() else {
-        f.render_widget(Paragraph::new("mouse screen not initialised").block(Block::default().borders(Borders::ALL)), area);
+        f.render_widget(
+            Paragraph::new("mouse screen not initialised")
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
         return;
     };
     if st.mouse.is_none() {
         f.render_widget(
-            Paragraph::new(format!("error: {}", st.error.clone().unwrap_or_default())).block(Block::default().borders(Borders::ALL).title(" Mouse ")),
+            Paragraph::new(format!("error: {}", st.error.clone().unwrap_or_default()))
+                .block(Block::default().borders(Borders::ALL).title(" Mouse ")),
             area,
         );
         return;
@@ -990,12 +1201,22 @@ fn draw_mouse(f: &mut Frame, area: Rect, app: &mut App) {
     let mut lines: Vec<Line> = st.lines.iter().map(|s| Line::from(s.as_str())).collect();
     if let Some(e) = &st.error {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(format!("note: {e}"), Style::default().fg(Color::Yellow))));
+        lines.push(Line::from(Span::styled(
+            format!("note: {e}"),
+            Style::default().fg(Color::Yellow),
+        )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("read-only summary — r refresh", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled(
+        "read-only summary — r refresh",
+        Style::default().fg(Color::DarkGray),
+    )));
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(" Mouse — {} ", st.device_label))),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Mouse — {} ", st.device_label)),
+        ),
         area,
     );
 }
@@ -1058,13 +1279,24 @@ impl Widget for HeatMap<'_> {
 
 fn draw_spark(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(st) = app.spark.as_mut() else {
-        f.render_widget(Paragraph::new("spark screen not initialised").block(Block::default().borders(Borders::ALL)), area);
+        f.render_widget(
+            Paragraph::new("spark screen not initialised")
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
         return;
     };
     if st.sp.is_none() || (st.travel.is_none() && st.error.is_some()) {
-        let msg = st.error.clone().unwrap_or_else(|| "no SparkPlayJoy device detected".into());
+        let msg = st
+            .error
+            .clone()
+            .unwrap_or_else(|| "no SparkPlayJoy device detected".into());
         f.render_widget(
-            Paragraph::new(format!("{msg}\n\nsee Devices screen for detected hardware")).block(Block::default().borders(Borders::ALL).title(" SparkPlayJoy ")),
+            Paragraph::new(format!("{msg}\n\nsee Devices screen for detected hardware")).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" SparkPlayJoy "),
+            ),
             area,
         );
         return;
@@ -1087,11 +1319,16 @@ fn draw_spark(f: &mut Frame, area: Rect, app: &mut App) {
     if let Some(t) = &st.travel {
         let nonzero = t.samples_um.iter().flatten().filter(|&&v| v != 0).count();
         let max = t.samples_um.iter().flatten().copied().max().unwrap_or(0);
-        lines.push(Line::from(format!("samples:    {nonzero} nonzero · max {max} µm")));
+        lines.push(Line::from(format!(
+            "samples:    {nonzero} nonzero · max {max} µm"
+        )));
     }
     if let Some(e) = &st.error {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(format!("note: {e}"), Style::default().fg(Color::Yellow))));
+        lines.push(Line::from(Span::styled(
+            format!("note: {e}"),
+            Style::default().fg(Color::Yellow),
+        )));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -1100,11 +1337,28 @@ fn draw_spark(f: &mut Frame, area: Rect, app: &mut App) {
     )));
     f.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::TOP)),
-        Rect { x: cols[0].x, y: cols[0].y, width: cols[0].width, height: 8.min(cols[0].height) },
+        Rect {
+            x: cols[0].x,
+            y: cols[0].y,
+            width: cols[0].width,
+            height: 8.min(cols[0].height),
+        },
     );
     if let (Some(t), Some(s)) = (&st.travel, &st.scale) {
-        let map_area = Rect { x: cols[0].x, y: cols[0].y + 8, width: cols[0].width, height: cols[0].height.saturating_sub(8) };
-        f.render_widget(HeatMap { travel: t, max_um: s.maximum_travel_um, map: st.map.as_ref() }, map_area);
+        let map_area = Rect {
+            x: cols[0].x,
+            y: cols[0].y + 8,
+            width: cols[0].width,
+            height: cols[0].height.saturating_sub(8),
+        };
+        f.render_widget(
+            HeatMap {
+                travel: t,
+                max_um: s.maximum_travel_um,
+                map: st.map.as_ref(),
+            },
+            map_area,
+        );
     }
     // Right: legend.
     let legend = vec![
@@ -1118,8 +1372,14 @@ fn draw_spark(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(""),
         Line::from("0 µm ──────────── max µm"),
         Line::from(""),
-        Line::from(Span::styled("cell char = key label (default map)", Style::default().fg(Color::DarkGray))),
-        Line::from(Span::styled("block char = unmapped position", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "cell char = key label (default map)",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "block char = unmapped position",
+            Style::default().fg(Color::DarkGray),
+        )),
     ];
     f.render_widget(
         Paragraph::new(legend).block(Block::default().borders(Borders::ALL).title(" Legend ")),
@@ -1140,7 +1400,10 @@ fn draw_help(f: &mut Frame, area: Rect) {
     };
     f.render_widget(Clear, r);
     let text = vec![
-        Line::from(Span::styled(" keys ", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            " keys ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(" Tab / 1-4   switch screen"),
         Line::from(" hjkl/arrows navigate keyboard layout"),
@@ -1176,13 +1439,25 @@ fn draw_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
     f.render_widget(Clear, r);
     f.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(" confirm write ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))),
+            Line::from(Span::styled(
+                " confirm write ",
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Yellow),
+            )),
             Line::from(""),
             Line::from(c.summary.clone()),
             Line::from(""),
-            Line::from(Span::styled("[y] write & verify    [n] cancel", Style::default().fg(Color::Cyan))),
+            Line::from(Span::styled(
+                "[y] write & verify    [n] cancel",
+                Style::default().fg(Color::Cyan),
+            )),
         ])
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow))),
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        ),
         r,
     );
 }

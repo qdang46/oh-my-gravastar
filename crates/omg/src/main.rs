@@ -2792,9 +2792,7 @@ fn open_khub916(cli: &Cli) -> Result<Option<Kb916Session>> {
     let devices = find_devices()?;
     let candidates: Vec<DeviceInfo> = devices
         .iter()
-        .filter(|d| {
-            d.kind == DeviceKind::Khub916Wired || d.kind == DeviceKind::Khub916Wireless
-        })
+        .filter(|d| d.kind == DeviceKind::Khub916Wired || d.kind == DeviceKind::Khub916Wireless)
         .cloned()
         .collect();
     let device = if let Some(sel) = cli.device.as_deref() {
@@ -2871,7 +2869,11 @@ fn kb916_write_pending() -> &'static str {
 fn kb916_session(cli: &Cli) -> Result<Result<(DeviceInfo, khub::Khub916), ExitCode>> {
     match open_khub916(cli)? {
         None => Ok(Err(kb916_absent(cli)?)),
-        Some(Kb916Session::Wireless) => Ok(Err(kb916_unsupported(cli, "916_wireLess transport", kb916_wireless_pending())?)),
+        Some(Kb916Session::Wireless) => Ok(Err(kb916_unsupported(
+            cli,
+            "916_wireLess transport",
+            kb916_wireless_pending(),
+        )?)),
         Some(Kb916Session::Wired(d, k)) => Ok(Ok((d, k))),
     }
 }
@@ -2926,7 +2928,8 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
             }
             let arg = (*layer & 3) | ((*system & 1) << 2);
             let values = kb.key_values(arg)?;
-            let keys: Vec<khub::KeyValue> = values.iter().map(|&v| khub::decode_key_value(v)).collect();
+            let keys: Vec<khub::KeyValue> =
+                values.iter().map(|&v| khub::decode_key_value(v)).collect();
             if cli.json {
                 let entries: Vec<serde_json::Value> = values
                     .iter()
@@ -2958,7 +2961,11 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                     let label = k.label();
                     println!(
                         "  [{i:3}] 0x{v:08X}  {}",
-                        if label.is_empty() { "—".to_string() } else { label }
+                        if label.is_empty() {
+                            "—".to_string()
+                        } else {
+                            label
+                        }
                     );
                 }
             }
@@ -2982,11 +2989,15 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                     println!("profile: {} bytes", profile.raw.len());
                     println!(
                         "light mode: {}",
-                        light_mode.map(|m| m.to_string()).unwrap_or_else(|| "(unparsed)".into())
+                        light_mode
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| "(unparsed)".into())
                     );
                     println!(
                         "sleep:      {}",
-                        sleep.map(|s| format!("{s} s")).unwrap_or_else(|| "(unparsed)".into())
+                        sleep
+                            .map(|s| format!("{s} s"))
+                            .unwrap_or_else(|| "(unparsed)".into())
                     );
                     println!("hex:        {}", hex32_full(&profile.raw));
                 }
@@ -2998,7 +3009,10 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                 print_json(&json!({ "device": device, "power": p }))?;
             } else {
                 println!("battery: {}%", p.percent);
-                println!("flags:   0x{:02X} (raw — individual bits unconfirmed, spec §8)", p.flags);
+                println!(
+                    "flags:   0x{:02X} (raw — individual bits unconfirmed, spec §8)",
+                    p.flags
+                );
             }
         }
         Kb916Commands::LightColors { command } => match command {
@@ -3007,12 +3021,14 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                 if cli.json {
                     let entries: Vec<serde_json::Value> = colors
                         .iter()
-                        .map(|c| json!({
-                            "index": c.index,
-                            "pos": c.pos,
-                            "r": c.r, "g": c.g, "b": c.b,
-                            "hex": format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b),
-                        }))
+                        .map(|c| {
+                            json!({
+                                "index": c.index,
+                                "pos": c.pos,
+                                "r": c.r, "g": c.g, "b": c.b,
+                                "hex": format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b),
+                            })
+                        })
                         .collect();
                     print_json(&json!({
                         "device": device,
@@ -3052,7 +3068,10 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                     "hex": data.iter().map(|b| format!("{b:02x}")).collect::<String>(),
                 }))?;
             } else {
-                println!("macro region: {} bytes (raw — entry parsing not yet implemented)", data.len());
+                println!(
+                    "macro region: {} bytes (raw — entry parsing not yet implemented)",
+                    data.len()
+                );
                 print_hex_dump(&data);
             }
         }
