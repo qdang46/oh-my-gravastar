@@ -614,3 +614,112 @@ mod tests {
         assert!(allowed(addr::LIGHT, 9));
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::time::Duration;
+
+    /// A link that never answers (for encode-side properties).
+    struct NullLink;
+    impl Link for NullLink {
+        fn write(&mut self, _: u8, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn read(&mut self, _: Duration) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+    }
+
+    /// Scripted flash: answers every CMD_READ with the matching 10-byte
+    /// slice of a fixed 190-byte flash image.
+    struct FlashLink {
+        flash: Vec<u8>,
+        last: Option<[u8; 16]>,
+    }
+
+    impl Link for FlashLink {
+        fn write(&mut self, _: u8, data: &[u8]) -> Result<()> {
+            let mut p = [0u8; 16];
+            let n = data.len().min(16);
+            p[..n].copy_from_slice(&data[..n]);
+            self.last = Some(p);
+            Ok(())
+        }
+        fn read(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>> {
+            if timeout.is_zero() {
+                return Ok(None);
+            }
+            let Some(p) = self.last else {
+                return Ok(None);
+            };
+            let addr = u16::from_be_bytes([p[2], p[3]]) as usize;
+            let n = (p[4] as usize).min(10);
+            let mut r = [0u8; 16];
+            r[0] = p[0];
+            r[1] = 0;
+            r[2] = p[2];
+            r[3] = p[3];
+            r[4] = n as u8;
+            for i in 0..n {
+                r[5 + i] = self.flash.get(addr + i).copied().unwrap_or(0);
+            }
+            Ok(Some(r.to_vec()))
+        }
+    }
+
+    proptest! {
+        /// Every request packet satisfies the wire checksum invariant,
+        /// for arbitrary command, address, length and payload.
+        #[test]
+        fn packet_checksum_invariant(
+            cmd in any::<u8>(),
+            address in any::<u16>(),
+            len in any::<u8>(),
+            data in prop::collection::vec(any::<u8>(), 0..=16),
+        ) {
+            let p = packet(cmd, address, len, &data);
+            prop_assert_eq!(p[0], cmd);
+            prop_assert_eq!(p[4], len);
+            let sum = (0x08u16 + p.iter().map(|&b| b as u16).sum::<u16>()) & 0xff;
+            prop_assert_eq!(sum, 0x55);
+        }
+
+        /// `decode_dpi` is total on any record and bounded: raw is at most
+        /// 10 bits, flags multiply by at most 4 → ≤ 1024*50*4.
+        #[test]
+        fn decode_dpi_bounded(rec in prop::collection::vec(any::<u8>(), 3..=8)) {
+            let dpi = decode_dpi(&rec);
+            prop_assert!((50..=204800).contains(&dpi), "dpi={dpi}");
+        }
+
+        /// clamp→encode→decode reproduces the clamped DPI exactly for the
+        /// default PAW3395 sensor (every clamped value is a multiple of 50
+        /// ≤ 26000, i.e. raw ≤ 519 < 1024).
+        #[test]
+        fn dpi_encode_decode_roundtrip(dpi in any::<u32>()) {
+            let m = CompxMouse { link: Box::new(NullLink), identity: None };
+            let clamped = m.clamp_dpi(dpi);
+            prop_assert!((50..=26000).contains(&clamped));
+            prop_assert_eq!(clamped % 50, 0);
+            prop_assert_eq!(decode_dpi(&m.encode_dpi(clamped)), clamped);
+        }
+
+        /// An arbitrary 190-byte flash image decodes without panic and
+        /// every derived field stays inside its documented bounds.
+        #[test]
+        fn read_config_never_panics_on_arbitrary_flash(
+            mut flash in prop::collection::vec(any::<u8>(), 190..=190),
+        ) {
+            flash.resize(190, 0);
+            let link = Box::new(FlashLink { flash, last: None });
+            let mut m = CompxMouse { link, identity: None };
+            let cfg = m.read_config().expect("read_config must not fail on a full flash image");
+            prop_assert!((1..=MAX_STAGES).contains(&cfg.stage_count));
+            prop_assert!(cfg.dpi.iter().all(|&d| (50..=204800).contains(&d)));
+            prop_assert!(cfg.light.speed <= 9);
+            prop_assert!(cfg.light.brightness <= 9);
+        }
+    }
+}

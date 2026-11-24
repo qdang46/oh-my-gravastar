@@ -15,8 +15,10 @@ anyhow.workspace = true
 clap.workspace = true
 omg-hid = { path = "../hid" }
 omg-model = { path = "../model" }
+ctrlc = "3"
 omg-proto-he = { path = "../proto-he" }
 omg-proto-mouse = { path = "../proto-mouse" }
 omg-proto-khub916 = { path = "../proto-khub916" }
+omg-proto-sparkplayjoy = { path = "../proto-sparkplayjoy" }
 serde.workspace = true
 serde_json.workspace = true

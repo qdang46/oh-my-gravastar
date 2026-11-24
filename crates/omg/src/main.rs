@@ -5,12 +5,16 @@
 //! 2 no device, 3 unsupported.
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 use omg_hid::{find_devices, DeviceInfo, DeviceKind, NoAnswer};
 use omg_proto_he as he;
 use omg_proto_mouse as pm;
+use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
 #[derive(Parser)]
@@ -35,8 +39,14 @@ struct Cli {
 enum Commands {
     /// List detected GravaStar devices.
     Devices,
-    /// Diagnostic probe of a device (read-only; stub until protocols land).
-    Probe,
+    /// Diagnostic probe of a device: per-protocol read-only summary.
+    /// Without `--device` every detected GravaStar device is probed.
+    /// `--deep` adds the heavier SparkPlayJoy travel-matrix read.
+    Probe {
+        /// Include the SparkPlayJoy live travel matrix (heavier read).
+        #[arg(long)]
+        deep: bool,
+    },
     /// GravaStar Mercury HE keyboards (v2 64-byte report protocol).
     /// Factory reset, firmware update, settings wipe, gamepad mode and
     /// restart commands are not implemented by design (docs/plan.md §2).
@@ -235,7 +245,7 @@ fn main() -> ExitCode {
 fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.command {
         Commands::Devices => cmd_devices(cli),
-        Commands::Probe => cmd_probe(cli),
+        Commands::Probe { deep } => cmd_probe(cli, *deep),
         Commands::Kb { command } => cmd_kb(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
     }
@@ -273,20 +283,235 @@ fn cmd_devices(cli: &Cli) -> Result<ExitCode> {
 
 // ── probe ──────────────────────────────────────────────────────────────
 
-fn cmd_probe(cli: &Cli) -> Result<ExitCode> {
-    let devices = find_devices()?;
-    let Some(device) = select_device(&devices, cli.device.as_deref())? else {
-        let report = json!({ "error": "no GravaStar device connected or matched" });
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(no_device());
+/// Wrap one probe read: `Ok` serialises the value, `Err` becomes an
+/// `{"error": "…"}` object so one failed read does not hide the rest.
+fn probe_read<T: serde::Serialize>(r: Result<T>) -> serde_json::Value {
+    match r {
+        Ok(v) => serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+        Err(e) => json!({ "error": format!("{e:#}") }),
+    }
+}
+
+fn hex32(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .take(32)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Probe one device: transport identity plus a per-protocol read-only
+/// summary. Every section is independent; failures are reported inline.
+fn probe_device(d: &DeviceInfo, deep: bool) -> serde_json::Value {
+    let protocol = match d.kind {
+        DeviceKind::HeKeyboardV2 => probe_he(d),
+        DeviceKind::CompxMouse => probe_mouse(d),
+        DeviceKind::SparkPlayJoy => probe_spark(d, deep),
+        DeviceKind::Khub916Wired | DeviceKind::Khub916Wireless => probe_khub916(d),
     };
-    // TODO(F8): open the device and dump raw protocol info once the
-    // proto-* crates land. For now report the transport-level identity.
-    let report = json!({
-        "device": device,
-        "probe": "stub: protocol readers not yet implemented",
+    json!({
+        "device": d,
+        "kind_label": d.kind.label(),
+        "protocol": protocol,
+    })
+}
+
+fn probe_he(d: &DeviceInfo) -> serde_json::Value {
+    let mut kb = match d.open_link() {
+        Ok(link) => he::HeKeyboard::new(Box::new(link)),
+        Err(e) => return json!({ "error": format!("open: {e:#}") }),
+    };
+    let info = probe_read(kb.info().map(|i| {
+        json!({
+            "firmware": i.firmware,
+            "pcb": i.pcb,
+            "build_time": i.build_time,
+            "protocol": i.protocol,
+            "board_id": format!("0x{:08X}", i.board_id),
+        })
+    }));
+    let profile = probe_read((|| {
+        Ok(json!({
+            "count": kb.profile_count()?,
+            "active": kb.profile()?,
+        }))
+    })());
+    let polling = probe_read((|| {
+        let current = kb.report_rate()?;
+        let supported = kb.report_rates()?;
+        Ok(json!({
+            "current": current,
+            "current_name": rate_name(current),
+            "supported": supported.iter().map(|&i| rate_name(i)).collect::<Vec<_>>(),
+        }))
+    })());
+    let lighting_areas = probe_read(kb.lighting_areas().map(|areas| {
+        areas
+            .iter()
+            .map(|a| json!({ "index": a.index, "effects": a.count }))
+            .collect::<Vec<_>>()
+    }));
+    let keys = probe_read((|| {
+        let slots = kb.key_slots()?;
+        let first = slots.first().map(|s| {
+            let perf = kb.key_perf(s.row, s.col).ok();
+            json!({
+                "row": s.row, "col": s.col,
+                "perf": perf.as_ref().map(perf_json),
+            })
+        });
+        Ok(json!({ "slot_count": slots.len(), "first_key": first }))
+    })());
+    let os = probe_read(kb.system().map(|v| {
+        json!({ "os": if v == 0 { "windows" } else { "macos" }, "os_id": v })
+    }));
+    json!({
+        "info": info,
+        "profile": profile,
+        "polling": polling,
+        "lighting_areas": lighting_areas,
+        "keys": keys,
+        "os": os,
+        "raw_hex": serde_json::Value::Null,
+        "raw_note": "the HE proto API does not expose raw reply bytes",
+    })
+}
+
+fn probe_mouse(d: &DeviceInfo) -> serde_json::Value {
+    let mut m = match d.open_link() {
+        Ok(link) => pm::CompxMouse::new(Box::new(link)),
+        Err(e) => return json!({ "error": format!("open: {e:#}") }),
+    };
+    let identity = probe_read(m.identify());
+    let online = probe_read(m.online());
+    let battery = probe_read(m.battery());
+    let firmware = probe_read(m.firmware().map(|(mouse, dongle)| {
+        json!({ "mouse": mouse, "receiver": dongle })
+    }));
+    let config = probe_read(m.read_config());
+    json!({
+        "identity": identity,
+        "online": online,
+        "battery": battery,
+        "firmware": firmware,
+        "config": config,
+        "raw_hex": serde_json::Value::Null,
+        "raw_note": "the mouse proto API does not expose raw reply bytes",
+    })
+}
+
+fn probe_spark(d: &DeviceInfo, deep: bool) -> serde_json::Value {
+    let mut sp = match d.open_link() {
+        Ok(link) => spj::SparkPlayJoy::new(Box::new(link)),
+        Err(e) => return json!({ "error": format!("open: {e:#}") }),
+    };
+    // SyncInfo::serial is a device serial — redact it (privacy rule).
+    // raw_payload is the only raw reply the proto API exposes.
+    let sync = probe_read(sp.sync().map(|s| {
+        json!({
+            "board_id": format!("0x{:08X}", s.board_id),
+            "platform": s.platform,
+            "app_version": s.app_version,
+            "build_label": s.build_label,
+            "serial": "[redacted]",
+            "raw_hex_32": hex32(&s.raw_payload),
+        })
+    }));
+    let scale = probe_read(sp.scale());
+    let maps = probe_read((|| {
+        let map = sp.default_map()?;
+        let populated = map.iter().flatten().filter(|&&k| k != 0).count();
+        let active = sp.active_map(&map)?;
+        let active_populated = active
+            .functions
+            .iter()
+            .flatten()
+            .filter(|&&f| f != 0)
+            .count();
+        Ok(json!({
+            "default_map_populated": populated,
+            "default_map": map,
+            "active_map_populated": active_populated,
+        }))
+    })());
+    let mut out = json!({
+        "sync": sync,
+        "scale": scale,
+        "maps": maps,
+        "raw_note": "only the sync reply exposes raw bytes (raw_hex_32); other replies are decoded-only",
     });
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    if deep {
+        out["travel"] = probe_read(sp.travel());
+    }
+    out
+}
+
+fn probe_khub916(d: &DeviceInfo) -> serde_json::Value {
+    json!({
+        "kind": d.kind.label(),
+        "note": "khub916 protocol is not yet reversed (docs/protocol-khub916.md); \
+                 omg-proto-khub916 exposes no read API, so no protocol reads were performed",
+        "raw_hex": serde_json::Value::Null,
+    })
+}
+
+fn print_probe_human(reports: &[serde_json::Value]) {
+    for r in reports {
+        let d = &r["device"];
+        let vid_pid = format!(
+            "{:04X}:{:04X}",
+            d["vid"].as_u64().unwrap_or(0) as u16,
+            d["pid"].as_u64().unwrap_or(0) as u16
+        );
+        println!("{}  {}", vid_pid, r["kind_label"].as_str().unwrap_or("?"));
+        println!("    path: {}", d["path"].as_str().unwrap_or("?"));
+        if let Some(p) = d["product"].as_str() {
+            println!("    product: {p}");
+        }
+        if let Some(m) = d["manufacturer"].as_str() {
+            println!("    manufacturer: {m}");
+        }
+        println!("    protocol:");
+        let proto = serde_json::to_string_pretty(&r["protocol"]).unwrap_or_default();
+        for line in proto.lines() {
+            println!("      {line}");
+        }
+    }
+}
+
+fn cmd_probe(cli: &Cli, deep: bool) -> Result<ExitCode> {
+    let devices = find_devices()?;
+    let targets: Vec<DeviceInfo> = if let Some(sel) = cli.device.as_deref() {
+        match select_device(&devices, Some(sel))? {
+            Some(d) => vec![d.clone()],
+            None => {
+                if cli.json {
+                    print_json(&json!({ "error": "no GravaStar device matched --device" }))?;
+                } else {
+                    println!("no GravaStar device matched --device");
+                }
+                return Ok(no_device());
+            }
+        }
+    } else {
+        devices
+    };
+    if targets.is_empty() {
+        if cli.json {
+            print_json(&json!({ "error": "no GravaStar device connected" }))?;
+        } else {
+            println!("no GravaStar device connected");
+        }
+        return Ok(no_device());
+    }
+    let reports: Vec<serde_json::Value> =
+        targets.iter().map(|d| probe_device(d, deep)).collect();
+    if cli.json {
+        print_json(&json!({ "devices": reports }))?;
+    } else {
+        print_probe_human(&reports);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -829,6 +1054,14 @@ enum KbCommands {
     Calibration {
         #[command(subcommand)]
         command: KbCalibration,
+    },
+    /// SparkPlayJoy keyboards only: prove device identity, then emit the
+    /// live 6x21 travel matrix (µm). `--watch` streams a sample every
+    /// ~100 ms until Ctrl-C.
+    TravelMatrix {
+        /// Stream travel samples every ~100 ms instead of one shot.
+        #[arg(long)]
+        watch: bool,
     },
 }
 
@@ -1475,7 +1708,178 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                 Err(e) => Err(e),
             }
         }
+        KbCommands::TravelMatrix { watch } => cmd_kb_travel(cli, *watch),
     }
+}
+
+// ── SparkPlayJoy travel matrix ─────────────────────────────────────────
+
+/// Open a SparkPlayJoy device. An explicit `--device` must resolve to a
+/// SparkPlayJoy interface; otherwise the single connected one is picked.
+fn open_spark(cli: &Cli) -> Result<Option<(DeviceInfo, spj::SparkPlayJoy)>> {
+    let devices = find_devices()?;
+    let device = if let Some(sel) = cli.device.as_deref() {
+        let matches: Vec<&DeviceInfo> = devices.iter().filter(|d| device_matches(d, sel)).collect();
+        match matches.len() {
+            0 => return Ok(None),
+            1 => {
+                let d = matches[0];
+                if d.kind != DeviceKind::SparkPlayJoy {
+                    bail!(
+                        "{} ({}) is {}, not a SparkPlayJoy device — `kb travel-matrix` only drives the SparkPlayJoy protocol",
+                        d.vid_pid(),
+                        d.path,
+                        d.kind.label()
+                    );
+                }
+                d.clone()
+            }
+            n => bail!("selector '{sel}' matches {n} devices; be more specific"),
+        }
+    } else {
+        let sps: Vec<DeviceInfo> = devices
+            .into_iter()
+            .filter(|d| d.kind == DeviceKind::SparkPlayJoy)
+            .collect();
+        match select_device(&sps, None)? {
+            Some(d) => d.clone(),
+            None => return Ok(None),
+        }
+    };
+    let link = device.open_link()?;
+    Ok(Some((device, spj::SparkPlayJoy::new(Box::new(link)))))
+}
+
+fn spark_absent(cli: &Cli) -> Result<ExitCode> {
+    if cli.json {
+        print_json(&json!({ "error": "no SparkPlayJoy device detected (omg devices lists what was found)" }))?;
+    } else {
+        println!("no SparkPlayJoy device detected (omg devices lists what was found)");
+    }
+    Ok(no_device())
+}
+
+fn travel_json(device: &DeviceInfo, t: &spj::TravelMatrix) -> serde_json::Value {
+    json!({
+        "device": device.vid_pid(),
+        "travel_matrix_um": t,
+    })
+}
+
+fn travel_summary(t: &spj::TravelMatrix) -> (usize, u16) {
+    let mut nonzero = 0usize;
+    let mut max = 0u16;
+    for row in &t.samples_um {
+        for &v in row {
+            if v != 0 {
+                nonzero += 1;
+                max = max.max(v);
+            }
+        }
+    }
+    (nonzero, max)
+}
+
+fn cmd_kb_travel(cli: &Cli, watch: bool) -> Result<ExitCode> {
+    let Some((device, mut sp)) = open_spark(cli)? else {
+        return spark_absent(cli);
+    };
+    // Table board id when the VID:PID is known; structural-only proof
+    // otherwise (Admission::exact_known_board reports which ran).
+    let expected = spj::known_board_id(device.vid, device.pid);
+    let admission = match sp.prove_identity(expected) {
+        Ok(a) => a,
+        Err(e) => {
+            // The error message names the gate that failed.
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "admission": "failed",
+                    "failed_gate": format!("{e:#}"),
+                }))?;
+            } else {
+                println!("identity proof failed: {e:#}");
+            }
+            return Ok(ExitCode::from(1));
+        }
+    };
+    if !watch {
+        if cli.json {
+            print_json(&json!({
+                "device": device,
+                "board_id": format!("0x{:08X}", admission.board_id),
+                "exact_known_board": admission.exact_known_board,
+                "scale": admission.scale,
+                "travel_matrix_um": admission.travel,
+            }))?;
+        } else {
+            println!("{} SparkPlayJoy", device.vid_pid());
+            println!(
+                "board id:   0x{:08X}{}",
+                admission.board_id,
+                if admission.exact_known_board { " (known identity)" } else { " (structural proof)" }
+            );
+            println!(
+                "scale:      precision {} µm, travel {}..{} µm",
+                admission.scale.precision_um,
+                admission.scale.minimum_travel_um,
+                admission.scale.maximum_travel_um
+            );
+            println!("travel matrix (µm), {} samples:", admission.travel.samples_um.iter().flatten().filter(|&&v| v != 0).count());
+            for (r, row) in admission.travel.samples_um.iter().enumerate() {
+                let cells: Vec<String> = row
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &v)| v != 0)
+                    .map(|(c, &v)| format!("c{c}={v}"))
+                    .collect();
+                if !cells.is_empty() {
+                    println!("  row {r}: {}", cells.join(" "));
+                }
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // --watch: stream travel samples until Ctrl-C.
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst))
+        .map_err(|e| anyhow!("failed to install Ctrl-C handler: {e}"))?;
+    if cli.json {
+        // One JSON object per line (JSONL) so consumers can stream-parse.
+        println!("{}", serde_json::to_string(&json!({
+            "device": device.vid_pid(),
+            "board_id": format!("0x{:08X}", admission.board_id),
+            "event": "watch_start",
+        }))?);
+    } else {
+        println!("watching travel (Ctrl-C to stop)…");
+    }
+    while !stop.load(Ordering::SeqCst) {
+        match sp.travel() {
+            Ok(t) => {
+                if cli.json {
+                    println!("{}", serde_json::to_string(&travel_json(&device, &t))?);
+                } else {
+                    let (nonzero, max) = travel_summary(&t);
+                    println!("{nonzero} keys reporting, max {max} µm");
+                }
+            }
+            Err(e) => {
+                eprintln!("travel read failed: {e:#}");
+                return Ok(ExitCode::from(1));
+            }
+        }
+        // Sleep in 10 ms slices so Ctrl-C is noticed promptly.
+        for _ in 0..10 {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 // ── HE keyboard: performance ───────────────────────────────────────────
