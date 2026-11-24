@@ -732,6 +732,29 @@ pub struct StreamArgs<'a> {
     pub loop_stream: bool,
 }
 
+/// Sanity-check a pre-stream profile snapshot. Mode `off` (0) is a
+/// legitimate state but is also what a wedged GIF session leaves behind —
+/// restoring it blindly can leave the keyboard dark (AGENTS.md incident
+/// log). Returns a human-readable warning when the snapshot looks
+/// suspicious; `None` when it decodes to a normal lighting mode.
+pub(crate) fn snapshot_sanity_warning(profile: &khub::Profile) -> Option<String> {
+    match khub_light::decode_light_state(profile) {
+        Some(s) if s.mode == 0 => Some(
+            "pre-stream lighting state is mode 0 (off) — if a previous stream \
+             was interrupted the device may be in a leftover GIF state, and \
+             restore will return to 'off'. If the keyboard stays dark after \
+             this run, re-apply a config: `omg kb916 light apply <json> --yes`"
+                .to_string(),
+        ),
+        None => Some(
+            "could not decode lighting state from the profile snapshot; \
+             restore will write the raw blob back unchanged"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// `omg kb916 light stream …` — cmd-8 frame streaming with restore.
 pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
     let StreamArgs {
@@ -748,8 +771,16 @@ pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
     if !(1.0..=240.0).contains(&fps) || !fps.is_finite() {
         bail!("--fps must be in 1.0..=240.0, got {fps}");
     }
-    if fps > 60.0 {
-        eprintln!("warning: --fps {fps} exceeds the vendor's ~33 pkt/s cadence; frames may drop");
+    // Vendor Hub paces khub916 feature reports ~200 ms apart (≈5 pkt/s,
+    // index-M8-m9qFR processQueue delay(200)). Sustained rates far above
+    // that are unverified and correlated with a firmware wedge — see the
+    // incident log in AGENTS.md.
+    if fps > 10.0 {
+        eprintln!(
+            "warning: --fps {fps} is well above the vendor's ~5 pkt/s report \
+             cadence; sustained streaming at this rate may wedge the keyboard \
+             (AGENTS.md incident log). Consider --fps 10 or lower."
+        );
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -821,6 +852,9 @@ pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
     // ── Snapshot lighting state for restore ───────────────────────────
     let profile = kb.profile()?;
     let light_blob = kb.light_color_data()?;
+    if let Some(w) = snapshot_sanity_warning(&profile) {
+        eprintln!("warning: {w}");
+    }
 
     // ── Ctrl-C → graceful stop + restore ───────────────────────────────
     let stop = Arc::new(AtomicBool::new(false));

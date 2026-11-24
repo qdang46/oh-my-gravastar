@@ -222,6 +222,16 @@ pub fn cmd(
     if !(1.0..=240.0).contains(&fps) || !fps.is_finite() {
         bail!("--fps must be in 1.0..=240.0, got {fps}");
     }
+    // Same hardware caution as `light stream`: the vendor paces khub916
+    // reports ~200 ms apart; sustained rates far above that are unverified
+    // and correlated with a firmware wedge (AGENTS.md incident log).
+    if fps > 10.0 {
+        eprintln!(
+            "warning: --fps {fps} is well above the vendor's ~5 pkt/s report \
+             cadence; sustained streaming at this rate may wedge the keyboard \
+             (AGENTS.md incident log). Consider --fps 10 or lower."
+        );
+    }
     if !(0.1..=10.0).contains(&sensitivity) {
         bail!("--sensitivity must be in 0.1..=10.0, got {sensitivity}");
     }
@@ -249,6 +259,9 @@ pub fn cmd(
     // Snapshot lighting state for restore (same contract as `light stream`).
     let profile = kb.profile()?;
     let light_blob = kb.light_color_data()?;
+    if let Some(w) = crate::kb916_light::snapshot_sanity_warning(&profile) {
+        eprintln!("warning: {w}");
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -275,6 +288,7 @@ pub fn cmd(
     let params = FrameParams {
         sensitivity,
         brightness,
+        fps: fps as f32,
         ..FrameParams::default()
     };
     let mut viz = if effect == "beat" {

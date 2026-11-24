@@ -29,6 +29,10 @@ pub struct FrameParams {
     pub hue_speed: f32,
     /// Saturation 0..1.
     pub saturation: f32,
+    /// LED frame rate the motion constants are tuned for. BeatViz scales
+    /// all per-frame ages by `30/fps` so effects keep the same wall-clock
+    /// timing at any stream rate (default 30 = reference).
+    pub fps: f32,
 }
 
 impl Default for FrameParams {
@@ -38,6 +42,7 @@ impl Default for FrameParams {
             brightness: 0.9,
             hue_speed: 0.05,
             saturation: 1.0,
+            fps: 30.0,
         }
     }
 }
@@ -322,8 +327,13 @@ impl BeatViz {
                 seq: self.seq,
             });
         }
-        self.impacts
-            .retain(|i| self.frame_no.wrapping_sub(i.born) < impact_ttl(i.kind));
+        // Scale rendered-frame ages into 30 fps reference units so motion
+        // speed and impact TTLs are wall-clock stable at any --fps.
+        let age_scale = (30.0 / self.params.fps.clamp(1.0, 240.0)).clamp(0.125, 8.0);
+        self.impacts.retain(|i| {
+            self.frame_no.wrapping_sub(i.born) as f32 * age_scale
+                < impact_ttl(i.kind) as f32
+        });
 
         // Ambient base from the spectrum visualiser, gated by the
         // broadband level: quiet music → near-black keyboard so beats
@@ -335,7 +345,7 @@ impl BeatViz {
             let (x, y) = self.pos[k];
             let mut add = [0.0f32; 3];
             for im in &self.impacts {
-                let age = self.frame_no.wrapping_sub(im.born) as f32;
+                let age = self.frame_no.wrapping_sub(im.born) as f32 * age_scale;
                 let s = (im.strength * self.params.brightness * 1.8).min(1.0);
                 let (r, g, b) = match im.kind {
                     BeatKind::Kick => {
@@ -343,8 +353,11 @@ impl BeatViz {
                         let radius = 0.035 * age;
                         let ring =
                             (-((d - radius).powi(2)) / (2.0 * 0.07f32.powi(2))).exp();
+                        // Bright core at the impact point on the first
+                        // ~0.2 s — the ring alone leaves the centre dark.
+                        let core = (-d / 0.10).exp() * (-age / 6.0).exp();
                         let env = (-age / 24.0).exp();
-                        let i = (s * ring * env).min(1.0);
+                        let i = (s * (ring + core * 0.8) * env).min(1.0);
                         (i, i * 0.72, i * 0.30)
                     }
                     BeatKind::Snare => {

@@ -3893,8 +3893,10 @@ enum Kb916Light {
         /// Gradient/pulse second colour `#rrggbb` (default: complementary).
         #[arg(long)]
         to: Option<String>,
-        /// Frames per second (default 30 ≈ vendor 30 ms cadence).
-        #[arg(long, default_value_t = 30.0)]
+        /// Frames per second (default 15; the vendor Hub paces khub916
+        /// reports ~200 ms apart ≈ 5 pkt/s — rates above ~10 are
+        /// unverified, see AGENTS.md incident log).
+        #[arg(long, default_value_t = 15.0)]
         fps: f64,
         /// Stop after this many seconds (default: until Ctrl-C / EOF).
         #[arg(long)]
@@ -3917,8 +3919,10 @@ enum Kb916Light {
         /// Audio source: `system` (output loopback, macOS only) or `mic`.
         #[arg(long, default_value = "system")]
         source: String,
-        /// Frames per second for LED updates (default 30).
-        #[arg(long, default_value_t = 30.0)]
+        /// Frames per second for LED updates (default 15; vendor report
+        /// cadence is ~5 pkt/s — higher rates are unverified, see
+        /// AGENTS.md incident log).
+        #[arg(long, default_value_t = 15.0)]
         fps: f64,
         /// Input sensitivity multiplier (default 1.6).
         #[arg(long, default_value_t = 1.6)]
