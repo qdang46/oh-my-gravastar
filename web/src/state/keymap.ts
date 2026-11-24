@@ -4,6 +4,7 @@
  */
 
 import { app, emit, setStatus, type KeyEntry } from './core.ts';
+import { guardKeymapBase } from '../keymap-guard.ts';
 
 // ── Keymap ─────────────────────────────────────────────────────────────
 
@@ -35,20 +36,14 @@ export async function ensureKeymap(arg: number): Promise<KeyEntry[]> {
  */
 export async function keymapBase(arg: number): Promise<number[]> {
   const values = (await ensureKeymap(arg)).map((e) => e.value);
-  if (values.length === 0) {
-    throw new Error('the keyboard returned an empty key set — nothing was sent');
-  }
   const reference = [...(app.snapshot?.keymaps ?? new Map())]
     .filter(([a]) => a !== arg)
     .map(([, entries]) => entries.length)
     .find((n) => n > 0);
-  if (reference !== undefined && values.length !== reference) {
-    throw new Error(
-      `this key set read back ${values.length} keys but the keyboard reports ${reference} ` +
-        'for its other key sets — the read looks incomplete, so nothing was sent',
-    );
-  }
-  return values;
+  // §Safety 6/7 — empty, short-vs-reference or corrupt slots abort here,
+  // before any write is built on the base. Unknown-tag slots pass through
+  // as opaque u32s (see keymap-guard.ts).
+  return guardKeymapBase(values, { arg, expectedLen: reference });
 }
 
 export async function setLayer(layer: number): Promise<void> {

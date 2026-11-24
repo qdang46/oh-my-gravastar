@@ -24,7 +24,8 @@
  * keymap binding half *is* live-verified.
  */
 
-import { app, emit, ensureKeymap, setStatus, subscribe } from './state.ts';
+import { app, emit, ensureKeymap, keymapBase, setStatus, subscribe } from './state.ts';
+import { guardKeymapBase, isOpaqueKeymapValue } from './keymap-guard.ts';
 import {
   ADV_BLOB_BYTES,
   KIND_LABEL,
@@ -157,11 +158,23 @@ export class AdvPage {
       const s = app.connected.session;
       // Sequential — concurrent feature reports poison the session.
       const rawBlob = await s.advKeyConfig();
-      const km = await s.keyValues(0);
+      // Fresh, guarded read of the arg-0 table (§Safety 6): drop the
+      // decode cache so this is a real device read, then require a
+      // non-empty, u32-clean base whose length matches any previous
+      // good read — a short/empty/corrupt read must never become the
+      // base of a whole-table write.
+      app.snapshot?.keymaps.delete(0);
+      const km = guardKeymapBase(await keymapBase(0), {
+        arg: 0,
+        expectedLen: this.keymap?.length,
+      });
       this.blob = normalizeBlob(rawBlob);
-      this.keymap = km.map((v) => v >>> 0);
+      this.keymap = km;
       this.blobUnconfirmed = false;
     } catch (e) {
+      // An untrusted read must not leave a stale table behind that a
+      // later write could be built on.
+      this.keymap = null;
       setStatus(`Could not read advanced-key settings: ${e instanceof Error ? e.message : String(e)}`, true);
     } finally {
       this.loading = false;
@@ -353,7 +366,9 @@ export class AdvPage {
     const sel = el('select', 'macro-select adv-slot-select') as HTMLSelectElement;
     const km = this.keymap ?? [];
     km.forEach((v, i) => {
-      if (exclude.includes(i)) return;
+      // Opaque slots (undocumented tags, e.g. 0x08) are never bind
+      // targets — they must be preserved byte-identical (§Safety 7).
+      if (exclude.includes(i) || isOpaqueKeymapValue(v)) return;
       const o = el('option', '', `Key ${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
       o.title = hex8(v);
       o.value = String(i);
@@ -418,7 +433,7 @@ export class AdvPage {
         keyB.replaceChildren();
         const km = this.keymap ?? [];
         km.forEach((v, i) => {
-          if (i === Number(keyA.value)) return;
+          if (i === Number(keyA.value) || isOpaqueKeymapValue(v)) return;
           const o = el('option', '', `Key ${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
           o.title = hex8(v);
           o.value = String(i);
@@ -473,12 +488,16 @@ export class AdvPage {
     }
   }
 
-  /** First keymap slot that is not already adv/macro-bound (value 0 or plain). */
+  /** First keymap slot that is not already adv/macro-bound (value 0 or plain)
+   *  and not an opaque unknown-tag value (§Safety 7). */
   private firstBindableSlot(): number {
     const km = this.keymap ?? [];
     for (let i = 0; i < km.length; i++) {
-      const tag = ((km[i] ?? 0) >>> 24) & 0xff;
-      if (![0x03, 0x20, 0x21, 0x22].includes(tag)) return i;
+      const v = km[i] ?? 0;
+      const tag = (v >>> 24) & 0xff;
+      if ([0x03, 0x20, 0x21, 0x22].includes(tag)) continue;
+      if (isOpaqueKeymapValue(v)) continue;
+      return i;
     }
     return 0;
   }
@@ -507,7 +526,24 @@ export class AdvPage {
     this.render();
     const s = app.connected.session;
     try {
-      await s.writeKeyConfiguration(plan.keymap);
+      // §Safety 6 — `plan.keymap` is a whole-table write; refuse to send
+      // one built on an empty/short/corrupt base.
+      const km = guardKeymapBase(plan.keymap, { arg: 0 });
+      // §Safety 7 — a plan may only rewrite slots whose previous value
+      // is known or empty; an opaque (unknown-tag) slot must survive
+      // byte-identical, so any plan that changes one is refused here
+      // even if it slipped past the pickers.
+      if (this.keymap) {
+        for (let i = 0; i < km.length; i++) {
+          const before = this.keymap[i];
+          if (before !== undefined && km[i] !== before && isOpaqueKeymapValue(before)) {
+            throw new Error(
+              `key ${i} holds a value this app does not recognize — refusing to overwrite it`,
+            );
+          }
+        }
+      }
+      await s.writeKeyConfiguration(km);
       const ho = await s.writeAdvKeyConfig(plan.blob);
 
       // Refresh what we can trust: the arg-0 keymap (248/1 read shows
@@ -515,8 +551,20 @@ export class AdvPage {
       // the blob. On K1 Pro cmd-146 is unreliable for ~60 s after cmd 18,
       // so an unconfirmed write keeps the intended blob locally and is
       // flagged `blobUnconfirmed`.
-      const km = await s.keyValues(0).catch(() => null);
-      if (km) this.keymap = km.map((v) => v >>> 0);
+      const back = await s.keyValues(0).catch(() => null);
+      if (back) {
+        try {
+          // Display-only refresh, but it seeds the next write's base —
+          // it must pass the same guard, pinned to the length we just
+          // verified on the wire.
+          this.keymap = guardKeymapBase(back.map((v) => v >>> 0), {
+            arg: 0,
+            expectedLen: km.length,
+          });
+        } catch {
+          this.keymap = null; // untrusted read-back — Refresh to retry
+        }
+      }
       this.blob = plan.blob;
       this.blobUnconfirmed = !ho.verified;
       // The keys page caches arg-0 too — drop it so labels refresh.
@@ -620,11 +668,29 @@ export class AdvPage {
     this.busy = true;
     this.render();
     try {
-      const values = this.keymap.slice();
+      // §Safety 6 — rebuild from a FRESH guarded read, never from the
+      // displayed table padded with zeros. A short/empty/corrupt read
+      // aborts before any bytes are sent.
+      app.snapshot.keymaps.delete(0);
+      const base = guardKeymapBase(await keymapBase(0), {
+        arg: 0,
+        expectedLen: this.keymap?.length,
+      });
+      if (b.index >= base.length) {
+        throw new Error(
+          `key ${b.index} is past the ${base.length} keys the keyboard reports — nothing was sent`,
+        );
+      }
+      const values = base.slice();
       while (values.length < KEYMAP_ENTRIES) values.push(0);
       values[b.index] = 0;
       await app.connected.session.writeKeymap(0, 0, values);
-      this.keymap = values.map((v) => v >>> 0);
+      // Keep the displayed table at the device's real length (not the
+      // 128-slot padded wire form) so the next refresh's length check
+      // compares like with like.
+      const displayed = base.slice();
+      displayed[b.index] = 0;
+      this.keymap = displayed;
       app.snapshot.keymaps.delete(0);
       void ensureKeymap(0).catch(() => {});
       setStatus(`Removed the ${KIND_LABEL[b.kind]} function from key ${b.index} — checked on the keyboard.`);
