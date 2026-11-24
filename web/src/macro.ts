@@ -36,6 +36,16 @@ import {
   type MacroStep,
 } from './proto/macro916.ts';
 import { KEYMAP_ENTRIES, decodeKeyValue, keyValueLabel } from './proto/khub916.ts';
+import {
+  formatDelay,
+  macroEntryBytes,
+  macroRegionUsed,
+  projectRegionUsage,
+  stepKeyLabel,
+  stepSearchText,
+  validateMacroSteps,
+  type MacroIssue,
+} from './macro-studio.ts';
 import { confirmDialog, promptDialog } from './modal.ts';
 
 // ── DOM helpers (same style as pages.ts) ────────────────────────────────
@@ -112,6 +122,15 @@ export class MacroPage {
   private draft: Draft | null = null;
   private dirty = false;
   private busy = false;
+  /** Step highlighted via the timeline / row click (null = none). */
+  private selectedStep: number | null = null;
+  /** Lowercase filter text for the step list (key name search). */
+  private stepFilter = '';
+  /** Refs to the editor sub-panels, rebuilt by renderEditor(). */
+  private usageWrap: HTMLElement | null = null;
+  private tlWrap: HTMLElement | null = null;
+  private issuesWrap: HTMLElement | null = null;
+  private stepsWrap: HTMLElement | null = null;
 
   constructor(root: HTMLElement) {
     root.replaceChildren();
@@ -148,6 +167,7 @@ export class MacroPage {
   // ── Render ──────────────────────────────────────────────────────────
 
   private render(): void {
+    this.usageWrap = this.tlWrap = this.issuesWrap = this.stepsWrap = null;
     this.el.replaceChildren();
     if (!app.connected || !app.snapshot) {
       const c = el('section', 'card');
@@ -170,11 +190,13 @@ export class MacroPage {
     const c = el('section', 'card');
     c.append(el('h2', '', `Macros (${entries.length})`));
     const body = el('div', 'card-body');
+    const used = macroRegionUsed(entries);
     body.append(
       el(
         'p',
         'hint',
-        `About ${this.freeBytes()} of ${MACRO_REGION_BYTES} bytes of macro storage is free. ` +
+        `About ${this.freeBytes()} of ${MACRO_REGION_BYTES} bytes of macro storage is free ` +
+          `(≈${used} of ${MACRO_REGION_BYTES} bytes used by the saved macros). ` +
           'Saving sends the whole list to the keyboard and checks it was stored correctly.',
       ),
     );
@@ -201,10 +223,13 @@ export class MacroPage {
         const edit = btn(this.selected === i && this.draft ? 'Editing' : 'Edit');
         edit.disabled = this.busy;
         edit.addEventListener('click', () => this.select(i));
+        const dup = btn('Copy', 'Duplicate this macro into a new unsaved entry');
+        dup.disabled = this.busy;
+        dup.addEventListener('click', () => this.duplicateMacro(i));
         const del = btn('Delete');
         del.disabled = this.busy;
         del.addEventListener('click', () => void this.deleteMacro(i));
-        actions.append(edit, del);
+        actions.append(edit, dup, del);
         tr.append(actions);
         tbody.append(tr);
       });
@@ -255,13 +280,45 @@ export class MacroPage {
       if (this.draft) {
         this.draft.name = nameInput.value;
         this.dirty = true;
+        this.refreshLight(); // name length affects the storage estimate
       }
     });
     body.append(field('Name', nameInput));
 
+    // Storage usage: this macro's bytes + projected region total.
+    const usageWrap = el('div', 'macro-usage');
+    body.append(usageWrap);
+    this.usageWrap = usageWrap;
+    this.renderUsage(usageWrap);
+
+    // Timeline: one block per step, width ∝ pause, color = action.
+    const tlWrap = el('div', 'macro-timeline');
+    body.append(tlWrap);
+    this.tlWrap = tlWrap;
+    this.renderTimeline(tlWrap);
+
+    // Validator panel — refreshed on every edit.
+    const issuesWrap = el('div', 'macro-issues');
+    body.append(issuesWrap);
+    this.issuesWrap = issuesWrap;
+    this.renderIssues(issuesWrap);
+
+    // Step search/filter.
+    const search = el('input', 'macro-search') as HTMLInputElement;
+    search.type = 'search';
+    search.placeholder = 'Filter steps by key name…';
+    search.value = this.stepFilter;
+    search.disabled = this.busy;
+    search.addEventListener('input', () => {
+      this.stepFilter = search.value;
+      this.updateStepRowClasses();
+    });
+    body.append(field('Find step', search));
+
     // Steps table.
     const stepsWrap = el('div', 'macro-steps');
     body.append(stepsWrap);
+    this.stepsWrap = stepsWrap;
     this.renderSteps(stepsWrap);
 
     const addStep = btn('+ Add step');
@@ -270,7 +327,8 @@ export class MacroPage {
       if (!this.draft) return;
       this.draft.steps.push({ action: 0, delayMs: 0, usage: 4, kind: 'key' });
       this.dirty = true;
-      this.renderSteps(stepsWrap);
+      this.selectedStep = this.draft.steps.length - 1;
+      this.refreshEditor();
     });
     body.append(addStep);
 
@@ -295,7 +353,8 @@ export class MacroPage {
           if (parsed.name !== null) this.draft.name = parsed.name;
           nameInput.value = this.draft.name;
           this.dirty = true;
-          this.renderSteps(stepsWrap);
+          this.selectedStep = null;
+          this.refreshEditor();
           setStatus(`Imported ${parsed.steps.length} step(s) — press Save to send them to the keyboard.`);
         } catch (e) {
           setStatus(`That JSON was not understood: ${e instanceof Error ? e.message : String(e)}`, true);
@@ -319,6 +378,8 @@ export class MacroPage {
         this.selected = null;
         this.draft = null;
         this.dirty = false;
+        this.selectedStep = null;
+        this.stepFilter = '';
         this.render();
       }
     });
@@ -346,6 +407,13 @@ export class MacroPage {
 
     draft.steps.forEach((step, i) => {
       const tr = el('tr');
+      tr.dataset.stepIdx = String(i);
+      tr.title = `Step ${i}: ${step.action === 0 ? 'press' : 'release'} ${stepKeyLabel(step)}, pause ${formatDelay(step.delayMs)}`;
+      tr.addEventListener('click', (e) => {
+        // Row click selects the step; clicks on controls keep working.
+        if ((e.target as HTMLElement).closest('button, input, select')) return;
+        this.selectStep(i);
+      });
       tr.append(el('td', 'mono', String(i)));
 
       // Action: down/up (the vendor recorder's press/release).
@@ -363,6 +431,7 @@ export class MacroPage {
       action.addEventListener('change', () => {
         step.action = Number(action.value);
         this.dirty = true;
+        this.refreshLight();
       });
       const tdAction = el('td');
       tdAction.append(action);
@@ -400,6 +469,7 @@ export class MacroPage {
         }
         this.syncKindSelect(kindSel, step);
         this.dirty = true;
+        this.refreshLight();
       });
       const tdKey = el('td');
       tdKey.append(keySel);
@@ -416,6 +486,7 @@ export class MacroPage {
         }
         // 'other' keeps the raw numeric nibble already on the step.
         this.dirty = true;
+        this.refreshLight();
       });
       const tdKind = el('td');
       tdKind.append(kindSel);
@@ -434,6 +505,7 @@ export class MacroPage {
         if (Number.isInteger(n) && n >= 0 && n <= MAX_STEP_DURATION) {
           step.delayMs = n;
           this.dirty = true;
+          this.refreshLight();
         } else {
           delay.value = String(step.delayMs);
           setStatus(`Pause must be a whole number of milliseconds between 0 and ${MAX_STEP_DURATION}`, true);
@@ -449,22 +521,28 @@ export class MacroPage {
       up.disabled = this.busy || i === 0;
       up.addEventListener('click', () => {
         draft.steps.splice(i - 1, 0, draft.steps.splice(i, 1)[0]!);
+        if (this.selectedStep === i) this.selectedStep = i - 1;
+        else if (this.selectedStep !== null && this.selectedStep > i) this.selectedStep -= 1;
         this.dirty = true;
-        this.renderSteps(wrap);
+        this.refreshEditor();
       });
       const downBtn = btn('↓', 'Move step down');
       downBtn.disabled = this.busy || i === draft.steps.length - 1;
       downBtn.addEventListener('click', () => {
         draft.steps.splice(i + 1, 0, draft.steps.splice(i, 1)[0]!);
+        if (this.selectedStep === i) this.selectedStep = i + 1;
+        else if (this.selectedStep !== null && this.selectedStep > i) this.selectedStep += 1;
         this.dirty = true;
-        this.renderSteps(wrap);
+        this.refreshEditor();
       });
       const del = btn('✕', 'Remove step');
       del.disabled = this.busy;
       del.addEventListener('click', () => {
         draft.steps.splice(i, 1);
+        if (this.selectedStep === i) this.selectedStep = null;
+        else if (this.selectedStep !== null && this.selectedStep > i) this.selectedStep -= 1;
         this.dirty = true;
-        this.renderSteps(wrap);
+        this.refreshEditor();
       });
       actions.append(up, downBtn, del);
       tr.append(actions);
@@ -472,6 +550,178 @@ export class MacroPage {
     });
     table.append(tbody);
     wrap.append(table);
+    this.updateStepRowClasses();
+  }
+
+  // ── Studio panels: usage, timeline, issues, step filter ─────────────
+
+  /** Re-render everything derived from the draft (steps + panels). */
+  private refreshEditor(): void {
+    if (this.stepsWrap) this.renderSteps(this.stepsWrap);
+    this.refreshLight();
+  }
+
+  /** Re-render the panels that don't rebuild the steps table
+   *  (keeps focus inside the edited control). */
+  private refreshLight(): void {
+    if (this.usageWrap) this.renderUsage(this.usageWrap);
+    if (this.tlWrap) this.renderTimeline(this.tlWrap);
+    if (this.issuesWrap) this.renderIssues(this.issuesWrap);
+  }
+
+  /** Storage line: bytes for this macro + projected region total. */
+  private renderUsage(wrap: HTMLElement): void {
+    wrap.replaceChildren();
+    const draft = this.draft;
+    if (!draft || this.selected === null) return;
+    const entries = this.entries();
+    const isNew = this.selected >= entries.length;
+    const slot = isNew ? entries.length : this.selected;
+    const proj = projectRegionUsage(
+      entries,
+      slot,
+      { name: draft.name, steps: draft.steps },
+    );
+
+    let ownBytes = '—';
+    try {
+      ownBytes = String(macroEntryBytes({ name: draft.name, steps: draft.steps }));
+    } catch {
+      ownBytes = `over ${MACRO_REGION_BYTES}`;
+    }
+    const line = el(
+      'p',
+      `hint macro-usage-line${proj.fits ? '' : ' warn'}`,
+      `Storage: this macro uses ≈${ownBytes} bytes · all macros together ≈${proj.usedBytes} of ${proj.capacityBytes} bytes.`,
+    );
+    wrap.append(line);
+    if (!proj.fits && proj.problem) {
+      wrap.append(el('p', 'hint warn', proj.problem));
+    }
+  }
+
+  /**
+   * Horizontal timeline: one block per step. Block width is
+   * proportional to the step's pause (flex-grow = delayMs, floored so
+   * zero-delay steps stay visible); colour = press (lime) / release
+   * (muted) / mouse (accent-blue). Click selects the step.
+   */
+  private renderTimeline(wrap: HTMLElement): void {
+    wrap.replaceChildren();
+    const draft = this.draft;
+    if (!draft || draft.steps.length === 0) {
+      wrap.append(el('p', 'hint', 'No steps yet — add a step to see the timeline.'));
+      return;
+    }
+    const legend = el('div', 'macro-tl-legend');
+    for (const [cls, label] of [
+      ['down', 'Press'],
+      ['up', 'Release'],
+      ['mouse', 'Mouse'],
+    ] as const) {
+      const item = el('span', 'macro-tl-legend-item');
+      item.append(el('span', `macro-tl-swatch ${cls}`), document.createTextNode(label));
+      legend.append(item);
+    }
+    wrap.append(legend);
+
+    const track = el('div', 'macro-tl-track');
+    track.setAttribute('role', 'list');
+    draft.steps.forEach((step, i) => {
+      const kind = step.kind === 'mouse' ? 'mouse' : step.action === 0 ? 'down' : 'up';
+      const b = el('button', `macro-tl-block ${kind}`) as HTMLButtonElement;
+      b.type = 'button';
+      // Width ∝ pause: grow by delayMs, with a readable minimum via CSS.
+      b.style.flexGrow = String(Math.max(step.delayMs, 1));
+      b.style.flexBasis = '0';
+      if (this.selectedStep === i) b.classList.add('selected');
+      const label = stepKeyLabel(step);
+      b.title = `Step ${i}: ${step.action === 0 ? 'press' : 'release'} ${label} — pause ${formatDelay(step.delayMs)} (click to edit)`;
+      b.textContent = `${i} ${label}`;
+      b.setAttribute('role', 'listitem');
+      b.addEventListener('click', () => this.selectStep(i));
+      track.append(b);
+    });
+    wrap.append(track);
+    wrap.append(
+      el('p', 'hint', 'Each block is one step — wider means a longer pause. Click a block to jump to that step.'),
+    );
+  }
+
+  /** Validator panel: issues from validateMacroSteps + storage fit. */
+  private renderIssues(wrap: HTMLElement): void {
+    wrap.replaceChildren();
+    const draft = this.draft;
+    if (!draft || this.selected === null) return;
+
+    const issues: MacroIssue[] = validateMacroSteps(draft.steps);
+    // Storage projection adds a whole-macro error when it can't fit.
+    const entries = this.entries();
+    const isNew = this.selected >= entries.length;
+    const proj = projectRegionUsage(
+      entries,
+      isNew ? entries.length : this.selected,
+      { name: draft.name, steps: draft.steps },
+    );
+    if (!proj.fits && proj.problem) {
+      issues.unshift({ level: 'error', step: null, message: proj.problem });
+    }
+
+    if (issues.length === 0) {
+      wrap.append(
+        el('p', 'hint macro-issues-ok', `✓ ${draft.steps.length} step(s) checked — no problems found.`),
+      );
+      return;
+    }
+    const errors = issues.filter((i) => i.level === 'error').length;
+    wrap.append(
+      el(
+        'p',
+        'hint',
+        `${issues.length} thing${issues.length === 1 ? '' : 's'} to check` +
+          (errors > 0 ? ` (${errors} will likely fail or misbehave)` : '') +
+          ' — click one to jump to its step:',
+      ),
+    );
+    const list = el('ul', 'macro-issue-list');
+    for (const issue of issues) {
+      const li = el('li', `macro-issue ${issue.level}`);
+      li.textContent = issue.message;
+      if (issue.step !== null) {
+        li.classList.add('clickable');
+        li.title = 'Jump to this step';
+        li.addEventListener('click', () => this.selectStep(issue.step!));
+      }
+      list.append(li);
+    }
+    wrap.append(list);
+  }
+
+  /** Highlight/dim step rows from selectedStep + stepFilter. */
+  private updateStepRowClasses(): void {
+    const wrap = this.stepsWrap;
+    const draft = this.draft;
+    if (!wrap || !draft) return;
+    const filter = this.stepFilter.trim().toLowerCase();
+    for (const tr of wrap.querySelectorAll<HTMLElement>('tr[data-step-idx]')) {
+      const idx = Number(tr.dataset.stepIdx);
+      const step = draft.steps[idx];
+      tr.classList.toggle('step-selected', this.selectedStep === idx);
+      const match =
+        filter === '' || (step !== undefined && stepSearchText(step).includes(filter));
+      tr.classList.toggle('step-dim', filter !== '' && !match);
+      tr.classList.toggle('step-match', filter !== '' && match);
+    }
+  }
+
+  /** Select a step (timeline block / row / issue click) and reveal it. */
+  private selectStep(i: number): void {
+    if (!this.draft || i < 0 || i >= this.draft.steps.length) return;
+    this.selectedStep = i;
+    this.refreshLight();
+    this.updateStepRowClasses();
+    const row = this.stepsWrap?.querySelector<HTMLElement>(`tr[data-step-idx="${i}"]`);
+    row?.scrollIntoView({ block: 'nearest' });
   }
 
   private fillKindSelect(sel: HTMLSelectElement, step: MacroStep): void {
@@ -603,6 +853,8 @@ export class MacroPage {
       steps: e.steps.map((s) => ({ ...s })),
     };
     this.dirty = false;
+    this.selectedStep = null;
+    this.stepFilter = '';
     this.render();
   }
 
@@ -611,7 +863,36 @@ export class MacroPage {
     this.selected = n;
     this.draft = { name: `macro${n}`, steps: [] };
     this.dirty = true;
+    this.selectedStep = null;
+    this.stepFilter = '';
     this.render();
+  }
+
+  /**
+   * Duplicate a stored macro into a new unsaved draft (appended slot).
+   * Nothing is written until Save — the normal storage pre-check and
+   * confirm dialog still apply.
+   */
+  private duplicateMacro(i: number): void {
+    if (this.busy) return;
+    const entries = this.entries();
+    const e = entries[i];
+    if (!e) return;
+    // "<name> copy", kept within the 255-byte name limit.
+    let name = `${e.name || 'macro'} copy`;
+    while (new TextEncoder().encode(name).length > 255) {
+      name = name.slice(0, -1);
+    }
+    this.selected = entries.length;
+    this.draft = {
+      name,
+      steps: e.steps.map((s) => ({ ...s })),
+    };
+    this.dirty = true;
+    this.selectedStep = null;
+    this.stepFilter = '';
+    this.render();
+    setStatus(`Duplicated "${e.name || '(unnamed)'}" as a new macro — edit it, then Save to send it to the keyboard.`);
   }
 
   /** Rebuild the full entry list with the draft applied, then write. */
@@ -725,8 +1006,13 @@ export class MacroPage {
         this.selected = null;
         this.draft = null;
         this.dirty = false;
+        this.selectedStep = null;
+        this.stepFilter = '';
       } else if (this.selected !== null && this.selected > i) {
         this.selected -= 1;
+      }
+      if (this.selectedStep !== null && this.draft && this.selectedStep >= this.draft.steps.length) {
+        this.selectedStep = null;
       }
       setStatus(`Deleted macro "${e.name}" — saved and checked on the keyboard.`);
       emit();

@@ -811,6 +811,101 @@ function liveProfile(): Uint8Array {
   check('analyzer silence level decays', quiet.level < loudLast.level);
 }
 
+// ── Macro Studio helpers (bead uol) ────────────────────────────────────
+
+import {
+  formatDelay,
+  macroEntryBytes,
+  macroRegionUsed,
+  projectRegionUsage,
+  stepSearchText,
+  validateMacroSteps,
+} from '../src/macro-studio.ts';
+
+{
+  const keyA = 4; // KeyA
+  const good: MacroStep[] = [
+    { action: 0, delayMs: 0, usage: keyA, kind: 'key' },
+    { action: 1, delayMs: 50, usage: keyA, kind: 'key' },
+  ];
+  check('validator clean macro', validateMacroSteps(good).length === 0);
+
+  const unreleased: MacroStep[] = [
+    { action: 0, delayMs: 0, usage: 225, kind: 'modifier' }, // ShiftLeft down
+    { action: 0, delayMs: 0, usage: keyA, kind: 'key' },
+    { action: 1, delayMs: 0, usage: keyA, kind: 'key' },
+  ];
+  const issues = validateMacroSteps(unreleased);
+  check(
+    'validator flags stuck modifier',
+    issues.some((i) => i.level === 'error' && /never released/.test(i.message)),
+  );
+
+  const strayUp: MacroStep[] = [{ action: 1, delayMs: 0, usage: keyA, kind: 'key' }];
+  check(
+    'validator flags release-without-press',
+    validateMacroSteps(strayUp).some((i) => /never pressed/.test(i.message)),
+  );
+
+  const doubleDown: MacroStep[] = [
+    { action: 0, delayMs: 0, usage: keyA, kind: 'key' },
+    { action: 0, delayMs: 10, usage: keyA, kind: 'key' },
+    { action: 1, delayMs: 0, usage: keyA, kind: 'key' },
+    { action: 1, delayMs: 0, usage: keyA, kind: 'key' },
+  ];
+  check(
+    'validator flags double press',
+    validateMacroSteps(doubleDown).some((i) => /still held/.test(i.message)),
+  );
+
+  const longDelay: MacroStep[] = [
+    { action: 0, delayMs: 60_000, usage: keyA, kind: 'key' },
+    { action: 1, delayMs: 0, usage: keyA, kind: 'key' },
+  ];
+  check(
+    'validator flags over-long delay',
+    validateMacroSteps(longDelay).some((i) => /unusually long pause/.test(i.message)),
+  );
+  const tooBig: MacroStep[] = [
+    { action: 0, delayMs: MAX_STEP_DURATION + 1, usage: keyA, kind: 'key' },
+    { action: 1, delayMs: 0, usage: keyA, kind: 'key' },
+  ];
+  check(
+    'validator flags >20-bit delay as error',
+    validateMacroSteps(tooBig).some((i) => i.level === 'error' && /too large/.test(i.message)),
+  );
+
+  const unknown: MacroStep[] = [
+    { action: 0, delayMs: 0, usage: 200, kind: 'key' },
+    { action: 1, delayMs: 0, usage: 200, kind: 'key' },
+  ];
+  check(
+    'validator flags unnamed key code',
+    validateMacroSteps(unknown).some((i) => /no name in the vendor key table/.test(i.message)),
+  );
+
+  // Storage accounting: 1 macro, 1-byte name, 2 steps → 4 + (1+1+8) = 14 B.
+  const one: MacroEntry = { name: 'a', steps: good };
+  check('entry bytes', macroEntryBytes(one) === 14, String(macroEntryBytes(one)));
+  check('region used', macroRegionUsed([one]) === 14, String(macroRegionUsed([one])));
+
+  // Overflow projection: many fat macros must exceed 512 B.
+  const fat: MacroEntry[] = Array.from({ length: 20 }, (_, i) => ({
+    name: `m${i}`,
+    steps: Array.from({ length: 20 }, () => ({ action: 0, delayMs: 0, usage: keyA, kind: 'key' as StepKind })),
+  }));
+  const proj = projectRegionUsage(fat, fat.length, { name: 'x', steps: good });
+  check('overflow projection detects >512', proj.usedBytes > MACRO_REGION_BYTES && !proj.fits);
+  check('overflow problem text', proj.problem !== null && /512-byte/.test(proj.problem));
+
+  const fits = projectRegionUsage([one], 0, { name: 'a', steps: good });
+  check('in-place replace fits', fits.fits && fits.usedBytes === 14);
+
+  check('search text finds key name', stepSearchText(good[0]!).includes('keya'));
+  check('search text finds press', stepSearchText(good[0]!).includes('press'));
+  check('formatDelay', formatDelay(8) === '8 ms' && formatDelay(1500) === '1.5 s');
+}
+
 function hex(v: number): string {
   return `0x${(v >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
 }
