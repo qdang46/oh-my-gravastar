@@ -851,7 +851,11 @@ mod tests {
             st.sent.push((report_id, data.to_vec()));
             Ok(())
         }
-        fn read(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>> {
+        fn read(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>> {
+            // Honor the zero-timeout flush probe: nothing "arrived yet".
+            if timeout.is_zero() {
+                return Ok(None);
+            }
             Ok(self.state.lock().unwrap().incoming.pop_front())
         }
         fn feature_exchange(
@@ -1109,7 +1113,8 @@ mod tests {
         assert_eq!(st.sent.len(), 38);
         let first = &st.sent[0].1;
         assert_eq!(first[0], WL_CMD_KEYMAP_WRITE);
-        assert_eq!(&first[1..4], &[37, 0, 0x80]); // total, idx0, byte2
+        // bytes 1..4 = total, byte2=(system<<7)|idx, byte3=(layer<<4)|14.
+        assert_eq!(&first[1..4], &[37, 0x80, 0x1E]);
         assert_eq!(first[3], (1 << 4) | 14); // layer<<4 | 14
         let last = &st.sent[36].1;
         assert_eq!(last[0], WL_CMD_KEYMAP_WRITE);
