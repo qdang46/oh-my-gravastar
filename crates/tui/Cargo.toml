@@ -1,0 +1,21 @@
+[package]
+name = "omg-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ratatui TUI dashboard for oh-my-gravastar (GravaStar devices)"
+
+[[bin]]
+name = "omg-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+omg-hid = { path = "../hid" }
+omg-model = { path = "../model" }
+omg-proto-he = { path = "../proto-he" }
+omg-proto-mouse = { path = "../proto-mouse" }
+omg-proto-sparkplayjoy = { path = "../proto-sparkplayjoy" }
+ratatui = "0.30"
+crossterm = "0.29"
