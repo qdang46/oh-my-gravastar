@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.ts && node scripts/smoke-core.ts && node scripts/smoke-scenes.ts",
+    "smoke-he": "node scripts/smoke-he.ts",
     "test": "node scripts/test-safety.ts && node scripts/test-agent.ts"
   },
   "devDependencies": {
