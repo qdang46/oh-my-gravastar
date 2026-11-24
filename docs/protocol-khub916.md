@@ -296,20 +296,128 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
   variants selected by `keyType`).
 - `pos = 8 + n*4` (key index → config/light table position),
   `effect_pos = 8 + n*3`, `light_pos = 8 + n*1`.
-- Tag `8` [live-observed 2026-11-25, semantics unknown]: the whole K1 Pro
-  Fn layer (arg `0x01`) uses it. Observed values and the physical key they
-  sit on — `0x08020000` Tab, `0x08030100` F6/Up, `0x08030200` F5/Down,
-  `0x08030201` `>.`, `0x08040001` `<,`, `0x08040100` Right, `0x08040200`
-  Left, `0x08000000` `\|`, `0x08000001` R_Shift. Not produced by any
-  vendor `case` in `be()` and absent from the `Ca` pool, so the vendor UI
-  cannot assign it — but firmware stores and acts on it. Bit layout
-  unproven. Treat as opaque: preserve byte-identical and never default to
-  0 (AGENTS.md §Safety 7). Note `0x00000000` in an Fn-layer slot means the
-  Fn combo does nothing — e.g. K1 Pro slots 4 (L_Shift) and 79 (Backspace)
-  read 0 on 2026-11-25, which is the "Fn+Shift doesn't work" symptom.
+- Tag `8` — **firmware-internal Fn-layer action code; vendor-undecodable**
+  (dedicated subsection "Tag 0x08 — Fn-layer action encoding" below).
+  Treat as opaque: preserve byte-identical and never default to 0
+  (AGENTS.md §Safety 7).
 - Combo keys (tag 0, special value list): bits encode two keys —
   `value = (keyA_mods | keyB_mods) << 16 | keyC_usage` (approx; see
   `setKeyboardComboKey`).
+
+### Tag 0x08 — Fn-layer action encoding [live-observed; vendor-undecodable]
+
+Reversing notes for bead `oh-my-gravastar-khub916-tag8-2vy` (2026-11-25).
+The K1 Pro Fn layer (keymap arg `0x01`) is dominated by tag-`0x08` values.
+This subsection records everything the evidence supports; semantics that
+are not proven are marked **unknown**.
+
+#### Vendor JS findings [code-verified]
+
+The vendor mirror (`docs/research/khub-webapp/`) contains **no decoder
+and no assignable value for tag 0x08** — exhaustive scan:
+
+- `be()` (the wired keymap decoder, `index-M8-m9qFR.deob.js` ~offset
+  26248) switches on `value>>>24` with cases `0, 3, 7, 32, 33, 34` only.
+  Tag 8 falls through: `type=""`, `name` resolved via `ut()` which finds
+  no pool entry → the vendor UI shows a **blank** label for every tag-8
+  slot. `setHistoryKeys()` (same file ~offset 154605/203094) repeats the
+  same case list — also no tag 8.
+- The sibling-protocol parsers `yt()`/`ft()` (~offset 77786/77896,
+  `8815`/`901` families) are even simpler (`type` checks tag 3 only) —
+  also no tag 8.
+- Every assignable `{value:N}` literal in the whole mirror has top byte
+  ∈ `{0x00, 0x01, 0x02, 0x05, 0x0A, 0x0D}` (866 legend-pool entries in
+  `Ca`/`ot`/`it`/`lt` = tags 0/1-mouse/2-media/0x0D-Fn; a few tag-5/0x0A
+  entries in sibling tables). **Zero tag-8 values** exist in any pool, so
+  the vendor UI cannot assign them.
+- Every embedded keyModel JSON (`index-cV1Bl4gC.js`, ~60 layouts) was
+  scanned for `"value":"0x…"` strings: top bytes ∈ `{0x00, 0x02, 0x03,
+  0x07, 0x0D}` only — again no 0x08. Default layouts DO ship tag-7
+  (`0x07 00 00 XX`, low16 ∈ {0x0B,0x0C,0x0D,0x14,0x1D,0x28}) and tag-3
+  macro refs in *hidden* (`display:false`) slots — see below.
+
+Conclusion: tag 0x08 is produced and consumed **entirely by firmware**.
+The vendor web configurator can display the Fn layer but cannot name,
+create, or modify these actions.
+
+#### K1 Pro slot↔key mapping [code-verified]
+
+The embedded `keyboard_916_K1_PRO.json` keyModel (126 entries, array
+index = keymap slot index, `pos = 8 + index*4`) confirms the physical
+layout. Notable entries:
+
+- Slot 4 = `L_shift` (pos 24), slot 79 = `Back` (pos 324) — matches the
+  live-read zero slots from the incident report.
+- Slot 59 = `Fn` (`0x0D000000`), slot 82 = `R_shift`, slot 80 = `|`,
+  slot 2 = `Tab`, slot 70 = `/?`, slot 64 = `>.`, slot 58 = `<,`,
+  slot 83 = `left`, slot 88 = `Up`, slot 89 = `Down`, slot 95 = `right`.
+- **Hidden firmware-reserved slots**: index 84 `volume-up`
+  (`0x02000E9`), index 85 `volume-down` (`0x02000EA`), index 86 unnamed
+  (`0x0700001D`, tag 7) — all `display:false`. The keymap space therefore
+  legitimately contains non-UI values; tag 8 is the same class of
+  firmware-resident data.
+
+#### Observed values [live-observed 2026-11-25]
+
+All observed Fn-layer (arg `0x01`) tag-8 values share the shape
+`0x08 GG II VV`:
+
+| value | key label (as recorded) | candidate physical slot [inferred] |
+|---|---|---|
+| `0x08000000` | `\|` | 80 (`|`) |
+| `0x08000001` | `R_Shift` | 82 (`R_shift`) |
+| `0x08020000` | `Tab` | 2 (`Tab`) |
+| `0x08020001` | `/?` | 70 (`/?`) |
+| `0x08030100` | `F6/Up` | 88 (`Up`) — label ambiguous |
+| `0x08030200` | `F5/Down` | 89 (`Down`) — label ambiguous |
+| `0x08030201` | `>.` | 64 (`>.`) |
+| `0x08030300` | `?` | unknown |
+| `0x08040001` | `<,` | 58 (`<,`) |
+| `0x08040100` | `Right` | 95 (`right`) |
+| `0x08040200` | `Left` | 83 (`left`) |
+
+Byte-field ranges observed: `GG ∈ {0x00, 0x02, 0x03, 0x04}` (0x01 never
+seen), `II ∈ {0x00..0x03}`, `VV ∈ {0x00, 0x01}`.
+
+#### Structural analysis [inferred — not proven]
+
+- The values are **not HID usages**: no observed low-24-bit pattern
+  matches the tag-0 `(mods<<16)|usage` shape, and e.g. `0x08020000` on
+  the Tab key does not contain usage `0x2B` anywhere.
+- `0x08 GG II VV` is consistent with a `[group][index][variant]` triple
+  (or equivalently `[page][row][col]` of a firmware function table), but
+  equally consistent with a flat 24-bit function ID — **bit layout
+  unknown**.
+- Every confidently-mapped position coincides with a **documented K1
+  Pro Fn lighting/system hotkey** (GravaStar manual + retail listings):
+  Fn+`|` = cycle 13 key-backlight effects; Fn+Tab = ambient-light mode;
+  Fn+↑/↓ = backlight brightness/effect speed; Fn+←/→ = brightness/speed;
+  Fn+`>.` = side-light modes; Fn+Shift+arrows = ambient-light controls.
+  This supports "tag 8 = firmware lighting/system function code"
+  **[inferred]** — the strongest hypothesis, not proven.
+- The `GG` groups do **not** cleanly map onto the manual's light
+  subsystems (keycap / ambient / side): `GG=0` holds `|` and `R_Shift`,
+  while `GG=3` and `GG=4` both contain arrow-cluster keys. Do not assume
+  `GG` = light zone.
+- `0x00000000` in an Fn-layer slot = **"no Fn action"** — the same
+  `Empty` encoding as the normal layer **[inferred]**: slots 4
+  (`L_shift`) and 79 (`Back`) read 0 while neighbouring lighting-cluster
+  keys carry tag-8; the manual documents Fn+LeftShift+arrow as the
+  ambient-light chord, so a zero L_Shift slot breaks exactly the
+  user-visible "Fn+Shift does nothing" symptom (2026-11-25 incident).
+  Whether `0` means "emit nothing" vs "pass through to base layer" is
+  **unknown** — either is consistent with the observed deadness.
+
+#### What would settle it [unknown]
+
+- A full arg-`0x01` dump from a factory-fresh K1 Pro (not the daily
+  driver; cmd 17 reset is off-limits per Safety) committed as a fixture,
+  plus live Fn-press observation per slot → value→action map.
+- Firmware extraction (UART/SWD or flash read) — the function table
+  `GG/II/VV` indexes is presumably compiled in.
+- Cross-model comparison: K1 / K98 / NP keyModels all ship hidden
+  firmware slots; reading their Fn layers would show whether `GG` is a
+  per-model function page or a stable global table.
 
 ### Profile blob (cmd 132/4) [code-verified]
 
@@ -442,6 +550,10 @@ are in `parseKeyboardProfile`/`waitDataPacket`/`inputReport`.
 
 ## 8. Unknowns / inferred items
 
+- Tag `0x08` (Fn-layer action code) is a **firmware-internal encoding the
+  vendor JS cannot decode or assign** — see "Tag 0x08 — Fn-layer action
+  encoding" in §6. Bit layout unknown; `0x00000000` = no Fn action
+  [inferred].
 - Byte 2/3/4 of the wired header are constant `0,1,0` in every observed
   command — likely fixed protocol version markers [inferred].
 - tagA/tagB pairs look like an expected-response channel tag; exact semantics
