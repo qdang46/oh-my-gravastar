@@ -109,6 +109,14 @@ const SOCD_DIRECTIONS: readonly { id: number; label: string }[] = [
   { id: 3, label: 'All cancel' },
 ];
 
+// Plain-language section titles (the vendor SOCD/MT/TGL jargon stays in
+// the short KIND_LABEL used inside status messages).
+const KIND_TITLE: Record<AdvKind, string> = {
+  mt: 'Tap-or-hold keys (MT)',
+  socd: 'Opposing keys (SOCD)',
+  tgl: 'Toggle keys (TGL)',
+};
+
 // ── Page ───────────────────────────────────────────────────────────────
 
 export class AdvPage {
@@ -177,7 +185,7 @@ export class AdvPage {
       c.append(el('h2', '', 'Advanced keys'));
       const body = el('div', 'card-body');
       body.append(
-        el('p', 'hint', 'Connect a keyboard to manage advanced keys — SOCD, mod-tap and toggle functions.'),
+        el('p', 'hint', 'Press the Connect button at the top right to manage advanced keys — opposing-key, tap-or-hold and toggle functions.'),
       );
       c.append(body);
       this.el.append(c);
@@ -213,7 +221,7 @@ export class AdvPage {
     const chips = el('div', 'chip-row');
     for (const k of ['mt', 'socd', 'tgl'] as const) {
       chips.append(
-        el('span', 'chip', `${KIND_LABEL[k]}: ${entries.filter((e) => e.kind === k).length} saved · ${bindings.filter((b) => b.kind === k).length} in use`),
+        el('span', 'chip', `${KIND_TITLE[k]}: ${entries.filter((e) => e.kind === k).length} saved · ${bindings.filter((b) => b.kind === k).length} in use`),
       );
     }
     body.append(chips);
@@ -266,7 +274,7 @@ export class AdvPage {
     const entries = this.entries().filter((e) => e.kind === kind);
     const bindings = this.bindings().filter((b) => b.kind === kind);
     const c = el('section', 'card');
-    c.append(el('h2', '', `${KIND_LABEL[kind]} advanced keys`));
+    c.append(el('h2', '', KIND_TITLE[kind]));
     const body = el('div', 'card-body');
 
     // Bindings table.
@@ -275,7 +283,7 @@ export class AdvPage {
     } else {
       const table = el('table', 'macro-table');
       const head = el('tr');
-      for (const h of ['Key', 'Entry', 'Function', 'How it works', 'Saved settings', '']) {
+      for (const h of ['Key', '#', 'Function', 'How it works', 'Saved settings', '']) {
         head.append(el('th', '', h));
       }
       const thead = el('thead');
@@ -316,7 +324,7 @@ export class AdvPage {
       body.append(el('p', 'hint', 'Saved settings on the keyboard:'));
       const htable = el('table', 'macro-table');
       const hhead = el('tr');
-      for (const h of ['Entry', 'Saved settings']) hhead.append(el('th', '', h));
+      for (const h of ['#', 'Saved settings']) hhead.append(el('th', '', h));
       const hthead = el('thead');
       hthead.append(hhead);
       htable.append(hthead);
@@ -388,8 +396,8 @@ export class AdvPage {
       time.max = '100';
       time.step = '1';
       time.value = '50';
-      time.title = 'How long you must hold the key before the Hold action fires';
-      row.append(field('Hold time (×10 ms)', time));
+      time.title = 'How long to hold the key before the Hold action fires — each step of 1 equals 10 ms';
+      row.append(field('Hold time', time));
       body.append(row);
       const go = btn(`Add MT key`, 'Saves the key binding and its settings to the keyboard');
       go.classList.add('primary');
@@ -453,10 +461,10 @@ export class AdvPage {
   private addHint(kind: AdvKind): string {
     switch (kind) {
       case 'mt':
-        return 'Mod-tap: a short press does the Tap action, a long press does the Hold ' +
+        return 'Tap-or-hold: a short press does the Tap action, a long press does the Hold ' +
           'action after the threshold. The key\'s current action is replaced.';
       case 'socd':
-        return 'SOCD: two opposing keys share one output; Direction picks what happens ' +
+        return 'Opposing keys: two opposite-direction keys (like W and S) share one output; Direction picks what happens ' +
           'when both are pressed at once. The keys\' current actions are saved.';
       case 'tgl':
         return 'Toggle: pressing the key switches the other key\'s action on or off ' +
@@ -487,9 +495,9 @@ export class AdvPage {
     if (
       !window.confirm(
         `${desc}\n\n` +
-          'This saves the change to the keyboard. Note: on some firmware the ' +
-          'saved settings may not stick — the page will tell you honestly if ' +
-          'that happens. Continue?',
+          'This saves the change to the keyboard — other keys and settings stay the same. ' +
+          'Note: on some firmware the saved settings may not stick — the page will ' +
+          'tell you honestly if that happens. Continue?',
       )
     ) {
       return;

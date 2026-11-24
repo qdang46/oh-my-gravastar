@@ -120,7 +120,8 @@ function renderDevice(root: HTMLElement): void {
     root.append(
       comingSoon(
         'Device',
-        'Connect your keyboard to see its model, firmware version and battery level.',
+        'Press the Connect button at the top right to see your keyboard\'s ' +
+          'model, firmware version and battery level.',
       ),
     );
     return;
@@ -163,11 +164,11 @@ function renderDevice(root: HTMLElement): void {
 
   const rawCard = el('section', 'card');
   rawCard.style.marginBottom = '0';
-  rawCard.append(el('h2', '', 'Device identifiers'));
+  rawCard.append(el('h2', '', 'Connection details'));
   const rawDl = el('dl', 'kv');
   kv(rawDl, 'Model id', snap.info.catalogModel ?? '—');
   kv(rawDl, 'Device ID', snap.info.uuid);
-  kv(rawDl, 'Settings data', `${snap.profile.raw.length} bytes`);
+  kv(rawDl, 'Stored settings', `${snap.profile.raw.length} bytes`);
   kv(
     rawDl,
     'Lighting mode',
@@ -180,7 +181,7 @@ function renderDevice(root: HTMLElement): void {
   );
   kv(rawDl, 'Lighting data', `${snap.lightData.length} bytes`);
   kv(rawDl, 'Macro data', `${snap.macro.length} bytes`);
-  kv(dl, 'HID', `${formatVidPid(app.connected!.device)} · ${app.connected!.device.productName ?? app.connected!.device.manufacturerName ?? ''}`);
+  kv(dl, 'Connection', `${formatVidPid(app.connected!.device)} · ${app.connected!.device.productName ?? app.connected!.device.manufacturerName ?? ''}`);
   rawCard.append(rawDl);
   body.append(rawCard);
 
@@ -199,7 +200,7 @@ function renderDevice(root: HTMLElement): void {
 
   const kmCard = el('section', 'card');
   kmCard.style.marginBottom = '0';
-  kmCard.append(el('h2', '', `Key assignments — layer ${app.layer}`));
+  kmCard.append(el('h2', '', `Key assignments — key set ${app.layer + 1}`));
   kmCard.append(el('p', 'hint', 'Every key position, in order.'));
   const kgrid = el('div', 'keygrid');
   const entries = snap.keymaps.get(app.layer) ?? [];
@@ -214,8 +215,8 @@ function renderDevice(root: HTMLElement): void {
 
   const jsonCard = el('section', 'card');
   jsonCard.style.marginBottom = '0';
-  jsonCard.append(el('h2', '', 'Everything as JSON'));
-  jsonCard.append(el('p', 'hint', 'All readable device data as one JSON document — for backups and the omg CLI.'));
+  jsonCard.append(el('h2', '', 'All data as JSON'));
+  jsonCard.append(el('p', 'hint', 'Everything the app can read from the keyboard, as one file — for backups and the omg CLI.'));
   const pre = el('pre', 'sec-log sec-json');
   pre.textContent = snapshotToJson(snap);
   jsonCard.append(pre);

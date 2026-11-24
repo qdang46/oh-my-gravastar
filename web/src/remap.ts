@@ -195,7 +195,7 @@ function confirmWrite(title: string, lines: string[], confirmLabel: string): Pro
     for (const line of lines) ul.append(el('li', '', line));
     modal.append(ul);
     modal.append(
-      el('p', 'hint warn', 'This sends the change to the keyboard and checks it was saved.'),
+      el('p', 'hint warn', 'Only the keys listed above change — everything else stays the same. The keyboard checks each change was saved.'),
     );
     const row = el('div', 'modal-actions');
     const cancel = el('button', 'btn', 'Cancel');
@@ -325,7 +325,8 @@ export function renderKeysPage(root: HTMLElement): void {
         'p',
         'hint',
         'The keyboard visualizer and key remapping need a connected keyboard. ' +
-          'Click a key, pick what it should do, then save.',
+          'Press the Connect button at the top right, then click a key, ' +
+          'pick what it should do, and save.',
       ),
     );
     root.append(c);
@@ -344,7 +345,7 @@ export function renderKeysPage(root: HTMLElement): void {
   const toolbar = el('div', 'segment-bar remap-toolbar');
   const layerBar = el('div', 'segment-bar');
   for (let layer = 0; layer < 4; layer++) {
-    const b = el('button', `segment-item${app.layer === layer ? ' active' : ''}`, `Layer ${layer}`);
+    const b = el('button', `segment-item${app.layer === layer ? ' active' : ''}`, `Key set ${layer + 1}`);
     b.type = 'button';
     b.addEventListener('click', () => void setLayer(layer));
     layerBar.append(b);
@@ -474,7 +475,7 @@ export function renderKeysPage(root: HTMLElement): void {
     pendingBadge.textContent = count > 0 ? `${count} unsaved` : '';
     pendingBadge.hidden = count === 0;
     applyBtn.disabled = busy || count === 0;
-    applyBtn.textContent = busy ? 'Saving…' : `Save${count > 0 ? ` (${count})` : ''}`;
+    applyBtn.textContent = busy ? 'Saving…' : count > 0 ? `Save all (${count})` : 'Save';
     discardBtn.disabled = busy || count === 0;
 
     // Selected-key info + per-key apply.

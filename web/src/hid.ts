@@ -319,7 +319,7 @@ export class Khub916Session {
     await this.configWrite(keymapWritePacket(layer, system, values));
     const back = await this.keyValues(arg);
     if (back.length > KEYMAP_ENTRIES) {
-      throw new Error('the keyboard returned an unexpected keymap size');
+      throw new Error('the keyboard returned an unexpected key list');
     }
     // Compare zero-padded to the full 128-slot table: devices report
     // only their populated slot count (K1 Pro: 126).
@@ -327,7 +327,7 @@ export class Khub916Session {
       (values[i] ?? 0) === (back[i] ?? 0),
     ).every(Boolean);
     if (!matches) {
-      throw new Error('key change was not confirmed by the keyboard');
+      throw new Error('the key change was not saved — the keyboard did not confirm it');
     }
     return { command: CMD.keymapWrite, verified: true };
   }
@@ -344,7 +344,7 @@ export class Khub916Session {
    */
   async writeMacroRegion(data: Uint8Array): Promise<WriteOutcome> {
     if (data.length === 0 || data.length > 512) {
-      throw new Error(`macro data has an invalid size (${data.length} bytes)`);
+      throw new Error(`the macro data has an invalid size (${data.length} bytes)`);
     }
     const payload = new Uint8Array(512);
     payload.set(data);
@@ -355,7 +355,7 @@ export class Khub916Session {
     const backPad = new Uint8Array(512);
     backPad.set(back.subarray(0, 512));
     if (!bytesEqual(backPad, payload)) {
-      throw new Error('macro save was not confirmed by the keyboard');
+      throw new Error('the macros were not saved — the keyboard did not confirm it');
     }
     return { command: CMD.macroWrite, verified: true };
   }
@@ -369,12 +369,12 @@ export class Khub916Session {
    */
   async writeProfile(profile: Uint8Array): Promise<WriteOutcome> {
     if (profile.length === 0 || profile.length > FEATURE_PAYLOAD_BYTES - HEADER_LEN) {
-      throw new Error(`device profile has an invalid size (${profile.length} bytes)`);
+      throw new Error(`the saved settings have an invalid size (${profile.length} bytes)`);
     }
     await this.configWrite(buildPacket(CMD.profileWrite, 0x00, 0x80, 0x00, profile));
     const back = await this.profile();
     if (!bytesEqual(back.raw, profile)) {
-      throw new Error('settings save was not confirmed by the keyboard');
+      throw new Error('the settings were not saved — the keyboard did not confirm it');
     }
     return { command: CMD.profileWrite, verified: true };
   }
@@ -387,7 +387,7 @@ export class Khub916Session {
   async writeCustomLightColors(colors: readonly Rgb[]): Promise<WriteOutcome> {
     if (colors.length !== CUSTOM_LIGHT_SLOTS) {
       throw new Error(
-        `per-key colour save needs exactly ${CUSTOM_LIGHT_SLOTS} colours, got ${colors.length}`,
+        `per-key colours need exactly ${CUSTOM_LIGHT_SLOTS} entries, got ${colors.length}`,
       );
     }
     const payload = new Uint8Array(CUSTOM_LIGHT_SLOTS * 3);
@@ -402,7 +402,7 @@ export class Khub916Session {
       back.length === colors.length &&
       back.every((b, i) => b.r === colors[i]?.r && b.g === colors[i]?.g && b.b === colors[i]?.b);
     if (!matches) {
-      throw new Error('per-key colours were not confirmed by the keyboard');
+      throw new Error('the per-key colours were not saved — the keyboard did not confirm it');
     }
     return { command: CMD.customLightWrite, verified: true };
   }
@@ -417,7 +417,7 @@ export class Khub916Session {
     await this.configWrite(buildLightDataPacket(data));
     const back = await this.lightColorData();
     if (back.length < data.length || !bytesEqual(back.slice(0, data.length), data)) {
-      throw new Error('lighting settings were not confirmed by the keyboard');
+      throw new Error('the lighting settings were not saved — the keyboard did not confirm it');
     }
     return { command: CMD.lightDataWrite, verified: true };
   }
@@ -460,7 +460,7 @@ export class Khub916Session {
    */
   async writeAdvKeyConfig(blob: Uint8Array): Promise<WriteOutcome> {
     if (blob.length !== ADV_BLOB_BYTES) {
-      throw new Error(`advanced-key data has an invalid size (${blob.length} bytes)`);
+      throw new Error(`the advanced-key data has an invalid size (${blob.length} bytes)`);
     }
     await this.configWrite(advKeyWritePacket(blob));
     const want = normalizeBlob(blob);
@@ -491,7 +491,7 @@ export class Khub916Session {
   async writeKeyConfiguration(values: readonly number[]): Promise<WriteOutcome> {
     if (values.length === 0 || values.length > KEYMAP_ENTRIES) {
       throw new Error(
-        `advanced-key save needs 1..=${KEYMAP_ENTRIES} values, got ${values.length}`,
+        `advanced-key save needs between 1 and ${KEYMAP_ENTRIES} values, got ${values.length}`,
       );
     }
     await this.configWrite(keyConfigurationWritePacket(values));
@@ -507,7 +507,7 @@ export class Khub916Session {
       const back = await this.keyConfiguration();
       if (back.length > KEYMAP_ENTRIES) {
         throw new Error(
-          `advanced-key read-back has an unexpected size (${back.length})`,
+          `the keyboard returned an unexpected advanced-key reply (${back.length} bytes)`,
         );
       }
       const matches = want.every((w, i) => w === (back[i] ?? 0));
@@ -517,7 +517,7 @@ export class Khub916Session {
       if (attempt === 10) break;
       await sleep(50);
     }
-    throw new Error('advanced-key save was not confirmed by the keyboard');
+    throw new Error('the advanced-key change was not saved — the keyboard did not confirm it');
   }
 }
 
@@ -570,7 +570,7 @@ export async function probeReportId(
       lastErr = `channel ${id}: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
-  throw new Error(`the keyboard did not answer on any known channel (${lastErr})`);
+  throw new Error('the keyboard did not respond — try unplugging the USB cable and plugging it in again');
 }
 
 function range(from: number, to: number): number[] {
@@ -610,10 +610,10 @@ export interface ConnectedKhub {
 export async function openKhub916(device: HIDDevice): Promise<ConnectedKhub> {
   const match = pickCollection(device);
   if (!match) {
-    throw new Error('this does not look like a supported GravaStar keyboard');
+    throw new Error('that device does not look like a supported GravaStar keyboard');
   }
   if (match.kind === 'wireless') {
-    throw new Error('wireless dongle connections are not supported yet — plug in with USB');
+    throw new Error('wireless keyboards are not supported yet — plug the keyboard in with a USB cable');
   }
   await device.open();
   try {

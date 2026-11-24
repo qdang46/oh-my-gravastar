@@ -23,7 +23,7 @@ export interface PoolEntry {
 
 export const POOL_GROUPS: readonly { id: PoolGroup; label: string }[] = [
   { id: 'basic', label: 'Basic' },
-  { id: 'system', label: 'System' },
+  { id: 'system', label: 'System keys' },
   { id: 'mouse', label: 'Mouse' },
   { id: 'media', label: 'Media' },
   { id: 'edit', label: 'Edit / Apps' },

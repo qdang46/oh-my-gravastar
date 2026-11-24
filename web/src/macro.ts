@@ -62,6 +62,39 @@ function field(label: string, input: HTMLElement): HTMLElement {
   return wrap;
 }
 
+
+/** Plain-language label for a `MACRO_KEY_TABLE` name (display only —
+ *  the option value stays the vendor name so it round-trips). */
+function stepKeyDisplay(name: string): string {
+  const FRIENDLY: Record<string, string> = {
+    ESC: 'Esc', Backquote: '`', Tab: 'Tab', CapsLock: 'Caps Lock',
+    ShiftLeft: 'Left Shift', ControlLeft: 'Left Ctrl', MetaLeft: 'Left Win',
+    AltLeft: 'Left Alt', AltRight: 'Right Alt', ShiftRight: 'Right Shift',
+    ControlRight: 'Right Ctrl', Minus: '-', Equal: '=', BracketLeft: '[',
+    BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'",
+    Comma: ',', Period: '.', Slash: '/', Space: 'Space', Enter: 'Enter',
+    Back: 'Backspace', ContextMenu: 'Menu key', Print: 'Print Screen',
+    Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End',
+    PageUp: 'Page Up', PageDown: 'Page Down',
+    ArrowLeft: 'Left arrow', ArrowRight: 'Right arrow',
+    ArrowUp: 'Up arrow', ArrowDown: 'Down arrow',
+    ScrollLock: 'Scroll Lock', NumLock: 'Num Lock', Pause: 'Pause',
+    Fn: 'Fn', counter: 'Counter',
+    MouseLeft: 'Mouse left click', MouseMiddle: 'Mouse middle click',
+    MouseRight: 'Mouse right click', MouseBack: 'Mouse back button',
+    MouseForward: 'Mouse forward button',
+  };
+  const f = FRIENDLY[name];
+  if (f !== undefined) return f;
+  const dk = /^Key([A-Z])$/.exec(name);
+  if (dk) return dk[1]!;
+  const dd = /^Digit([0-9])$/.exec(name);
+  if (dd) return dd[1]!;
+  const np = /^Numpad(.+)$/.exec(name);
+  if (np) return `Num ${np[1]}`;
+  return name;
+}
+
 // ── Page ────────────────────────────────────────────────────────────────
 
 interface Draft {
@@ -119,7 +152,7 @@ export class MacroPage {
       c.append(el('h2', '', 'Macro'));
       const body = el('div', 'card-body');
       body.append(
-        el('p', 'hint', 'Connect a keyboard to manage its saved macros.'),
+        el('p', 'hint', 'Press the Connect button at the top right to manage the macros saved on your keyboard.'),
       );
       c.append(body);
       this.el.append(c);
@@ -140,7 +173,7 @@ export class MacroPage {
         'p',
         'hint',
         `About ${this.freeBytes()} of ${MACRO_REGION_BYTES} bytes of macro storage is free. ` +
-          'Saving writes the whole list to the keyboard and checks it was stored correctly.',
+          'Saving sends the whole list to the keyboard and checks it was stored correctly.',
       ),
     );
 
@@ -204,8 +237,8 @@ export class MacroPage {
         'p',
         'hint',
         `${isNew ? `New macro #${this.selected}` : `Editing macro #${this.selected}`} — ` +
-          'each step is a key press or release with a delay in milliseconds ' +
-          `(up to ${MAX_STEP_DURATION.toLocaleString()}). ` +
+          'each step is a key press or release, with a pause in milliseconds ' +
+          `in between (up to ${MAX_STEP_DURATION.toLocaleString()}). ` +
           'Changes are only sent to the keyboard when you save.',
       ),
     );
@@ -240,7 +273,7 @@ export class MacroPage {
     body.append(addStep);
 
     // JSON import (docs/macro-schema.md) — handy for porting CLI macros.
-    const importBtn = btn('Import steps JSON…');
+    const importBtn = btn('Import steps (JSON)…', 'Paste a steps list copied from the omg CLI — for advanced users');
     importBtn.disabled = this.busy;
     importBtn.addEventListener('click', () => {
       const text = window.prompt(
@@ -294,7 +327,7 @@ export class MacroPage {
     if (!draft) return;
     const table = el('table', 'macro-table macro-steps-table');
     const head = el('tr');
-    for (const h of ['#', 'Action', 'Key', 'Kind', 'Delay (ms)', '']) {
+    for (const h of ['#', 'Action', 'Key', 'Key type', 'Pause (ms)', '']) {
       head.append(el('th', '', h));
     }
     const thead = el('thead');
@@ -338,7 +371,7 @@ export class MacroPage {
       for (const [name, usage] of MACRO_KEY_TABLE) {
         // Fn/counter exceed the step's u8 code byte — not encodable.
         if (usage > 0xff) continue;
-        const o = el('option', '', name);
+        const o = el('option', '', stepKeyDisplay(name));
         o.value = name;
         keySel.append(o);
       }
@@ -394,7 +427,7 @@ export class MacroPage {
           this.dirty = true;
         } else {
           delay.value = String(step.delayMs);
-          setStatus(`Delay must be a whole number of milliseconds between 0 and ${MAX_STEP_DURATION}`, true);
+          setStatus(`Pause must be a whole number of milliseconds between 0 and ${MAX_STEP_DURATION}`, true);
         }
       });
       const tdDelay = el('td');
@@ -465,7 +498,7 @@ export class MacroPage {
       el(
         'p',
         'hint',
-        'Assigns a saved macro to one key on a chosen layer. ' +
+        'Runs a saved macro when you press one key on a chosen key set. ' +
           'The macro must be saved on the keyboard first.',
       ),
     );
@@ -496,16 +529,16 @@ export class MacroPage {
     slotInput.max = String(KEYMAP_ENTRIES - 1);
     slotInput.value = '0';
     slotInput.placeholder = '0–127';
-    row.append(field('Key number', slotInput));
+    row.append(field('Key position', slotInput));
 
     const layerSel = el('select', 'macro-select') as HTMLSelectElement;
     for (let l = 0; l < 4; l++) {
-      const o = el('option', '', `Layer ${l}`);
+      const o = el('option', '', `Key set ${l + 1}`);
       o.value = String(l);
       layerSel.append(o);
     }
     layerSel.value = String(app.layer);
-    row.append(field('Layer', layerSel));
+    row.append(field('Key set', layerSel));
     body.append(row);
 
     // Rarely needed — the defaults (type 1, loop 1) cover normal macros.
@@ -519,7 +552,7 @@ export class MacroPage {
     typeInput.min = '1';
     typeInput.max = '255';
     typeInput.value = '1';
-    advRow.append(field('Type', typeInput));
+    advRow.append(field('Macro type', typeInput));
 
     const loopInput = el('input', 'macro-num') as HTMLInputElement;
     loopInput.type = 'number';
@@ -542,7 +575,7 @@ export class MacroPage {
     btnRow.append(bind, unbind);
     body.append(btnRow);
     body.append(
-      el('p', 'hint', 'Type the key number (0–127) — click a key on the Keys page to see its number.'),
+      el('p', 'hint', 'Type the key position (0–127). On the Keys page, click a key to see its position.'),
     );
 
     c.append(body);
@@ -613,7 +646,7 @@ export class MacroPage {
     const desc = isNew
       ? `Create new macro "${entry.name}" with ${entry.steps.length} step(s)`
       : `Replace macro "${entries[slot]?.name ?? ''}" with "${entry.name}" (${entry.steps.length} step(s))`;
-    if (!window.confirm(`${desc}\n\nSave all macros to the keyboard?`)) {
+    if (!window.confirm(`${desc}\n\nSave the whole macro list to the keyboard? Only the macros change — keys and lighting stay the same.`)) {
       return;
     }
 
@@ -662,7 +695,7 @@ export class MacroPage {
     if (
       !window.confirm(
         `Delete macro "${e.name}" (${e.steps.length} step(s))?\n\n` +
-          'This removes it from the keyboard. Keys already assigned to it will stop working.',
+          'This removes it from the keyboard — keys already assigned to it will stop working. Your other macros are not affected.',
       )
     ) {
       return;
@@ -702,7 +735,7 @@ export class MacroPage {
     const slot = Number(slotInput.value);
     const layer = Number(layerSel.value);
     if (!Number.isInteger(slot) || slot < 0 || slot >= KEYMAP_ENTRIES) {
-      setStatus(`Key number must be a whole number between 0 and ${KEYMAP_ENTRIES - 1}`, true);
+      setStatus(`Key position must be a whole number between 0 and ${KEYMAP_ENTRIES - 1}`, true);
       return;
     }
     const arg = (layer & 3); // system bit stays 0 in this UI
@@ -730,16 +763,16 @@ export class MacroPage {
     const before = await oldLabel().catch(() => 'unknown');
     const macroName = unbind ? '' : (this.entries()[index]?.name ?? `#${index}`);
     const desc = unbind
-      ? `Clear key ${slot} on layer ${layer} (currently ${before})`
-      : `Assign macro "${macroName}" to key ${slot} on layer ${layer} (currently ${before})`;
-    if (!window.confirm(`${desc}\n\nSave this change to the keyboard?`)) return;
+      ? `Clear key ${slot} on key set ${layer + 1} (currently ${before})`
+      : `Assign macro "${macroName}" to key ${slot} on key set ${layer + 1} (currently ${before})`;
+    if (!window.confirm(`${desc}\n\nSave this change to the keyboard? Nothing else changes.`)) return;
 
     this.busy = true;
     this.render();
     try {
       const values = await app.connected.session.keyValues(arg);
       if (slot >= values.length) {
-        throw new Error(`key ${slot} is out of range — the keymap only has ${values.length} entries`);
+        throw new Error(`key ${slot} is out of range — the keyboard only has ${values.length} key positions`);
       }
       const nextVals = values.slice();
       while (nextVals.length < KEYMAP_ENTRIES) nextVals.push(0);

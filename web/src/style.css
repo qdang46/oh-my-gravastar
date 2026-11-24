@@ -1543,4 +1543,24 @@ input[type='color'] {
   .mode-grid {
     grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   }
+
+  /* Wide tables (macro steps, advanced keys) scroll inside the card
+     instead of pushing the page wider than the screen. */
+  .card {
+    overflow-x: auto;
+  }
+
+  .kb-hero {
+    padding: var(--space-3);
+  }
+
+  /* Field rows (label + input) wrap so inputs never overflow. */
+  .macro-field {
+    flex-wrap: wrap;
+  }
+
+  .macro-name {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
 }

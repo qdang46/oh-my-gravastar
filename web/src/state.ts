@@ -108,7 +108,7 @@ export async function connect(): Promise<void> {
     setStatus('Pick your keyboard in the browser window…');
     const device = await requestKhubDevice();
     if (!device) {
-      setStatus('No keyboard selected.');
+      setStatus('Keyboard picker closed — press Connect to try again.');
       return;
     }
     setStatus('Connecting…');

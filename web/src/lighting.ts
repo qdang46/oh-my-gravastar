@@ -916,7 +916,7 @@ class LightingView {
     const blob = new Blob([this.configJson()], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'khub916-light.json';
+    a.download = 'keyboard-lighting.json';
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -935,8 +935,8 @@ class LightingView {
         'p',
         'hint',
         'This writes the new effect, colours and speed to the keyboard and ' +
-          'checks each step was saved correctly. The keyboard may blink while ' +
-          'it updates.',
+          'checks each step was saved correctly. Key assignments and macros ' +
+          'stay the same. The keyboard may blink while it updates.',
       ),
     );
     modal.append(el('p', 'hint', 'Exact settings that will be sent:'));

@@ -248,7 +248,7 @@ function sessionWrites(session: unknown): KhubWrites {
   return session as KhubWrites;
 }
 
-const PENDING = 'not supported in this build yet';
+const PENDING = 'not available in this version yet';
 
 /**
  * Parse a schema-v1 profile file and turn its khub916 `state` into the
@@ -297,7 +297,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
       const arg = Number(argStr);
       if (!Number.isInteger(arg) || arg < 0 || arg > 7) continue;
       if (!Array.isArray(raw)) {
-        skipped.push(`key assignments (layer ${argStr}): unreadable data`);
+        skipped.push(`key assignments (set ${argStr}): unreadable data`);
         continue;
       }
       const values: number[] = [];
@@ -313,24 +313,24 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
         }
       }
       if (bad || values.length === 0) {
-        skipped.push(`key assignments (layer ${argStr}): unreadable values`);
+        skipped.push(`key assignments (set ${argStr}): unreadable values`);
         continue;
       }
       jobs.push({ arg, values });
     }
     if (jobs.length) {
       if (!w.writeKeymap) {
-        skipped.push(`key assignments (${jobs.length} layer(s)): ${PENDING}`);
+        skipped.push(`key assignments (${jobs.length} set(s)): ${PENDING}`);
       } else {
         const writeKeymap = w.writeKeymap.bind(c.session);
         sections.push({
           name: 'Key assignments',
-          summary: `${jobs.length} key layer(s)`,
+          summary: `${jobs.length} key set(s)`,
           apply: async () => {
             const done: string[] = [];
             for (const j of jobs) {
               const out = await writeKeymap(j.arg & 3, (j.arg >> 2) & 1, j.values);
-              done.push(`layer ${j.arg & 3}${out.verified ? ' ✓' : ''}`);
+              done.push(`set ${(j.arg & 3) + 1}${out.verified ? ' ✓' : ''}`);
             }
             return `saved (${done.join(', ')})`;
           },
@@ -403,7 +403,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     const bytes = hexToBytes(ld);
     if (bytes && bytes.length > 0) {
       if (!w.writeLightData) {
-        skipped.push(`lighting effects (${bytes.length} bytes): ${PENDING}`);
+        skipped.push(`lighting effects (${bytes.length} bytes of data): ${PENDING}`);
       } else {
         const writeLightData = w.writeLightData.bind(c.session);
         sections.push({
@@ -426,7 +426,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     const bytes = hexToBytes(mx);
     if (bytes && bytes.length > 0 && bytes.length <= 512) {
       if (!w.writeMacroRegion) {
-        skipped.push(`macros (${bytes.length} bytes): ${PENDING}`);
+        skipped.push(`macros (${bytes.length} bytes of data): ${PENDING}`);
       } else {
         const writeMacro = w.writeMacroRegion.bind(c.session);
         sections.push({
@@ -447,7 +447,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
   if (state.profile && typeof state.profile === 'object') {
     const p = state.profile as Record<string, unknown>;
     skipped.push(
-      'raw device profile (sleep time, light mode): not applied — change those ' +
+      'sleep time and lighting mode: not applied by import — change those ' +
         'on the Sleep timer and Lighting pages instead',
     );
   }
@@ -571,7 +571,7 @@ function renderConfig(root: HTMLElement): void {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        a.download = `omg-khub916-${stamp}.json`;
+        a.download = `omg-keyboard-backup-${stamp}.json`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
         setStatus('Backup file downloaded.');
@@ -645,7 +645,7 @@ function renderConfig(root: HTMLElement): void {
       const applyBtn = el(
         'button',
         'sec-btn sec-btn-danger',
-        importConfirm ? `Yes — write ${p.sections.length} section(s) to the keyboard` : 'Write to keyboard',
+        importConfirm ? `Yes — write ${p.sections.length} part(s) to the keyboard` : 'Write to keyboard',
       );
       applyBtn.type = 'button';
       applyBtn.disabled = importBusy || app.busy;
@@ -680,7 +680,7 @@ function renderConfig(root: HTMLElement): void {
       });
       im.body.append(applyBtn);
       im.body.append(
-        el('p', 'hint warn', 'This writes to the keyboard and checks each part afterwards.'),
+        el('p', 'hint warn', 'Only the parts listed above change — everything else stays the same. Each part is checked on the keyboard afterwards.'),
       );
     }
     if (p.skipped.length) {
@@ -743,7 +743,7 @@ function renderSetting(root: HTMLElement): void {
     dl,
     'Note',
     'The vendor app only shows this for wireless keyboards and warns it may ' +
-      'have no effect when plugged in — your mileage may vary.',
+      'not work while the keyboard is plugged in — results may vary.',
   );
   c.body.append(dl);
 
@@ -809,6 +809,9 @@ function renderSetting(root: HTMLElement): void {
   });
   row.append(applyBtn);
   c.body.append(row);
+  c.body.append(
+    el('p', 'hint', 'Only the sleep time changes — lighting and key assignments stay the same.'),
+  );
 
   if (sleepLog.length) {
     const pre = el('pre', 'sec-log');
