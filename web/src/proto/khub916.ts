@@ -223,6 +223,25 @@ export function parseProfile(raw: Uint8Array): ProfileInfo {
   };
 }
 
+/**
+ * Vendor `setKeyboardSleepTime` / Rust `Profile::with_sleep_seconds`:
+ * copy of the profile blob with `raw[24] = seconds`. Everything else —
+ * including the trailing `5A A5` marker — is preserved verbatim.
+ * Throws when the blob is too short for the field or `seconds` is not a
+ * u8. Pure function; the caller owns the cmd-4 write + read-back verify.
+ */
+export function profileWithSleepSeconds(raw: Uint8Array, seconds: number): Uint8Array {
+  if (raw.length <= 24) {
+    throw new Error(`khub916 profile too short for sleep field: ${raw.length} bytes`);
+  }
+  if (!Number.isInteger(seconds) || seconds < 0 || seconds > 255) {
+    throw new Error(`khub916 sleep seconds out of range: ${seconds}`);
+  }
+  const v = raw.slice();
+  v[24] = seconds;
+  return v;
+}
+
 export interface LightColor {
   index: number;
   /** Position in the keymap domain: `pos = 8 + index*4`. */

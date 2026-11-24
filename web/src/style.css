@@ -636,3 +636,81 @@ a:focus-visible,
     margin-bottom: var(--space-2);
   }
 }
+
+/* ── Secondary pages (bead jwb) ───────────────────────────────────────── */
+
+.sec-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+  align-items: center;
+  margin-top: var(--space-3, 12px);
+}
+
+.sec-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  transition: background 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.sec-btn:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.sec-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sec-btn-danger {
+  border-color: rgba(255, 77, 141, 0.45);
+}
+
+.sec-btn-danger:hover:not(:disabled) {
+  background: rgba(255, 77, 141, 0.12);
+}
+
+.sec-input {
+  width: 110px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+}
+
+.sec-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(24, 144, 255, 0.32);
+}
+
+.sec-file {
+  margin-top: var(--space-2, 8px);
+  font-size: 13px;
+  color: var(--fg-2, var(--fg));
+}
+
+.sec-log {
+  margin-top: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.sec-json {
+  max-height: 480px;
+}

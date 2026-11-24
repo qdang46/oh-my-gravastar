@@ -11,9 +11,20 @@
 import { app, ensureKeymap, setLayer, subscribe, type KeyEntry } from './state.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, keyIndexOf, type KeyBlock } from './k1pro-layout.ts';
 import { KeyboardView } from './keyboard.ts';
+import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { formatVidPid } from './hid.ts';
 
-export type PageId = 'home' | 'lighting' | 'keys' | 'macro' | 'advanced' | 'device';
+export type PageId =
+  | 'home'
+  | 'lighting'
+  | 'keys'
+  | 'macro'
+  | 'advanced'
+  | 'device'
+  | 'basic'
+  | 'config'
+  | 'rhythm'
+  | 'setting';
 
 export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   { id: 'home', path: '/home', title: 'Home' },
@@ -22,6 +33,9 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   { id: 'macro', path: '/macro', title: 'Macro' },
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'device', path: '/device', title: 'Device' },
+  // Secondary pages (bead jwb): vendor basicFunctions / configurationManagement
+  // / rhythm / setting — implemented in pages-secondary.ts.
+  ...SECONDARY_PAGES,
 ] as const;
 
 export function pageFromHash(hash: string): PageId {
@@ -258,6 +272,16 @@ function renderDevice(root: HTMLElement): void {
   });
   kmCard.body.append(kgrid);
   root.append(kmCard.card);
+
+  // JSON view of everything the snapshot holds (bead jwb — deviceOverview).
+  const jsonCard = card('Snapshot JSON');
+  jsonCard.body.append(
+    el('p', 'hint', 'Everything readable today, as one JSON document.'),
+  );
+  const pre = el('pre', 'sec-log sec-json');
+  pre.textContent = snapshotToJson(snap);
+  jsonCard.body.append(pre);
+  root.append(jsonCard.card);
 }
 
 // ── Placeholder pages ──────────────────────────────────────────────────
@@ -320,6 +344,7 @@ const renderers: Record<PageId, (root: HTMLElement) => void> = {
   macro: renderMacro,
   advanced: renderAdvanced,
   device: renderDevice,
+  ...SECONDARY_RENDERERS,
 };
 
 let currentPage: PageId | null = null;
