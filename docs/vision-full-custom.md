@@ -293,3 +293,27 @@ pretend to create firmware features the hardware lacks.
 (screens/components/interaction/design system), `IMPLEMENTATION-ROADMAP.md`
 (P0/P1/P2 + deps). Start with Capability Registry + Safety Engine +
 Feature Inventory.
+
+## Product direction updates (post-audit, user-approved)
+
+**Three interfaces, one core.** UI = visual configurator (deep but
+progressive disclosure, no protocol jargon required). CLI = agent
+control surface. Shared core = capability registry + validation +
+safety policy + transaction executor — no duplicated logic.
+
+**Agent interface = CLI + JSON Schema + JSON payload** (not CLI-only,
+not schema-only): `omg schema <cmd>` emits JSON Schema generated from
+the same clap definitions that execute; `omg device discover` for
+capability discovery; `omg plan create/inspect/validate/apply` for
+multi-step workflows with diff/risk/verify. JSON payloads carry complex
+configs (lighting scenes, plans); profile JSON stays the storage
+format. No monolithic config.json as the sole agent interface.
+
+**Connection lifecycle (P0, bead grd):** auto-reconnect opens a
+read-only session; one explicit "Enable editing" unlocks writes per
+session; HID connect/disconnect events update UI instantly; last-used
+device persisted; never auto-write on reconnect.
+
+**UX model:** every page converges on Edit → Preview → Apply → Verify;
+progressive disclosure replaces jargon-first (Normal key / Layer
+switch / Tap-or-hold / Toggle / More customization).
