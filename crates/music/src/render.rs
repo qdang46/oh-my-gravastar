@@ -16,7 +16,7 @@ pub const KEY_SLOTS: usize = 126;
 /// One cmd-8 frame payload: 126 keys × RGB planar.
 pub const FRAME_BYTES: usize = KEY_SLOTS * 3;
 /// Bumped when the visual mapping changes materially.
-pub const RENDERER_VERSION: u32 = 2;
+pub const RENDERER_VERSION: u32 = 3;
 
 /// Tuning knobs for [`render_frame`]. All energies are 0..1.
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +33,19 @@ pub struct FrameParams {
     /// all per-frame ages by `30/fps` so effects keep the same wall-clock
     /// timing at any stream rate (default 30 = reference).
     pub fps: f32,
+    /// Dim uniform base brightness between beats, 0..1 (spec:
+    /// "background brightness"). Scaled by audio level so silence
+    /// still renders black.
+    pub background: f32,
+    /// Beat/impact intensity multiplier (spec: "beat intensity"),
+    /// 0.0–2.0 typical.
+    pub beat_intensity: f32,
+    /// Envelope attack speed multiplier (spec: "attack"): >1 snaps
+    /// brighter faster, <1 softens the rise. 0.25–4.0.
+    pub attack: f32,
+    /// Envelope decay speed multiplier (spec: "decay"): >1 dims
+    /// faster after a beat, <1 lingers. 0.25–4.0.
+    pub decay: f32,
 }
 
 impl Default for FrameParams {
@@ -43,6 +56,10 @@ impl Default for FrameParams {
             hue_speed: 0.05,
             saturation: 1.0,
             fps: 30.0,
+            background: 0.0,
+            beat_intensity: 1.0,
+            attack: 1.0,
+            decay: 1.0,
         }
     }
 }
@@ -154,7 +171,11 @@ impl SpectrumViz {
         for (i, st) in self.bands.iter_mut().enumerate() {
             let target =
                 (bands.spectrum[i] * self.params.sensitivity * bands.agc).clamp(0.0, 1.0);
-            st.env += if target > st.env { ATTACK } else { DECAY } * (target - st.env);
+            // attack/decay params scale the per-frame lerp factors;
+            // clamped below 1.0 so envelopes never overshoot.
+            let atk = (ATTACK * self.params.attack).min(0.98);
+            let dcy = (DECAY / self.params.decay).clamp(0.05, 0.98);
+            st.env += if target > st.env { atk } else { dcy } * (target - st.env);
             if target > st.peak {
                 st.peak = target;
                 st.peak_age = 0;
@@ -196,6 +217,9 @@ impl SpectrumViz {
             // keys dark while others carry the spectrum.
             v = v.powf(1.6);
             v += bands.bass * 0.10; // bass pulse lifts everything slightly
+            // Configurable background floor, gated by level so silence
+            // still renders black (spec: "background brightness").
+            v += self.params.background * bands.level.clamp(0.0, 1.0);
             v = (v * self.params.brightness + self.flash * 0.25 * (1.0 - x)).clamp(0.0, 1.0);
 
             // Frequency-mapped hue + slow drift.
@@ -351,13 +375,29 @@ impl BeatViz {
         // and onsets read clearly instead of drowning in base light.
         let base = self.spec.frame(bands, t);
         let gate = (bands.level * 1.8).clamp(0.0, 1.0);
+        let bi = self.params.beat_intensity.clamp(0.0, 2.0);
+        // Uniform background floor (spec: "background brightness") —
+        // dim warm field between beats, gated by level so silence is
+        // still black. BeatViz's ambient SpectrumViz already carries a
+        // 12%-scaled copy; this is the full-strength layer.
+        let bg = self.params.background.clamp(0.0, 1.0) * gate * 0.6;
         let mut out = [0u8; FRAME_BYTES];
         for k in 0..KEY_SLOTS {
             let (x, y) = self.pos[k];
             let mut add = [0.0f32; 3];
             for im in &self.impacts {
                 let age = self.frame_no.wrapping_sub(im.born) as f32 * age_scale;
-                let s = (im.strength * self.params.brightness * 1.8).min(1.0);
+                // Attack ramp: brightness rises over ~4 reference frames
+                // scaled by params.attack; decay speeds every envelope
+                // below via `dcy`.
+                let ramp = ((age + 1.0) * self.params.attack / 4.0).min(1.0);
+                let dcy = self.params.decay.clamp(0.25, 4.0);
+                let s = (im.strength
+                    * self.params.brightness
+                    * 1.8
+                    * self.params.beat_intensity)
+                .min(1.0)
+                    * ramp;
                 let (r, g, b) = match im.kind {
                     BeatKind::Kick => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
@@ -370,8 +410,8 @@ impl BeatViz {
                         let ring = (-((d - radius).powi(2)) / (2.0 * sigma * sigma)).exp();
                         // Bright core at the impact point on the first
                         // ~0.2 s — the ring alone leaves the centre dark.
-                        let core = (-d / 0.10).exp() * (-age / 6.0).exp();
-                        let env = (-age / 24.0).exp();
+                        let core = (-d / 0.10).exp() * (-age * dcy / 6.0).exp();
+                        let env = (-age * dcy / 24.0).exp();
                         // Rings dim as they spread (Hypercolor age_fade).
                         let spread_fade = (1.0 - radius * 0.5).clamp(0.0, 1.0);
                         let i = (s * (ring * spread_fade + core * 0.8) * env).min(1.0);
@@ -382,7 +422,7 @@ impl BeatViz {
                         let band = (-((x - p).powi(2)) / (2.0 * 0.05f32.powi(2))).exp();
                         let wake = ((p - x) * im.dir).max(0.0);
                         let trail = (-wake / 0.28).exp() * 0.35;
-                        let env = (-age / 18.0).exp();
+                        let env = (-age * dcy / 18.0).exp();
                         let i = (s * (band + trail) * env).min(1.0);
                         (i * 0.35, i * 0.75, i)
                     }
@@ -392,13 +432,13 @@ impl BeatViz {
                         if h > 0.25 {
                             continue;
                         }
-                        let i = s * (-age / 4.0).exp() * (0.4 + 0.6 * h);
+                        let i = s * (-age * dcy / 4.0).exp() * (0.4 + 0.6 * h);
                         (i * 0.75, i * 0.45, i)
                     }
                     BeatKind::Generic => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
                         let i =
-                            (s * (-d / 0.14).exp() * (-age / 12.0).exp()).min(1.0);
+                            (s * (-d / 0.14).exp() * (-age * dcy / 12.0).exp()).min(1.0);
                         (i, i * 0.9, i * 0.7)
                     }
                 };
@@ -414,7 +454,7 @@ impl BeatViz {
             if bands.bpm > 1.0 {
                 let phase_x = (bands.beat_phase - x * 0.15).rem_euclid(1.0);
                 let env = (1.0 - phase_x) * (1.0 - phase_x);
-                let bounce = env * gate * 0.22 * self.params.brightness;
+                let bounce = env * gate * 0.22 * self.params.brightness * bi;
                 add[0] += bounce;
                 add[1] += bounce * 0.72;
                 add[2] += bounce * 0.40;
@@ -425,10 +465,14 @@ impl BeatViz {
             add[0] += wash;
             add[1] += wash * 0.55;
             add[2] += wash * 0.25;
+            add[0] += bg;
+            add[1] += bg * 0.72;
+            add[2] += bg * 0.40;
             for c in 0..3 {
-                // Beat thump: the whole field lifts ~60% for ~200 ms on
-                // each detected beat — the "keyboard punches" layer.
-                let thump = 1.0 + bands.beat_pulse * 0.4;
+                // Beat thump: the whole field lifts on each detected
+                // beat — the "keyboard punches" layer, scaled by the
+                // beat-intensity param.
+                let thump = 1.0 + bands.beat_pulse * 0.4 * bi;
                 let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate * thump;
                 let v = (base_v + add[c]).clamp(0.0, 1.0);
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;

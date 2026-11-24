@@ -3934,6 +3934,21 @@ enum Kb916Light {
         /// dim spectrum base) or `spectrum` (classic equaliser bars).
         #[arg(long, default_value = "beat")]
         effect: String,
+        /// Dim uniform base brightness between beats, 0.0-1.0
+        /// (default 0.0 = keys go dark between beats).
+        #[arg(long, default_value_t = 0.0)]
+        background: f32,
+        /// Beat flash/impact intensity multiplier, 0.0-2.0 (default 1.0).
+        #[arg(long, default_value_t = 1.0)]
+        beat_intensity: f32,
+        /// Attack speed multiplier: >1 snaps brighter faster, <1
+        /// softens the rise (default 1.0, range 0.25-4.0).
+        #[arg(long, default_value_t = 1.0)]
+        attack: f32,
+        /// Decay speed multiplier: >1 dims faster after a beat, <1
+        /// lingers (default 1.0, range 0.25-4.0).
+        #[arg(long, default_value_t = 1.0)]
+        decay: f32,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

@@ -207,6 +207,10 @@ pub fn cmd(
     sensitivity: f32,
     brightness: f32,
     effect: &str,
+    background: f32,
+    beat_intensity: f32,
+    attack: f32,
+    decay: f32,
     duration: Option<f64>,
     yes: &Yes,
 ) -> Result<ExitCode> {
@@ -237,6 +241,15 @@ pub fn cmd(
     }
     if !(0.0..=1.0).contains(&brightness) {
         bail!("--brightness must be in 0.0..=1.0, got {brightness}");
+    }
+    if !(0.0..=1.0).contains(&background) {
+        bail!("--background must be in 0.0..=1.0, got {background}");
+    }
+    if !(0.0..=2.0).contains(&beat_intensity) {
+        bail!("--beat-intensity must be in 0.0..=2.0, got {beat_intensity}");
+    }
+    if !(0.25..=4.0).contains(&attack) || !(0.25..=4.0).contains(&decay) {
+        bail!("--attack/--decay must be in 0.25..=4.0, got {attack}/{decay}");
     }
     if !matches!(effect, "spectrum" | "beat") {
         bail!("unknown --effect '{effect}' (want spectrum|beat)");
@@ -289,6 +302,10 @@ pub fn cmd(
         sensitivity,
         brightness,
         fps: fps as f32,
+        background,
+        beat_intensity,
+        attack,
+        decay,
         ..FrameParams::default()
     };
     let mut viz = if effect == "beat" {
