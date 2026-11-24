@@ -16,6 +16,7 @@ import { AdvPage } from './advkeys.ts';
 import { renderKeysPage, destroyKeysPage } from './remap.ts';
 import { renderMusicPage, destroyMusicPage } from './music.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
+import { renderDiagnostics, destroyDiagnostics } from './diagnostics.ts';
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
@@ -26,6 +27,7 @@ export type PageId =
   | 'advanced'
   | 'music'
   | 'device'
+  | 'diagnostics'
   | 'basic'
   | 'config'
   | 'rhythm'
@@ -44,6 +46,7 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'music', path: '/music', title: 'Music' },
   { id: 'device', path: '/device', title: 'Device' },
+  { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
   // Secondary pages (bead jwb): vendor basicFunctions / configurationManagement
   // / rhythm / setting — implemented in pages-secondary.ts.
   ...SECONDARY_PAGES,
@@ -58,6 +61,7 @@ export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] =
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'music', path: '/music', title: 'Music' },
   { id: 'device', path: '/device', title: 'Device' },
+  { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
 ];
 
 /** Which sidebar item should look active for a given route. */
@@ -290,6 +294,7 @@ const renderers: Record<PageId, (root: HTMLElement) => void> = {
   advanced: renderAdvanced,
   music: renderMusic,
   device: renderDevice,
+  diagnostics: renderDiagnostics,
   ...SECONDARY_RENDERERS,
 };
 
@@ -320,6 +325,7 @@ export function destroyPages(): void {
   advPage?.destroy();
   advPage = null;
   destroyMusicPage();
+  destroyDiagnostics();
   window.removeEventListener('hashchange', route);
 }
 
@@ -352,6 +358,8 @@ function route(): void {
   }
   // Leaving the Music page stops the stream and restores lighting.
   if (page !== 'music') destroyMusicPage();
+  // Leaving Diagnostics detaches the passive input-report listener.
+  if (page !== 'diagnostics') destroyDiagnostics();
   if (pageRoot) renderers[page](pageRoot);
   updateNav();
 }
