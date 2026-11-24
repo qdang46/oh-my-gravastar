@@ -18,7 +18,11 @@ use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
 #[derive(Parser)]
-#[command(name = "omg", version, about = "Configure GravaStar keyboards and mice (offline, agent-first)")]
+#[command(
+    name = "omg",
+    version,
+    about = "Configure GravaStar keyboards and mice (offline, agent-first)"
+)]
 struct Cli {
     /// Emit machine-readable JSON instead of human text.
     #[arg(long, global = true)]
@@ -275,10 +279,17 @@ fn cmd_devices(cli: &Cli) -> Result<ExitCode> {
             if let Some(m) = &d.manufacturer {
                 println!("    manufacturer: {m}");
             }
-            println!("    usage_page: 0x{:04x} usage: 0x{:04x}", d.usage_page, d.usage);
+            println!(
+                "    usage_page: 0x{:04x} usage: 0x{:04x}",
+                d.usage_page, d.usage
+            );
         }
     }
-    Ok(if devices.is_empty() { no_device() } else { ExitCode::SUCCESS })
+    Ok(if devices.is_empty() {
+        no_device()
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 // ── probe ──────────────────────────────────────────────────────────────
@@ -363,9 +374,10 @@ fn probe_he(d: &DeviceInfo) -> serde_json::Value {
         });
         Ok(json!({ "slot_count": slots.len(), "first_key": first }))
     })());
-    let os = probe_read(kb.system().map(|v| {
-        json!({ "os": if v == 0 { "windows" } else { "macos" }, "os_id": v })
-    }));
+    let os = probe_read(
+        kb.system()
+            .map(|v| json!({ "os": if v == 0 { "windows" } else { "macos" }, "os_id": v })),
+    );
     json!({
         "info": info,
         "profile": profile,
@@ -386,9 +398,10 @@ fn probe_mouse(d: &DeviceInfo) -> serde_json::Value {
     let identity = probe_read(m.identify());
     let online = probe_read(m.online());
     let battery = probe_read(m.battery());
-    let firmware = probe_read(m.firmware().map(|(mouse, dongle)| {
-        json!({ "mouse": mouse, "receiver": dongle })
-    }));
+    let firmware = probe_read(
+        m.firmware()
+            .map(|(mouse, dongle)| json!({ "mouse": mouse, "receiver": dongle })),
+    );
     let config = probe_read(m.read_config());
     json!({
         "identity": identity,
@@ -505,8 +518,7 @@ fn cmd_probe(cli: &Cli, deep: bool) -> Result<ExitCode> {
         }
         return Ok(no_device());
     }
-    let reports: Vec<serde_json::Value> =
-        targets.iter().map(|d| probe_device(d, deep)).collect();
+    let reports: Vec<serde_json::Value> = targets.iter().map(|d| probe_device(d, deep)).collect();
     if cli.json {
         print_json(&json!({ "devices": reports }))?;
     } else {
@@ -548,7 +560,9 @@ fn open_mouse(cli: &Cli) -> Result<Option<(DeviceInfo, pm::CompxMouse)>> {
 /// Uniform "no mouse" exit (code 2) with optional JSON error object.
 fn mouse_absent(cli: &Cli) -> Result<ExitCode> {
     if cli.json {
-        print_json(&json!({ "error": "no Compx mouse detected (omg devices lists what was found)" }))?;
+        print_json(
+            &json!({ "error": "no Compx mouse detected (omg devices lists what was found)" }),
+        )?;
     } else {
         println!("no Compx mouse detected (omg devices lists what was found)");
     }
@@ -578,9 +592,27 @@ fn cmd_mouse(cli: &Cli, command: &MouseCommands) -> Result<ExitCode> {
                 println!("{}", device.vid_pid());
                 println!("model:   {}", id.model.unwrap_or("(unknown)"));
                 println!("cid/mid: {} / {}", id.cid, id.mid);
-                println!("link:    {}", if id.wired { "wired (cable)" } else { "2.4 GHz receiver" });
-                println!("sensor:  {} (max {} DPI, base {} DPI)", id.sensor.name, id.sensor.max_dpi, id.sensor.base_max);
-                println!("lod:     {}", id.sensor.lod.iter().map(|(v, l)| format!("{v}={l}")).collect::<Vec<_>>().join(", "));
+                println!(
+                    "link:    {}",
+                    if id.wired {
+                        "wired (cable)"
+                    } else {
+                        "2.4 GHz receiver"
+                    }
+                );
+                println!(
+                    "sensor:  {} (max {} DPI, base {} DPI)",
+                    id.sensor.name, id.sensor.max_dpi, id.sensor.base_max
+                );
+                println!(
+                    "lod:     {}",
+                    id.sensor
+                        .lod
+                        .iter()
+                        .map(|(v, l)| format!("{v}={l}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 println!("max polling on this link: {} Hz", id.max_rate);
                 println!("online:  {online}");
             }
@@ -594,7 +626,11 @@ fn cmd_mouse(cli: &Cli, command: &MouseCommands) -> Result<ExitCode> {
             if cli.json {
                 print_json(&json!({ "device": device, "battery": b }))?;
             } else {
-                println!("battery: {}%{}", b.level, if b.charging { " (charging)" } else { "" });
+                println!(
+                    "battery: {}%{}",
+                    b.level,
+                    if b.charging { " (charging)" } else { "" }
+                );
                 println!("voltage: {} mV", b.millivolts);
             }
             Ok(ExitCode::SUCCESS)
@@ -637,7 +673,10 @@ fn cmd_mouse(cli: &Cli, command: &MouseCommands) -> Result<ExitCode> {
 
 fn print_config_human(c: &pm::MouseConfig) {
     println!("polling:        {} Hz", c.report_rate);
-    println!("dpi stages:     {} (active: {})", c.stage_count, c.current_stage);
+    println!(
+        "dpi stages:     {} (active: {})",
+        c.stage_count, c.current_stage
+    );
     for i in 0..c.stage_count.min(pm::MAX_STAGES) {
         println!(
             "  stage {i}: {} DPI  {}",
@@ -663,14 +702,21 @@ fn print_config_human(c: &pm::MouseConfig) {
         yn(c.light_off_moving)
     );
     println!("sleep:          {} (×10 s)", c.sleep);
-    println!("sensor mode:    {}", if c.sensor_mode == 0 { "LP" } else { "HP" });
+    println!(
+        "sensor mode:    {}",
+        if c.sensor_mode == 0 { "LP" } else { "HP" }
+    );
     for (i, b) in c.buttons.iter().enumerate() {
         println!("button {i}:      kind {} param 0x{:04x}", b.kind, b.param);
     }
 }
 
 fn yn(b: bool) -> &'static str {
-    if b { "on" } else { "off" }
+    if b {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 /// Require `--yes`, run the write, read the config back and verify the
@@ -679,7 +725,9 @@ fn cmd_mouse_set(cli: &Cli, field: &MouseSet) -> Result<ExitCode> {
     let (yes, action) = match field {
         MouseSet::Polling { yes, hz } => (yes, MouseAction::Polling(*hz)),
         MouseSet::Dpi { yes, stage, dpi } => (yes, MouseAction::Dpi(*stage, *dpi)),
-        MouseSet::DpiColor { yes, stage, color } => (yes, MouseAction::DpiColor(*stage, color.clone())),
+        MouseSet::DpiColor { yes, stage, color } => {
+            (yes, MouseAction::DpiColor(*stage, color.clone()))
+        }
         MouseSet::Stages { yes, n } => (yes, MouseAction::Stages(*n)),
         MouseSet::Stage { yes, i } => (yes, MouseAction::Stage(*i)),
         MouseSet::Lod { yes, v } => (yes, MouseAction::Lod(*v)),
@@ -695,17 +743,30 @@ fn cmd_mouse_set(cli: &Cli, field: &MouseSet) -> Result<ExitCode> {
             (yes, a)
         }
         MouseSet::Debounce { yes, ms } => (yes, MouseAction::Debounce(*ms)),
-        MouseSet::MotionSync { yes, on } => (yes, MouseAction::Flag("motion_sync", on == "on", pm::addr::MOTION_SYNC)),
-        MouseSet::AngleSnap { yes, on } => (yes, MouseAction::Flag("angle_snap", on == "on", pm::addr::ANGLE_SNAP)),
-        MouseSet::Ripple { yes, on } => (yes, MouseAction::Flag("ripple", on == "on", pm::addr::RIPPLE)),
-        MouseSet::LightOffMoving { yes, on } => {
-            (yes, MouseAction::Flag("light_off_moving", on == "on", pm::addr::LIGHT_OFF_MOVING))
-        }
+        MouseSet::MotionSync { yes, on } => (
+            yes,
+            MouseAction::Flag("motion_sync", on == "on", pm::addr::MOTION_SYNC),
+        ),
+        MouseSet::AngleSnap { yes, on } => (
+            yes,
+            MouseAction::Flag("angle_snap", on == "on", pm::addr::ANGLE_SNAP),
+        ),
+        MouseSet::Ripple { yes, on } => (
+            yes,
+            MouseAction::Flag("ripple", on == "on", pm::addr::RIPPLE),
+        ),
+        MouseSet::LightOffMoving { yes, on } => (
+            yes,
+            MouseAction::Flag("light_off_moving", on == "on", pm::addr::LIGHT_OFF_MOVING),
+        ),
         MouseSet::Sleep { yes, seconds } => (yes, MouseAction::Sleep(*seconds)),
         MouseSet::SensorMode { yes, mode } => (yes, MouseAction::SensorMode(mode.clone())),
-        MouseSet::Button { yes, slot, kind, param } => {
-            (yes, MouseAction::Button(*slot, kind.clone(), param.clone()))
-        }
+        MouseSet::Button {
+            yes,
+            slot,
+            kind,
+            param,
+        } => (yes, MouseAction::Button(*slot, kind.clone(), param.clone())),
     };
     if !yes.yes {
         bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
@@ -743,7 +804,11 @@ fn cmd_mouse_set(cli: &Cli, field: &MouseSet) -> Result<ExitCode> {
             println!("actual:   {actual}");
         }
     }
-    Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    Ok(if verified {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 /// A pending write, already parsed from the CLI.
@@ -777,10 +842,16 @@ fn plan_action(
     Ok(match a {
         MouseAction::Polling(hz) => {
             if !pm::REPORT_RATES.contains(hz) {
-                bail!("invalid polling rate {hz} Hz (valid: {:?})", pm::REPORT_RATES);
+                bail!(
+                    "invalid polling rate {hz} Hz (valid: {:?})",
+                    pm::REPORT_RATES
+                );
             }
             if *hz > id.max_rate {
-                bail!("{hz} Hz exceeds what this link supports (max {} Hz)", id.max_rate);
+                bail!(
+                    "{hz} Hz exceeds what this link supports (max {} Hz)",
+                    id.max_rate
+                );
             }
             (format!("polling rate -> {hz} Hz"), json!(hz))
         }
@@ -791,14 +862,20 @@ fn plan_action(
             }
             let clamped = m.clamp_dpi(*dpi);
             (
-                format!("DPI stage {stage} -> {clamped} DPI{}", if clamped != *dpi { " (clamped)" } else { "" }),
+                format!(
+                    "DPI stage {stage} -> {clamped} DPI{}",
+                    if clamped != *dpi { " (clamped)" } else { "" }
+                ),
                 json!(clamped),
             )
         }
         MouseAction::DpiColor(stage, color) => {
             check_stage(*stage)?;
             let c = pm::Rgb::parse(color)?;
-            (format!("DPI stage {stage} colour -> {}", c.to_hex()), json!(c))
+            (
+                format!("DPI stage {stage} colour -> {}", c.to_hex()),
+                json!(c),
+            )
         }
         MouseAction::Stages(n) => {
             if !(1..=pm::MAX_STAGES).contains(n) {
@@ -818,13 +895,33 @@ fn plan_action(
                     id.sensor.lod
                 );
             }
-            let label = id.sensor.lod.iter().find(|(l, _)| l == v).map(|(_, l)| *l).unwrap_or("");
+            let label = id
+                .sensor
+                .lod
+                .iter()
+                .find(|(l, _)| l == v)
+                .map(|(_, l)| *l)
+                .unwrap_or("");
             (format!("lift-off distance -> {v} ({label})"), json!(v))
         }
-        MouseAction::LightOn | MouseAction::LightOff | MouseAction::LightMode(_) | MouseAction::LightColor(_)
-        | MouseAction::LightSpeed(_) | MouseAction::LightBrightness(_) => {
+        MouseAction::LightOn
+        | MouseAction::LightOff
+        | MouseAction::LightMode(_)
+        | MouseAction::LightColor(_)
+        | MouseAction::LightSpeed(_)
+        | MouseAction::LightBrightness(_) => {
             let new = planned_light(m, a)?;
-            (format!("light -> on={} mode={} colour={} speed={} brightness={}", new.on, new.mode, new.color.to_hex(), new.speed, new.brightness), json!(new))
+            (
+                format!(
+                    "light -> on={} mode={} colour={} speed={} brightness={}",
+                    new.on,
+                    new.mode,
+                    new.color.to_hex(),
+                    new.speed,
+                    new.brightness
+                ),
+                json!(new),
+            )
         }
         MouseAction::Debounce(ms) => {
             if *ms > 15 {
@@ -838,7 +935,10 @@ fn plan_action(
             if !pm::SLEEP_TIMES.contains(&stored) || *seconds % 10 != 0 {
                 bail!(
                     "invalid sleep timeout {seconds}s (valid: {:?} s)",
-                    pm::SLEEP_TIMES.iter().map(|t| *t as u16 * 10).collect::<Vec<_>>()
+                    pm::SLEEP_TIMES
+                        .iter()
+                        .map(|t| *t as u16 * 10)
+                        .collect::<Vec<_>>()
                 );
             }
             (format!("sleep timeout -> {seconds} s"), json!(stored))
@@ -856,7 +956,10 @@ fn plan_action(
                 bail!("invalid button slot {slot} (0..{})", pm::BUTTON_SLOTS - 1);
             }
             let (k, p) = parse_button(kind, param.as_deref())?;
-            (format!("button {slot} -> kind {k} param 0x{p:04x}"), json!({ "kind": k, "param": p }))
+            (
+                format!("button {slot} -> kind {k} param 0x{p:04x}"),
+                json!({ "kind": k, "param": p }),
+            )
         }
     })
 }
@@ -936,7 +1039,9 @@ fn parse_button(kind: &str, param: Option<&str>) -> Result<(u8, u16)> {
                     "middle" => 0x0400,
                     "back" => 0x0800,
                     "forward" => 0x1000,
-                    _ => bail!("unknown mouse button '{s}' (left|right|middle|back|forward or 0x0100…)"),
+                    _ => bail!(
+                        "unknown mouse button '{s}' (left|right|middle|back|forward or 0x0100…)"
+                    ),
                 }
             } else {
                 s.parse().map_err(|_| anyhow!("bad button param '{s}'"))?
@@ -954,15 +1059,21 @@ fn apply_action(m: &mut pm::CompxMouse, a: &MouseAction) -> Result<()> {
         MouseAction::Stages(n) => m.set_stage_count(*n),
         MouseAction::Stage(i) => m.set_current_stage(*i),
         MouseAction::Lod(v) => m.set_lod(*v),
-        MouseAction::LightOn | MouseAction::LightOff | MouseAction::LightMode(_)
-        | MouseAction::LightColor(_) | MouseAction::LightSpeed(_) | MouseAction::LightBrightness(_) => {
+        MouseAction::LightOn
+        | MouseAction::LightOff
+        | MouseAction::LightMode(_)
+        | MouseAction::LightColor(_)
+        | MouseAction::LightSpeed(_)
+        | MouseAction::LightBrightness(_) => {
             let l = planned_light(m, a)?;
             m.set_light(&l)
         }
         MouseAction::Debounce(ms) => m.set_debounce(*ms),
         MouseAction::Flag(_, on, addr) => m.set_flag(*addr, *on),
         MouseAction::Sleep(seconds) => m.set_sleep((*seconds / 10) as u8),
-        MouseAction::SensorMode(mode) => m.set_sensor_mode(if mode.as_str() == "lp" { 0 } else { 1 }),
+        MouseAction::SensorMode(mode) => {
+            m.set_sensor_mode(if mode.as_str() == "lp" { 0 } else { 1 })
+        }
         MouseAction::Button(slot, kind, param) => {
             let (k, p) = parse_button(kind, param.as_deref())?;
             m.set_button(*slot, pm::Button { kind: k, param: p })
@@ -980,8 +1091,12 @@ fn readback_field(c: &pm::MouseConfig, a: &MouseAction) -> serde_json::Value {
         MouseAction::Stages(_) => json!(c.stage_count),
         MouseAction::Stage(_) => json!(c.current_stage),
         MouseAction::Lod(_) => json!(c.lod),
-        MouseAction::LightOn | MouseAction::LightOff | MouseAction::LightMode(_)
-        | MouseAction::LightColor(_) | MouseAction::LightSpeed(_) | MouseAction::LightBrightness(_) => {
+        MouseAction::LightOn
+        | MouseAction::LightOff
+        | MouseAction::LightMode(_)
+        | MouseAction::LightColor(_)
+        | MouseAction::LightSpeed(_)
+        | MouseAction::LightBrightness(_) => {
             // planned_light's output is the expected value; compare field-wise.
             json!(c.light)
         }
@@ -1007,14 +1122,9 @@ enum KbCommands {
     /// Physical key geometry plus layer-0 keycodes resolved to labels.
     Layout,
     /// Raw 21 keycodes of one matrix row on a layer.
-    Keys {
-        layer: u8,
-        row: u8,
-    },
+    Keys { layer: u8, row: u8 },
     /// Live per-key travel (mm) and actuation state of one matrix row.
-    Live {
-        row: u8,
-    },
+    Live { row: u8 },
     /// Profiles: count and active profile; switch the active profile.
     Profile {
         #[command(subcommand)]
@@ -1137,10 +1247,7 @@ struct PerfWrite {
 #[derive(Subcommand)]
 enum KbPerf {
     /// Read one key's performance settings.
-    Get {
-        row: u8,
-        col: u8,
-    },
+    Get { row: u8, col: u8 },
     /// Write one key's performance settings (read-modify-write: the
     /// switch echo fields are carried from the read, never invented).
     /// Requires `--yes`; read back and verified.
@@ -1166,9 +1273,7 @@ enum KbPerf {
 #[derive(Subcommand)]
 enum KbLight {
     /// Read one lighting zone's settings and palette.
-    Get {
-        area: u8,
-    },
+    Get { area: u8 },
     /// Change one lighting zone. Every flag is optional; at least one
     /// change is required. Requires `--yes`; read back and verified.
     Set {
@@ -1207,9 +1312,7 @@ enum KbLight {
 #[derive(Subcommand)]
 enum KbPalette {
     /// Show the 8 palette colours as #rrggbb.
-    Get {
-        area: u8,
-    },
+    Get { area: u8 },
     /// Replace palette entries: the given colours overwrite entries
     /// 0..n and the remaining entries keep their current values.
     /// Requires `--yes`; read back and verified.
@@ -1290,7 +1393,9 @@ fn open_kb(cli: &Cli) -> Result<Option<(DeviceInfo, he::HeKeyboard)>> {
 
 fn kb_absent(cli: &Cli) -> Result<ExitCode> {
     if cli.json {
-        print_json(&json!({ "error": "no HE keyboard (v2 protocol) detected (omg devices lists what was found)" }))?;
+        print_json(
+            &json!({ "error": "no HE keyboard (v2 protocol) detected (omg devices lists what was found)" }),
+        )?;
     } else {
         println!("no HE keyboard (v2 protocol) detected (omg devices lists what was found)");
     }
@@ -1403,7 +1508,9 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                 .map(|(col, &c)| json!({ "col": col, "code": format!("0x{c:04X}"), "label": omg_model::key_label(c, false) }))
                 .collect();
             if cli.json {
-                print_json(&json!({ "device": device, "layer": layer, "row": row, "keys": entries }))?;
+                print_json(
+                    &json!({ "device": device, "layer": layer, "row": row, "keys": entries }),
+                )?;
             } else {
                 for (col, &c) in codes.iter().enumerate() {
                     if c != 0 {
@@ -1429,7 +1536,10 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                 println!("row {row} (travel mm / actuated):");
                 for (col, &(t, a)) in live.iter().enumerate() {
                     if t > 0.0005 || a {
-                        println!("  col {col:<2} {t:>6.3}  {}", if a { "ACTUATED" } else { "" });
+                        println!(
+                            "  col {col:<2} {t:>6.3}  {}",
+                            if a { "ACTUATED" } else { "" }
+                        );
                     }
                 }
             }
@@ -1465,7 +1575,10 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                 };
                 let count = kb.profile_count()?;
                 if *index >= count {
-                    bail!("profile index {index} out of range (0..{})", count.saturating_sub(1));
+                    bail!(
+                        "profile index {index} out of range (0..{})",
+                        count.saturating_sub(1)
+                    );
                 }
                 kb.set_profile(*index)?;
                 let actual = kb.profile()?;
@@ -1482,7 +1595,11 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                     println!("active profile -> {}", index + 1);
                     println!("verified: {verified}");
                 }
-                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+                Ok(if verified {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                })
             }
         },
         KbCommands::Polling { command } => match command {
@@ -1502,7 +1619,14 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                     }))?;
                 } else {
                     println!("polling: {} Hz ({})", rate_hz(current), rate_name(current));
-                    println!("supported: {}", supported.iter().map(|&i| rate_name(i)).collect::<Vec<_>>().join(", "));
+                    println!(
+                        "supported: {}",
+                        supported
+                            .iter()
+                            .map(|&i| rate_name(i))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                 }
                 Ok(ExitCode::SUCCESS)
             }
@@ -1519,14 +1643,21 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                     bail!(
                         "{} Hz is not in this keyboard's supported list ({})",
                         rate_hz(id),
-                        supported.iter().map(|&i| rate_name(i)).collect::<Vec<_>>().join(", ")
+                        supported
+                            .iter()
+                            .map(|&i| rate_name(i))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 }
                 kb.set_report_rate(id)?; // NoAnswer tolerated: the keyboard restarts
-                // Read back; a restarted keyboard may not answer in time.
+                                         // Read back; a restarted keyboard may not answer in time.
                 let (actual, verified) = match kb.report_rate() {
                     Ok(v) => (json!(v), json!(v == id)),
-                    Err(e) if e.is::<NoAnswer>() => (json!("no answer (keyboard restarted)"), serde_json::Value::Null),
+                    Err(e) if e.is::<NoAnswer>() => (
+                        json!("no answer (keyboard restarted)"),
+                        serde_json::Value::Null,
+                    ),
                     Err(e) => return Err(e),
                 };
                 if cli.json {
@@ -1542,7 +1673,11 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                     println!("note: the keyboard restarts after this change");
                     println!("verified: {}", verified);
                 }
-                Ok(if verified == json!(false) { ExitCode::from(1) } else { ExitCode::SUCCESS })
+                Ok(if verified == json!(false) {
+                    ExitCode::from(1)
+                } else {
+                    ExitCode::SUCCESS
+                })
             }
         },
         KbCommands::Os { command } => match command {
@@ -1582,7 +1717,11 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                     println!("os mode -> {os}");
                     println!("verified: {verified}");
                 }
-                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+                Ok(if verified {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                })
             }
         },
         KbCommands::Perf { command } => cmd_kb_perf(cli, command),
@@ -1593,8 +1732,10 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
             };
             let areas = kb.lighting_areas()?;
             if cli.json {
-                let v: Vec<serde_json::Value> =
-                    areas.iter().map(|a| json!({ "index": a.index, "effects": a.count })).collect();
+                let v: Vec<serde_json::Value> = areas
+                    .iter()
+                    .map(|a| json!({ "index": a.index, "effects": a.count }))
+                    .collect();
                 print_json(&json!({ "device": device, "areas": v }))?;
             } else if areas.is_empty() {
                 println!("no lighting areas reported");
@@ -1628,7 +1769,11 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                 } else {
                     println!(
                         "lighting sleep: {}",
-                        if minutes == 0 { "never".to_string() } else { format!("{minutes} min") }
+                        if minutes == 0 {
+                            "never".to_string()
+                        } else {
+                            format!("{minutes} min")
+                        }
                     );
                 }
                 Ok(ExitCode::SUCCESS)
@@ -1661,7 +1806,11 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                     println!("lighting sleep -> {minutes} min");
                     println!("verified: {verified}");
                 }
-                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+                Ok(if verified {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                })
             }
         },
         KbCommands::Calibration { command } => {
@@ -1701,7 +1850,10 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
                             "note": "no answer (keyboard busy recalibrating)",
                         }))?;
                     } else {
-                        println!("calibration {} sent (no answer — keyboard busy recalibrating)", if start { "start" } else { "stop" });
+                        println!(
+                            "calibration {} sent (no answer — keyboard busy recalibrating)",
+                            if start { "start" } else { "stop" }
+                        );
                     }
                     Ok(ExitCode::SUCCESS)
                 }
@@ -1752,7 +1904,9 @@ fn open_spark(cli: &Cli) -> Result<Option<(DeviceInfo, spj::SparkPlayJoy)>> {
 
 fn spark_absent(cli: &Cli) -> Result<ExitCode> {
     if cli.json {
-        print_json(&json!({ "error": "no SparkPlayJoy device detected (omg devices lists what was found)" }))?;
+        print_json(
+            &json!({ "error": "no SparkPlayJoy device detected (omg devices lists what was found)" }),
+        )?;
     } else {
         println!("no SparkPlayJoy device detected (omg devices lists what was found)");
     }
@@ -1817,7 +1971,11 @@ fn cmd_kb_travel(cli: &Cli, watch: bool) -> Result<ExitCode> {
             println!(
                 "board id:   0x{:08X}{}",
                 admission.board_id,
-                if admission.exact_known_board { " (known identity)" } else { " (structural proof)" }
+                if admission.exact_known_board {
+                    " (known identity)"
+                } else {
+                    " (structural proof)"
+                }
             );
             println!(
                 "scale:      precision {} µm, travel {}..{} µm",
@@ -1825,7 +1983,16 @@ fn cmd_kb_travel(cli: &Cli, watch: bool) -> Result<ExitCode> {
                 admission.scale.minimum_travel_um,
                 admission.scale.maximum_travel_um
             );
-            println!("travel matrix (µm), {} samples:", admission.travel.samples_um.iter().flatten().filter(|&&v| v != 0).count());
+            println!(
+                "travel matrix (µm), {} samples:",
+                admission
+                    .travel
+                    .samples_um
+                    .iter()
+                    .flatten()
+                    .filter(|&&v| v != 0)
+                    .count()
+            );
             for (r, row) in admission.travel.samples_um.iter().enumerate() {
                 let cells: Vec<String> = row
                     .iter()
@@ -1848,11 +2015,14 @@ fn cmd_kb_travel(cli: &Cli, watch: bool) -> Result<ExitCode> {
         .map_err(|e| anyhow!("failed to install Ctrl-C handler: {e}"))?;
     if cli.json {
         // One JSON object per line (JSONL) so consumers can stream-parse.
-        println!("{}", serde_json::to_string(&json!({
-            "device": device.vid_pid(),
-            "board_id": format!("0x{:08X}", admission.board_id),
-            "event": "watch_start",
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "device": device.vid_pid(),
+                "board_id": format!("0x{:08X}", admission.board_id),
+                "event": "watch_start",
+            }))?
+        );
     } else {
         println!("watching travel (Ctrl-C to stop)…");
     }
@@ -1897,7 +2067,11 @@ struct PerfSpec {
 
 fn perf_spec(w: &PerfWrite) -> Result<PerfSpec> {
     Ok(PerfSpec {
-        mode: if w.mode == "rt" { he::MODE_RAPID } else { he::MODE_FIXED },
+        mode: if w.mode == "rt" {
+            he::MODE_RAPID
+        } else {
+            he::MODE_FIXED
+        },
         actuation: w.actuation,
         rt_first: w.rt_first,
         rt_press: w.rt_press,
@@ -1921,7 +2095,10 @@ fn apply_perf_spec(base: &he::KeyPerf, spec: &PerfSpec) -> Result<(he::KeyPerf, 
     };
     let check_dz = |name: &str, v: f32| -> Result<()> {
         if !(0.0..=omg_model::DEADZONE_MAX).contains(&v) {
-            bail!("{name} {v} mm out of range 0..={:.1} mm", omg_model::DEADZONE_MAX);
+            bail!(
+                "{name} {v} mm out of range 0..={:.1} mm",
+                omg_model::DEADZONE_MAX
+            );
         }
         Ok(())
     };
@@ -1946,7 +2123,11 @@ fn apply_perf_spec(base: &he::KeyPerf, spec: &PerfSpec) -> Result<(he::KeyPerf, 
     let mut p = *base;
     let mode_name = |m: u8| if m == he::MODE_RAPID { "rt" } else { "fixed" };
     if p.mode != spec.mode {
-        changes.push(format!("mode {} -> {}", mode_name(p.mode), mode_name(spec.mode)));
+        changes.push(format!(
+            "mode {} -> {}",
+            mode_name(p.mode),
+            mode_name(spec.mode)
+        ));
         p.mode = spec.mode;
     }
     // --actuation drives the mode's primary depth.
@@ -1972,11 +2153,31 @@ fn apply_perf_spec(base: &he::KeyPerf, spec: &PerfSpec) -> Result<(he::KeyPerf, 
             *dst = v;
         }
     };
-    set_opt(&mut p.rt_first_touch, "rt_first_touch", spec.rt_first, &mut changes);
+    set_opt(
+        &mut p.rt_first_touch,
+        "rt_first_touch",
+        spec.rt_first,
+        &mut changes,
+    );
     set_opt(&mut p.rt_press, "rt_press", spec.rt_press, &mut changes);
-    set_opt(&mut p.rt_release, "rt_release", spec.rt_release, &mut changes);
-    set_opt(&mut p.press_deadzone, "press_deadzone", spec.dz_press, &mut changes);
-    set_opt(&mut p.release_deadzone, "release_deadzone", spec.dz_release, &mut changes);
+    set_opt(
+        &mut p.rt_release,
+        "rt_release",
+        spec.rt_release,
+        &mut changes,
+    );
+    set_opt(
+        &mut p.press_deadzone,
+        "press_deadzone",
+        spec.dz_press,
+        &mut changes,
+    );
+    set_opt(
+        &mut p.release_deadzone,
+        "release_deadzone",
+        spec.dz_release,
+        &mut changes,
+    );
     if changes.is_empty() {
         changes.push("no effective change".to_string());
     }
@@ -2011,17 +2212,36 @@ fn cmd_kb_perf(cli: &Cli, command: &KbPerf) -> Result<ExitCode> {
             };
             let p = kb.key_perf(*row, *col)?;
             if cli.json {
-                print_json(&json!({ "device": device, "row": row, "col": col, "perf": perf_json(&p) }))?;
+                print_json(
+                    &json!({ "device": device, "row": row, "col": col, "perf": perf_json(&p) }),
+                )?;
             } else {
                 println!("key r{row} c{col}:");
-                println!("  mode:            {}", if p.mode == he::MODE_RAPID { "rapid trigger" } else { "fixed actuation" });
-                println!("  actuation:       {:.3} mm", if p.mode == he::MODE_RAPID { p.rt_first_touch } else { p.normal_press });
+                println!(
+                    "  mode:            {}",
+                    if p.mode == he::MODE_RAPID {
+                        "rapid trigger"
+                    } else {
+                        "fixed actuation"
+                    }
+                );
+                println!(
+                    "  actuation:       {:.3} mm",
+                    if p.mode == he::MODE_RAPID {
+                        p.rt_first_touch
+                    } else {
+                        p.normal_press
+                    }
+                );
                 println!("  normal press:    {:.3} mm", p.normal_press);
                 println!("  normal release:  {:.3} mm", p.normal_release);
                 println!("  rt first touch:  {:.3} mm", p.rt_first_touch);
                 println!("  rt press:        {:.3} mm", p.rt_press);
                 println!("  rt release:      {:.3} mm", p.rt_release);
-                println!("  deadzone:        {:.3} / {:.3} mm", p.press_deadzone, p.release_deadzone);
+                println!(
+                    "  deadzone:        {:.3} / {:.3} mm",
+                    p.press_deadzone, p.release_deadzone
+                );
                 println!(
                     "  switch:          id {} axis {} cal {} range {} coeff {} (max {:.1} mm)",
                     p.axis_v2_id,
@@ -2034,7 +2254,12 @@ fn cmd_kb_perf(cli: &Cli, command: &KbPerf) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        KbPerf::Set { yes, write, row, col } => {
+        KbPerf::Set {
+            yes,
+            write,
+            row,
+            col,
+        } => {
             if !yes.yes {
                 bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
             }
@@ -2064,7 +2289,11 @@ fn cmd_kb_perf(cli: &Cli, command: &KbPerf) -> Result<ExitCode> {
                     println!("actual:   {}", serde_json::to_string(&perf_json(&actual))?);
                 }
             }
-            Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            Ok(if verified {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
         KbPerf::SetAll { yes, write } => {
             if !yes.yes {
@@ -2120,11 +2349,18 @@ fn cmd_kb_perf(cli: &Cli, command: &KbPerf) -> Result<ExitCode> {
                 for f in &failures {
                     println!(
                         "  r{} c{} [{}]: {}",
-                        f["row"], f["col"], f["stage"].as_str().unwrap_or("?"), f["error"].as_str().unwrap_or("?")
+                        f["row"],
+                        f["col"],
+                        f["stage"].as_str().unwrap_or("?"),
+                        f["error"].as_str().unwrap_or("?")
                     );
                 }
             }
-            Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
     }
 }
@@ -2153,7 +2389,11 @@ fn parse_rgb_hex(s: &str) -> Result<he::Rgb> {
         bail!("invalid colour '{s}' (want #rrggbb)");
     }
     let v = u32::from_str_radix(t, 16).map_err(|_| anyhow!("invalid colour '{s}'"))?;
-    Ok(he::Rgb { r: ((v >> 16) & 0xff) as u8, g: ((v >> 8) & 0xff) as u8, b: (v & 0xff) as u8 })
+    Ok(he::Rgb {
+        r: ((v >> 16) & 0xff) as u8,
+        g: ((v >> 8) & 0xff) as u8,
+        b: (v & 0xff) as u8,
+    })
 }
 
 /// Check that `area` is a zone the keyboard reported (when it reports any).
@@ -2162,7 +2402,11 @@ fn check_light_area(kb: &mut he::HeKeyboard, area: u8) -> Result<()> {
     if !areas.is_empty() && !areas.iter().any(|a| a.index == area) {
         bail!(
             "lighting area {area} not present (areas: {})",
-            areas.iter().map(|a| a.index.to_string()).collect::<Vec<_>>().join(", ")
+            areas
+                .iter()
+                .map(|a| a.index.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     Ok(())
@@ -2195,7 +2439,10 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
                     lj["direction"].as_str().unwrap_or("?"),
                     l.color_index
                 );
-                println!("palette: {}", palette.iter().map(rgb_hex).collect::<Vec<_>>().join(" "));
+                println!(
+                    "palette: {}",
+                    palette.iter().map(rgb_hex).collect::<Vec<_>>().join(" ")
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -2213,7 +2460,14 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
             if !yes.yes {
                 bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
             }
-            if !(*on || *off || mode.is_some() || brightness.is_some() || speed.is_some() || direction.is_some() || color.is_some()) {
+            if !(*on
+                || *off
+                || mode.is_some()
+                || brightness.is_some()
+                || speed.is_some()
+                || direction.is_some()
+                || color.is_some())
+            {
                 bail!("nothing to change — pass at least one of --on/--off/--mode/--brightness/--speed/--direction/--color");
             }
             if let Some(b) = brightness {
@@ -2246,12 +2500,20 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
             if let Some(m) = mode {
                 // Validate against the zone's supported effect ids.
                 let areas = kb.lighting_areas()?;
-                let count = areas.iter().find(|a| a.index == *area).map(|a| a.count).unwrap_or(0);
+                let count = areas
+                    .iter()
+                    .find(|a| a.index == *area)
+                    .map(|a| a.count)
+                    .unwrap_or(0);
                 let zone = omg_model::lighting_zone(*area, count);
                 if !zone.modes.iter().any(|zm| zm.id == *m) {
                     bail!(
                         "mode {m} not valid for lighting area {area} (valid: {})",
-                        zone.modes.iter().map(|zm| zm.id.to_string()).collect::<Vec<_>>().join(", ")
+                        zone.modes
+                            .iter()
+                            .map(|zm| zm.id.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 }
                 l.mode = *m;
@@ -2275,7 +2537,12 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
             let describe = |v: &serde_json::Value| {
                 format!(
                     "on={} mode={} bright={} speed={} dir={} color={}",
-                    v["on"], v["mode"], v["brightness"], v["speed"], v["direction"], v["color_index"]
+                    v["on"],
+                    v["mode"],
+                    v["brightness"],
+                    v["speed"],
+                    v["direction"],
+                    v["color_index"]
                 )
             };
             if cli.json {
@@ -2288,10 +2555,18 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
                     "verified": verified,
                 }))?;
             } else {
-                println!("lighting area {area}: {} -> {}", describe(&before), describe(&after));
+                println!(
+                    "lighting area {area}: {} -> {}",
+                    describe(&before),
+                    describe(&after)
+                );
                 println!("verified: {verified}");
             }
-            Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            Ok(if verified {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
         KbLight::Palette { command } => match command {
             KbPalette::Get { area } => {
@@ -2322,7 +2597,10 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
                 if colors.is_empty() || colors.len() > 8 {
                     bail!("palette set needs 1-8 colours (got {})", colors.len());
                 }
-                let parsed: Vec<he::Rgb> = colors.iter().map(|c| parse_rgb_hex(c)).collect::<Result<_>>()?;
+                let parsed: Vec<he::Rgb> = colors
+                    .iter()
+                    .map(|c| parse_rgb_hex(c))
+                    .collect::<Result<_>>()?;
                 let Some((device, mut kb)) = open_kb(cli)? else {
                     return kb_absent(cli);
                 };
@@ -2347,7 +2625,11 @@ fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
                     println!("palette area {area}: entries 0..{} set", parsed.len() - 1);
                     println!("verified: {verified}");
                 }
-                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+                Ok(if verified {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                })
             }
         },
     }
@@ -2398,7 +2680,8 @@ fn select_device<'a>(
 ) -> Result<Option<&'a DeviceInfo>> {
     match selector {
         Some(sel) => {
-            let matches: Vec<&DeviceInfo> = devices.iter().filter(|d| device_matches(d, sel)).collect();
+            let matches: Vec<&DeviceInfo> =
+                devices.iter().filter(|d| device_matches(d, sel)).collect();
             match matches.len() {
                 0 => Ok(None),
                 1 => Ok(Some(matches[0])),
@@ -2425,9 +2708,11 @@ fn device_matches(d: &DeviceInfo, sel: &str) -> bool {
     if let Some((v, rest)) = sel.split_once(':') {
         if let Some((p, page)) = rest.split_once(':') {
             // VID:PID:USAGE_PAGE — picks one interface of a multi-interface device.
-            if let (Ok(v), Ok(p), Ok(page)) =
-                (parse_maybe_hex(v), parse_maybe_hex(p), parse_maybe_hex(page))
-            {
+            if let (Ok(v), Ok(p), Ok(page)) = (
+                parse_maybe_hex(v),
+                parse_maybe_hex(p),
+                parse_maybe_hex(page),
+            ) {
                 return d.vid == v && d.pid == p && d.usage_page == page;
             }
         } else if let Ok(p) = parse_maybe_hex(rest) {
@@ -2437,8 +2722,12 @@ fn device_matches(d: &DeviceInfo, sel: &str) -> bool {
         }
     }
     let sel = sel.to_lowercase();
-    d.product.as_deref().is_some_and(|s| s.to_lowercase().contains(&sel))
-        || d.manufacturer.as_deref().is_some_and(|s| s.to_lowercase().contains(&sel))
+    d.product
+        .as_deref()
+        .is_some_and(|s| s.to_lowercase().contains(&sel))
+        || d.manufacturer
+            .as_deref()
+            .is_some_and(|s| s.to_lowercase().contains(&sel))
 }
 
 /// `0x`/`0X` prefix forces hex; a value containing a-f letters is hex;
@@ -2447,7 +2736,8 @@ fn parse_maybe_hex(s: &str) -> std::result::Result<u16, std::num::ParseIntError>
     let s = s.trim();
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u16::from_str_radix(hex, 16)
-    } else if s.bytes().all(|b| b.is_ascii_hexdigit()) && s.bytes().any(|b| b.is_ascii_alphabetic()) {
+    } else if s.bytes().all(|b| b.is_ascii_hexdigit()) && s.bytes().any(|b| b.is_ascii_alphabetic())
+    {
         u16::from_str_radix(s, 16)
     } else {
         s.parse()
