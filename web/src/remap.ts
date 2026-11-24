@@ -34,6 +34,7 @@ import {
   type PoolEntry,
   type PoolGroup,
 } from './keypool.ts';
+import { t } from './i18n.ts';
 import './remap.css';
 
 /** Layout for the connected model (same rule as pages.ts `blocksForModel`). */
@@ -42,12 +43,12 @@ function blocksForModel(): { blocks: readonly KeyBlock[]; note: string | null } 
   if (!model || K1_PRO_LAYOUT_MODELS.includes(model)) {
     return {
       blocks: K1_PRO_BLOCKS,
-      note: model ? null : 'Model unknown — showing the K1 Pro reference layout.',
+      note: model ? null : t('keys.modelUnknown'),
     };
   }
   return {
     blocks: K1_PRO_BLOCKS,
-    note: `Layout table for ${model} is not ported yet — showing the K1 Pro reference layout.`,
+    note: t('keys.layoutNotPorted', { model }),
   };
 }
 
@@ -128,9 +129,9 @@ function effectiveValue(layer: number, index: number): number {
 /** Slot index → physical block (for names in warnings/dialogs). */
 function blockNameFor(blocks: readonly KeyBlock[], index: number): string {
   for (const b of blocks) {
-    if (b.display && keyIndexOf(b.pos) === index) return b.name || `key #${index}`;
+    if (b.display && keyIndexOf(b.pos) === index) return b.name || t('common.keySlotN', { i: index });
   }
-  return `key #${index}`;
+  return t('common.keySlotN', { i: index });
 }
 
 // ── Assign / revert ────────────────────────────────────────────────────
@@ -178,7 +179,12 @@ interface PendingChange {
 
 function describeChange(c: PendingChange, blocks: readonly KeyBlock[]): string {
   const name = blockNameFor(blocks, c.index);
-  return `#${c.index} ${name}: ${labelOfValue(c.oldValue) || '(empty)'} → ${labelOfValue(c.newValue) || '(none)'}`;
+  return t('keys.changeDesc', {
+    i: c.index,
+    name,
+    old: labelOfValue(c.oldValue) || t('common.empty'),
+    new: labelOfValue(c.newValue) || t('common.noneShort'),
+  });
 }
 
 /**
@@ -195,10 +201,10 @@ function confirmWrite(title: string, lines: string[], confirmLabel: string): Pro
     for (const line of lines) ul.append(el('li', '', line));
     modal.append(ul);
     modal.append(
-      el('p', 'hint warn', 'This sends the change to the keyboard and checks it was saved.'),
+      el('p', 'hint warn', t('keys.confirmWarn')),
     );
     const row = el('div', 'modal-actions');
-    const cancel = el('button', 'btn', 'Cancel');
+    const cancel = el('button', 'btn', t('common.cancel'));
     const ok = el('button', 'btn btn-primary', confirmLabel);
     cancel.type = 'button';
     ok.type = 'button';
@@ -250,11 +256,9 @@ async function writeChanges(changes: ReadonlyMap<number, number>): Promise<void>
       for (const index of changes.keys()) m.delete(index);
       if (m.size === 0) pendingByLayer.delete(layer);
     }
-    setStatus(
-      `Saved ${changes.size} key change(s) on layer ${layer} — checked on the keyboard.`,
-    );
+    setStatus(t('keys.savedN', { n: changes.size, l: layer }));
   } catch (e) {
-    setStatus(`Could not save the key changes: ${e instanceof Error ? e.message : String(e)}`, true);
+    setStatus(t('keys.saveFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
   } finally {
     busy = false;
     sync();
@@ -272,9 +276,9 @@ async function applyAll(): Promise<void> {
     newValue,
   }));
   const ok = await confirmWrite(
-    `Save ${changes.length} key change(s) to layer ${layer}?`,
+    t('keys.confirmTitleAll', { n: changes.length, l: layer }),
     changes.map((c) => describeChange(c, blocks)),
-    'Save & check',
+    t('keys.saveAndCheck'),
   );
   if (ok) await writeChanges(m);
 }
@@ -286,9 +290,9 @@ async function applyOne(index: number): Promise<void> {
   const { blocks } = blocksForModel();
   const c: PendingChange = { index, oldValue: committedValue(layer, index), newValue };
   const ok = await confirmWrite(
-    `Change ${blockNameFor(blocks, index)} (#${index}) on layer ${layer}?`,
+    t('keys.confirmTitleOne', { name: blockNameFor(blocks, index), i: index, l: layer }),
     [describeChange(c, blocks)],
-    'Save & check',
+    t('keys.saveAndCheck'),
   );
   if (ok) await writeChanges(new Map([[index, newValue]]));
 }
@@ -299,6 +303,17 @@ function discardAll(): void {
 }
 
 // ── Picker pool ────────────────────────────────────────────────────────
+
+/** Pool tab label per group id (resolved per render so it follows the locale). */
+function poolTabLabel(g: PoolGroup): string {
+  switch (g) {
+    case 'basic': return t('keys.poolBasic');
+    case 'system': return t('keys.poolSystem');
+    case 'mouse': return t('keys.poolMouse');
+    case 'media': return t('keys.poolMedia');
+    case 'edit': return t('keys.poolEdit');
+  }
+}
 
 function filteredPool(): PoolEntry[] {
   const q = query.trim().toLowerCase();
@@ -319,15 +334,8 @@ export function renderKeysPage(root: HTMLElement): void {
   root.replaceChildren();
 
   if (!app.connected || !app.snapshot) {
-    const { card: c, body } = card('Keyboard');
-    body.append(
-      el(
-        'p',
-        'hint',
-        'The keyboard visualizer and key remapping need a connected keyboard. ' +
-          'Click a key, pick what it should do, then save.',
-      ),
-    );
+    const { card: c, body } = card(t('keys.title'));
+    body.append(el('p', 'hint', t('keys.connectBlurb')));
     root.append(c);
     return;
   }
@@ -339,12 +347,12 @@ export function renderKeysPage(root: HTMLElement): void {
   }
 
   // ── Keyboard card ──────────────────────────────────────────────────
-  const { card: kc, body: kbody } = card('Keyboard');
+  const { card: kc, body: kbody } = card(t('keys.title'));
 
   const toolbar = el('div', 'segment-bar remap-toolbar');
   const layerBar = el('div', 'segment-bar');
   for (let layer = 0; layer < 4; layer++) {
-    const b = el('button', `segment-item${app.layer === layer ? ' active' : ''}`, `Layer ${layer}`);
+    const b = el('button', `segment-item${app.layer === layer ? ' active' : ''}`, t('common.layer', { n: layer }));
     b.type = 'button';
     b.addEventListener('click', () => void setLayer(layer));
     layerBar.append(b);
@@ -352,9 +360,9 @@ export function renderKeysPage(root: HTMLElement): void {
   toolbar.append(layerBar);
 
   const pendingBadge = el('span', 'chip remap-pending', '');
-  const applyBtn = el('button', 'btn btn-primary remap-apply', 'Apply');
+  const applyBtn = el('button', 'btn btn-primary remap-apply', t('keys.apply'));
   applyBtn.type = 'button';
-  const discardBtn = el('button', 'btn remap-discard', 'Discard');
+  const discardBtn = el('button', 'btn remap-discard', t('keys.discard'));
   discardBtn.type = 'button';
   toolbar.append(pendingBadge, applyBtn, discardBtn);
   kbody.append(toolbar);
@@ -370,12 +378,12 @@ export function renderKeysPage(root: HTMLElement): void {
   });
 
   // ── Pool card (vendor bottom "codeList") ───────────────────────────
-  const { card: pc, body: pbody } = card('Key pool');
+  const { card: pc, body: pbody } = card(t('keys.poolTitle'));
 
   const poolToolbar = el('div', 'pool-toolbar');
   const tabs = el('div', 'pool-tabs segment-bar');
   for (const g of POOL_GROUPS) {
-    const b = el('button', `segment-item pool-tab${activeTab === g.id ? ' active' : ''}`, g.label);
+    const b = el('button', `segment-item pool-tab${activeTab === g.id ? ' active' : ''}`, poolTabLabel(g.id));
     b.type = 'button';
     b.addEventListener('click', () => {
       activeTab = g.id;
@@ -386,13 +394,13 @@ export function renderKeysPage(root: HTMLElement): void {
   poolToolbar.append(tabs);
 
   const right = el('div', 'pool-toolbar-right');
-  const unassignBtn = el('button', 'btn remap-unassign', 'Unassign');
+  const unassignBtn = el('button', 'btn remap-unassign', t('keys.unassign'));
   unassignBtn.type = 'button';
-  unassignBtn.title = 'Make the selected key do nothing';
+  unassignBtn.title = t('keys.unassignWhy');
   unassignBtn.addEventListener('click', () => {
     if (selected !== null) assignValue(selected, POOL_UNASSIGN.value);
   });
-  const applyOneBtn = el('button', 'btn remap-apply-one', 'Save this key');
+  const applyOneBtn = el('button', 'btn remap-apply-one', t('keys.saveThis'));
   applyOneBtn.type = 'button';
   applyOneBtn.addEventListener('click', () => {
     if (selected !== null) void applyOne(selected);
@@ -404,7 +412,7 @@ export function renderKeysPage(root: HTMLElement): void {
   const searchRow = el('div', 'pool-search-row');
   const search = el('input', 'pool-search-input');
   search.type = 'search';
-  search.placeholder = 'Search keys…';
+  search.placeholder = t('keys.searchPh');
   search.value = query;
   search.addEventListener('input', () => {
     query = search.value;
@@ -450,7 +458,7 @@ export function renderKeysPage(root: HTMLElement): void {
       grid.append(item);
     }
     if (grid.childElementCount === 0) {
-      grid.append(el('p', 'hint', 'No keys match the search.'));
+      grid.append(el('p', 'hint', t('keys.noMatch')));
     }
   };
 
@@ -471,15 +479,15 @@ export function renderKeysPage(root: HTMLElement): void {
     });
 
     const count = pending?.size ?? 0;
-    pendingBadge.textContent = count > 0 ? `${count} unsaved` : '';
+    pendingBadge.textContent = count > 0 ? t('common.unsaved', { n: count }) : '';
     pendingBadge.hidden = count === 0;
     applyBtn.disabled = busy || count === 0;
-    applyBtn.textContent = busy ? 'Writing…' : `Apply ${count > 0 ? `(${count})` : ''}`.trim();
+    applyBtn.textContent = busy ? t('keys.writing') : count > 0 ? t('keys.applyN', { n: count }) : t('keys.apply');
     discardBtn.disabled = busy || count === 0;
 
     // Selected-key info + per-key apply.
     if (selected === null) {
-      selInfo.textContent = 'Click a key on the keyboard to pick a new function.';
+      selInfo.textContent = t('keys.pickPrompt');
       selInfo.className = 'pool-selected hint';
       applyOneBtn.disabled = true;
       dupWarn.textContent = '';
@@ -488,12 +496,15 @@ export function renderKeysPage(root: HTMLElement): void {
       const committed = committedValue(layer, selected);
       const pend = pending?.get(selected);
       selInfo.className = 'pool-selected';
-      selInfo.textContent =
-        `#${selected} ${block?.name || '(unnamed)'} — ` +
-        `currently ${labelOfValue(committed) || 'nothing'}` +
-        (pend !== undefined
-          ? `, will become ${labelOfValue(pend) || 'nothing'}`
-          : '');
+      selInfo.textContent = t('keys.selInfo', {
+        i: selected,
+        name: block?.name || t('macro.unnamedEntry'),
+        cur: labelOfValue(committed) || t('keys.nothing'),
+        pend:
+          pend !== undefined
+            ? t('keys.willBecome', { v: labelOfValue(pend) || t('keys.nothing') })
+            : '',
+      });
       applyOneBtn.disabled = busy || pend === undefined;
 
       // Duplicate-assignment warning (tester-contract spirit): the same
@@ -502,9 +513,10 @@ export function renderKeysPage(root: HTMLElement): void {
         const dup = duplicateSlots(layer, selected, pend);
         dupWarn.textContent =
           dup.length > 0
-            ? `Note: ${labelOfValue(pend) || 'that key'} is also assigned to ${dup
-                .map((i) => `#${i}`)
-                .join(', ')}.`
+            ? t('keys.dupNote', {
+                label: labelOfValue(pend) || t('keys.nothing'),
+                slots: dup.map((i) => `#${i}`).join(', '),
+              })
             : '';
       } else {
         dupWarn.textContent = '';

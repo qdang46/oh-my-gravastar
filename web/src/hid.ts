@@ -50,6 +50,7 @@ import {
   normalizeBlob,
 } from './proto/advkey916.ts';
 import { buildLightDataPacket, CUSTOM_LIGHT_SLOTS, type Rgb } from './proto/light.ts';
+import { t } from './i18n.ts';
 
 // ── Device identity tables (spec §1, `Ts` table) ───────────────────────
 
@@ -181,12 +182,12 @@ export class Khub916Session {
    */
   private async transact(pkt: Uint8Array): Promise<Uint8Array> {
     if (this.poisoned) {
-      throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);
+      throw new Error(t('hid.interrupted', { reason: this.poisonReason || t('hid.transferError') }));
     }
     if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
-      throw new Error(`unexpected reply size from the keyboard (${pkt.length} bytes)`);
+      throw new Error(t('hid.badReplySize', { n: pkt.length }));
     }
-    let lastErr = new Error('khub916: no attempt made');
+    let lastErr = new Error(t('hid.noAttempt'));
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       try {
         await this.device.sendFeatureReport(this.reportId, pkt);
@@ -195,12 +196,15 @@ export class Khub916Session {
         // the vendor JS unconditionally drops it (`shift()`).
         const bytes = stripReportId(resp, this.reportId);
         if (bytes.length < HEADER_LEN) {
-          lastErr = new Error(`khub916 short response: ${bytes.length} bytes`);
+          lastErr = new Error(t('hid.shortResponse', { n: bytes.length }));
           continue;
         }
         if (!echoMatches(pkt, bytes)) {
           lastErr = new Error(
-            `khub916 echo mismatch: sent [${hex(bytes.slice(0, HEADER_LEN))}] expected [${hex(pkt.slice(0, HEADER_LEN))}]`,
+            t('hid.echoMismatch', {
+              sent: hex(bytes.slice(0, HEADER_LEN)),
+              exp: hex(pkt.slice(0, HEADER_LEN)),
+            }),
           );
           continue;
         }
@@ -212,8 +216,8 @@ export class Khub916Session {
       }
     }
     this.poisoned = true;
-    this.poisonReason = `command failed after ${MAX_ATTEMPTS} attempts: ${lastErr.message}`;
-    throw new Error(`the keyboard connection was interrupted (${this.poisonReason})`);
+    this.poisonReason = t('hid.attemptsFailed', { n: MAX_ATTEMPTS, msg: lastErr.message });
+    throw new Error(t('hid.writeInterrupted', { reason: this.poisonReason }));
   }
 
   /** receiveFeatureReport raced against our own timeout (spec support varies). */
@@ -221,7 +225,7 @@ export class Khub916Session {
     const dv = await Promise.race([
       this.device.receiveFeatureReport(this.reportId),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('khub916: no answer (timeout)')), TRANSPORT_TIMEOUT_MS),
+        setTimeout(() => reject(new Error(t('hid.timeout'))), TRANSPORT_TIMEOUT_MS),
       ),
     ]);
     return new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
@@ -287,10 +291,10 @@ export class Khub916Session {
    */
   private async configWrite(pkt: Uint8Array): Promise<void> {
     if (this.poisoned) {
-      throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);
+      throw new Error(t('hid.interrupted', { reason: this.poisonReason || t('hid.transferError') }));
     }
     if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
-      throw new Error(`unexpected reply size from the keyboard (${pkt.length} bytes)`);
+      throw new Error(t('hid.badReplySize', { n: pkt.length }));
     }
     try {
       await this.device.sendFeatureReport(this.reportId, pkt);
@@ -299,8 +303,8 @@ export class Khub916Session {
       await new Promise((r) => setTimeout(r, WRITE_SETTLE_MS));
     } catch (e) {
       this.poisoned = true;
-      this.poisonReason = `config write failed: ${e instanceof Error ? e.message : String(e)}`;
-      throw new Error(`the keyboard connection was interrupted (${this.poisonReason})`);
+      this.poisonReason = t('hid.configWriteFailed', { msg: e instanceof Error ? e.message : String(e) });
+      throw new Error(t('hid.writeInterrupted', { reason: this.poisonReason }));
     }
   }
 
@@ -319,7 +323,7 @@ export class Khub916Session {
     await this.configWrite(keymapWritePacket(layer, system, values));
     const back = await this.keyValues(arg);
     if (back.length > KEYMAP_ENTRIES) {
-      throw new Error('the keyboard returned an unexpected keymap size');
+      throw new Error(t('hid.unexpectedKeymap'));
     }
     // Compare zero-padded to the full 128-slot table: devices report
     // only their populated slot count (K1 Pro: 126).
@@ -327,7 +331,7 @@ export class Khub916Session {
       (values[i] ?? 0) === (back[i] ?? 0),
     ).every(Boolean);
     if (!matches) {
-      throw new Error('key change was not confirmed by the keyboard');
+      throw new Error(t('hid.keymapUnconfirmed'));
     }
     return { command: CMD.keymapWrite, verified: true };
   }
@@ -344,7 +348,7 @@ export class Khub916Session {
    */
   async writeMacroRegion(data: Uint8Array): Promise<WriteOutcome> {
     if (data.length === 0 || data.length > 512) {
-      throw new Error(`macro data has an invalid size (${data.length} bytes)`);
+      throw new Error(t('hid.macroBadSize', { n: data.length }));
     }
     const payload = new Uint8Array(512);
     payload.set(data);
@@ -355,7 +359,7 @@ export class Khub916Session {
     const backPad = new Uint8Array(512);
     backPad.set(back.subarray(0, 512));
     if (!bytesEqual(backPad, payload)) {
-      throw new Error('macro save was not confirmed by the keyboard');
+      throw new Error(t('hid.macroUnconfirmed'));
     }
     return { command: CMD.macroWrite, verified: true };
   }
@@ -369,12 +373,12 @@ export class Khub916Session {
    */
   async writeProfile(profile: Uint8Array): Promise<WriteOutcome> {
     if (profile.length === 0 || profile.length > FEATURE_PAYLOAD_BYTES - HEADER_LEN) {
-      throw new Error(`device profile has an invalid size (${profile.length} bytes)`);
+      throw new Error(t('hid.profileBadSize', { n: profile.length }));
     }
     await this.configWrite(buildPacket(CMD.profileWrite, 0x00, 0x80, 0x00, profile));
     const back = await this.profile();
     if (!bytesEqual(back.raw, profile)) {
-      throw new Error('settings save was not confirmed by the keyboard');
+      throw new Error(t('hid.profileUnconfirmed'));
     }
     return { command: CMD.profileWrite, verified: true };
   }
@@ -387,7 +391,7 @@ export class Khub916Session {
   async writeCustomLightColors(colors: readonly Rgb[]): Promise<WriteOutcome> {
     if (colors.length !== CUSTOM_LIGHT_SLOTS) {
       throw new Error(
-        `per-key colour save needs exactly ${CUSTOM_LIGHT_SLOTS} colours, got ${colors.length}`,
+        t('hid.colorsCount', { need: CUSTOM_LIGHT_SLOTS, got: colors.length }),
       );
     }
     const payload = new Uint8Array(CUSTOM_LIGHT_SLOTS * 3);
@@ -402,7 +406,7 @@ export class Khub916Session {
       back.length === colors.length &&
       back.every((b, i) => b.r === colors[i]?.r && b.g === colors[i]?.g && b.b === colors[i]?.b);
     if (!matches) {
-      throw new Error('per-key colours were not confirmed by the keyboard');
+      throw new Error(t('hid.colorsUnconfirmed'));
     }
     return { command: CMD.customLightWrite, verified: true };
   }
@@ -417,7 +421,7 @@ export class Khub916Session {
     await this.configWrite(buildLightDataPacket(data));
     const back = await this.lightColorData();
     if (back.length < data.length || !bytesEqual(back.slice(0, data.length), data)) {
-      throw new Error('lighting settings were not confirmed by the keyboard');
+      throw new Error(t('hid.lightUnconfirmed'));
     }
     return { command: CMD.lightDataWrite, verified: true };
   }
@@ -460,7 +464,7 @@ export class Khub916Session {
    */
   async writeAdvKeyConfig(blob: Uint8Array): Promise<WriteOutcome> {
     if (blob.length !== ADV_BLOB_BYTES) {
-      throw new Error(`advanced-key data has an invalid size (${blob.length} bytes)`);
+      throw new Error(t('hid.advBadSize', { n: blob.length }));
     }
     await this.configWrite(advKeyWritePacket(blob));
     const want = normalizeBlob(blob);
@@ -490,9 +494,7 @@ export class Khub916Session {
    */
   async writeKeyConfiguration(values: readonly number[]): Promise<WriteOutcome> {
     if (values.length === 0 || values.length > KEYMAP_ENTRIES) {
-      throw new Error(
-        `advanced-key save needs 1..=${KEYMAP_ENTRIES} values, got ${values.length}`,
-      );
+      throw new Error(t('hid.kcCount', { max: KEYMAP_ENTRIES, n: values.length }));
     }
     await this.configWrite(keyConfigurationWritePacket(values));
     // Expected read-back = `values` zero-padded to KEYMAP_ENTRIES with
@@ -506,9 +508,7 @@ export class Khub916Session {
     for (let attempt = 0; attempt <= 10; attempt++) {
       const back = await this.keyConfiguration();
       if (back.length > KEYMAP_ENTRIES) {
-        throw new Error(
-          `advanced-key read-back has an unexpected size (${back.length})`,
-        );
+        throw new Error(t('hid.kcBadSize', { n: back.length }));
       }
       const matches = want.every((w, i) => w === (back[i] ?? 0));
       if (matches) {
@@ -517,7 +517,7 @@ export class Khub916Session {
       if (attempt === 10) break;
       await sleep(50);
     }
-    throw new Error('advanced-key save was not confirmed by the keyboard');
+    throw new Error(t('hid.kcUnconfirmed'));
   }
 }
 
@@ -551,26 +551,26 @@ export async function probeReportId(
   const declared = collection.featureReports.map((r) => r.reportId);
   const candidates = [...new Set([...declared, 6, ...range(1, 32).filter((i) => i !== 6)])];
   const pkt = queryPacket(CMD.deviceInfo, 0x01, 0x0a, 0x00);
-  let lastErr = 'no reply from the keyboard';
+  let lastErr = t('hid.noReply');
   for (const id of candidates) {
     try {
       await device.sendFeatureReport(id, pkt);
       const dv = await Promise.race([
         device.receiveFeatureReport(id),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), TRANSPORT_TIMEOUT_MS),
+          setTimeout(() => reject(new Error(t('hid.timeout'))), TRANSPORT_TIMEOUT_MS),
         ),
       ]);
       const bytes = stripReportId(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength), id);
       if (bytes.length >= HEADER_LEN + 9 && echoMatches(pkt, bytes)) {
         return id;
       }
-      lastErr = `channel ${id}: unexpected reply (${bytes.length} bytes)`;
+      lastErr = t('hid.channelSize', { id, n: bytes.length });
     } catch (e) {
-      lastErr = `channel ${id}: ${e instanceof Error ? e.message : String(e)}`;
+      lastErr = t('hid.channelErr', { id, msg: e instanceof Error ? e.message : String(e) });
     }
   }
-  throw new Error(`the keyboard did not answer on any known channel (${lastErr})`);
+  throw new Error(t('hid.noChannel', { why: lastErr }));
 }
 
 function range(from: number, to: number): number[] {
@@ -610,10 +610,10 @@ export interface ConnectedKhub {
 export async function openKhub916(device: HIDDevice): Promise<ConnectedKhub> {
   const match = pickCollection(device);
   if (!match) {
-    throw new Error('this does not look like a supported GravaStar keyboard');
+    throw new Error(t('hid.notKeyboard'));
   }
   if (match.kind === 'wireless') {
-    throw new Error('wireless dongle connections are not supported yet — plug in with USB');
+    throw new Error(t('hid.wirelessUnsupported'));
   }
   await device.open();
   try {

@@ -27,6 +27,7 @@
 import { app, refresh, setStatus, subscribe, type DeviceSnapshot } from './state.ts';
 import { profileWithSleepSeconds } from './proto/khub916.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS } from './k1pro-layout.ts';
+import { t } from './i18n.ts';
 
 // ── DOM helpers (mirror pages.ts) ──────────────────────────────────────
 
@@ -57,7 +58,7 @@ function kv(dl: HTMLElement, key: string, value: string): void {
 
 function comingSoon(title: string, blurb: string, facts: string[] = []): HTMLElement {
   const { card: c, body } = card(title);
-  body.append(el('p', 'coming-soon', 'Coming soon — read-only preview.'));
+  body.append(el('p', 'coming-soon', t('common.comingSoon')));
   body.append(el('p', 'hint', blurb));
   if (facts.length) {
     const ul = el('ul', 'fact-list');
@@ -70,7 +71,7 @@ function comingSoon(title: string, blurb: string, facts: string[] = []): HTMLEle
 function disconnectedCard(title: string, blurb: string): HTMLElement {
   const { card: c, body } = card(title);
   body.append(el('p', 'hint', blurb));
-  body.append(el('p', 'hint warn', 'Connect a keyboard first (top-right → Connect).'));
+  body.append(el('p', 'hint warn', t('common.connectFirst')));
   return c;
 }
 
@@ -133,7 +134,7 @@ export function snapshotToJson(snap: DeviceSnapshot): string {
 export async function buildProfileExport(): Promise<Record<string, unknown>> {
   const c = app.connected;
   const snap = app.snapshot;
-  if (!c || !snap) throw new Error('Connect a keyboard first.');
+  if (!c || !snap) throw new Error(t('config.errConnectFirst'));
 
   const sec = async <T>(fn: () => Promise<T>): Promise<unknown> => {
     try {
@@ -248,7 +249,7 @@ function sessionWrites(session: unknown): KhubWrites {
   return session as KhubWrites;
 }
 
-const PENDING = 'not supported in this build yet';
+const PENDING = t('config.pending');
 
 /**
  * Parse a schema-v1 profile file and turn its khub916 `state` into the
@@ -259,16 +260,16 @@ const PENDING = 'not supported in this build yet';
 export function parseProfileImport(text: string, fileName: string): ParsedImport {
   const doc = JSON.parse(text) as Record<string, unknown>;
   if (doc.schema !== 1) {
-    throw new Error('This file is not a supported omg profile backup.');
+    throw new Error(t('config.errNotProfile'));
   }
   const devices = doc.devices;
   if (!Array.isArray(devices) || devices.length === 0) {
-    throw new Error('This does not look like an omg profile backup file.');
+    throw new Error(t('config.errNotBackup'));
   }
   const dev = devices.find(
     (d) => (d as Record<string, unknown>).protocol === 'khub916',
   ) as Record<string, unknown> | undefined;
-  if (!dev) throw new Error('This backup does not contain a khub916 keyboard.');
+  if (!dev) throw new Error(t('config.errNoKhub'));
 
   const profiles = dev.profiles;
   const prof = (Array.isArray(profiles) ? profiles : []).find(
@@ -279,12 +280,12 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     | Record<string, unknown>
     | undefined;
   if (!state || typeof state !== 'object') {
-    throw new Error('This backup has no keyboard settings to import.');
+    throw new Error(t('config.errNoSettings'));
   }
 
   const c = app.connected;
   const snap = app.snapshot;
-  if (!c || !snap) throw new Error('Connect a keyboard first.');
+  if (!c || !snap) throw new Error(t('config.errConnectFirst'));
   const w = sessionWrites(c.session);
   const sections: ImportSection[] = [];
   const skipped: string[] = [];
@@ -297,7 +298,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
       const arg = Number(argStr);
       if (!Number.isInteger(arg) || arg < 0 || arg > 7) continue;
       if (!Array.isArray(raw)) {
-        skipped.push(`key assignments (layer ${argStr}): unreadable data`);
+        skipped.push(t('config.layerUnreadable', { n: argStr }));
         continue;
       }
       const values: number[] = [];
@@ -313,26 +314,26 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
         }
       }
       if (bad || values.length === 0) {
-        skipped.push(`key assignments (layer ${argStr}): unreadable values`);
+        skipped.push(t('config.layerUnreadableVals', { n: argStr }));
         continue;
       }
       jobs.push({ arg, values });
     }
     if (jobs.length) {
       if (!w.writeKeymap) {
-        skipped.push(`key assignments (${jobs.length} layer(s)): ${PENDING}`);
+        skipped.push(t('config.pendingLayers', { n: jobs.length, why: PENDING }));
       } else {
         const writeKeymap = w.writeKeymap.bind(c.session);
         sections.push({
-          name: 'Key assignments',
-          summary: `${jobs.length} key layer(s)`,
+          name: t('config.keymapSection'),
+          summary: t('config.keymapSummary', { n: jobs.length }),
           apply: async () => {
             const done: string[] = [];
             for (const j of jobs) {
               const out = await writeKeymap(j.arg & 3, (j.arg >> 2) & 1, j.values);
-              done.push(`layer ${j.arg & 3}${out.verified ? ' ✓' : ''}`);
+              done.push(`${t('config.keymapSaved', { n: j.arg & 3 })}${out.verified ? ' ✓' : ''}`);
             }
-            return `saved (${done.join(', ')})`;
+            return t('config.savedList', { list: done.join(', ') });
           },
         });
       }
@@ -380,20 +381,20 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     }
     if (complete) {
       if (!w.writeCustomLightColors) {
-        skipped.push(`per-key colours (${byIndex.size} key(s)): ${PENDING}`);
+        skipped.push(t('config.pendingColors', { n: byIndex.size, why: PENDING }));
       } else {
         const writeColors = w.writeCustomLightColors.bind(c.session);
         sections.push({
-          name: 'Per-key colours',
-          summary: `${byIndex.size} key colour(s) from the file`,
+          name: t('config.colorsSection'),
+          summary: t('config.colorsSummary', { n: byIndex.size }),
           apply: async () => {
             const out = await writeColors(colors);
-            return `saved${out.verified ? ' and checked' : ''}`;
+            return out.verified ? t('config.savedChecked') : t('config.saved');
           },
         });
       }
     } else {
-      skipped.push('per-key colours: unreadable data in the file');
+      skipped.push(t('config.skipColorsBad'));
     }
   }
 
@@ -403,20 +404,20 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     const bytes = hexToBytes(ld);
     if (bytes && bytes.length > 0) {
       if (!w.writeLightData) {
-        skipped.push(`lighting effects (${bytes.length} bytes): ${PENDING}`);
+        skipped.push(t('config.pendingLight', { n: bytes.length, why: PENDING }));
       } else {
         const writeLightData = w.writeLightData.bind(c.session);
         sections.push({
-          name: 'Lighting effects',
-          summary: `${bytes.length} bytes of effect data`,
+          name: t('config.lightSection'),
+          summary: t('config.lightSummary', { n: bytes.length }),
           apply: async () => {
             const out = await writeLightData(bytes);
-            return `saved${out.verified ? ' and checked' : ''}`;
+            return out.verified ? t('config.savedChecked') : t('config.saved');
           },
         });
       }
     } else {
-      skipped.push('lighting effects: unreadable data in the file');
+      skipped.push(t('config.skipLightBad'));
     }
   }
 
@@ -426,30 +427,27 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     const bytes = hexToBytes(mx);
     if (bytes && bytes.length > 0 && bytes.length <= 512) {
       if (!w.writeMacroRegion) {
-        skipped.push(`macros (${bytes.length} bytes): ${PENDING}`);
+        skipped.push(t('config.pendingMacro', { n: bytes.length, why: PENDING }));
       } else {
         const writeMacro = w.writeMacroRegion.bind(c.session);
         sections.push({
-          name: 'Macros',
-          summary: `${bytes.length} bytes of macro data`,
+          name: t('config.macroSection'),
+          summary: t('config.macroSummary', { n: bytes.length }),
           apply: async () => {
             const out = await writeMacro(bytes);
-            return `saved${out.verified ? ' and checked' : ''}`;
+            return out.verified ? t('config.savedChecked') : t('config.saved');
           },
         });
       }
     } else {
-      skipped.push('macros: unreadable data in the file');
+      skipped.push(t('config.skipMacroBad'));
     }
   }
 
   // ── Profile blob: export-only, same as `omg profile import` ──
   if (state.profile && typeof state.profile === 'object') {
     const p = state.profile as Record<string, unknown>;
-    skipped.push(
-      'raw device profile (sleep time, light mode): not applied — change those ' +
-        'on the Settings and Lighting pages instead',
-    );
+    skipped.push(t('config.skipProfile'));
   }
 
   return {
@@ -466,11 +464,7 @@ function renderBasic(root: HTMLElement): void {
   root.replaceChildren();
   if (!app.connected || !app.snapshot) {
     root.append(
-      disconnectedCard(
-        'Keyboard layout',
-        'Shows the physical layout of the connected keyboard — which keys ' +
-          'exist and where they sit.',
-      ),
+      disconnectedCard(t('basic.title'), t('basic.disconnectedBlurb')),
     );
     return;
   }
@@ -482,29 +476,21 @@ function renderBasic(root: HTMLElement): void {
   const physical = blocks.filter((b) => b.display);
   const hidden = blocks.length - physical.length;
 
-  const c = card('Keyboard layout');
+  const c = card(t('basic.title'));
   const dl = el('dl', 'kv');
-  kv(dl, 'Keys', `${physical.length} physical keys`);
-  kv(dl, 'Key size', 'standard 1u keys (the size used by most keyboards)');
+  kv(dl, t('basic.kvKeys'), t('basic.keysCount', { n: physical.length }));
+  kv(dl, t('basic.kvKeySize'), t('basic.keySize'));
   kv(
     dl,
-    'Layout table',
+    t('basic.layoutTable'),
     model && K1_PRO_LAYOUT_MODELS.includes(model)
-      ? 'matched to this keyboard model'
-      : 'generic reference layout — a table for this model is not available yet',
+      ? t('basic.layoutMatched')
+      : t('basic.layoutGeneric'),
   );
-  kv(dl, 'Live preview', 'the Keys page shows this layout with live key labels and lighting');
+  kv(dl, t('basic.kvLivePreview'), t('basic.livePreview'));
   c.body.append(dl);
 
-  c.body.append(
-    el(
-      'p',
-      'hint',
-      'The vendor app lets you draw custom keycap shapes and spacing, but it ' +
-        'only saves them in the browser — it never sends them to the keyboard. ' +
-        'This page shows the fixed layout the keyboard actually uses.',
-    ),
-  );
+  c.body.append(el('p', 'hint', t('basic.hint')));
 
   const disabled = el('div', 'sec-actions');
   const mkBtn = (label: string, reason: string): void => {
@@ -514,9 +500,9 @@ function renderBasic(root: HTMLElement): void {
     b.title = reason;
     disabled.append(b);
   };
-  mkBtn('Edit key shape', 'The vendor app only stores this in the browser, not on the keyboard');
-  mkBtn('Hidden keys', 'Layout details are browser-side only in the vendor app');
-  mkBtn('Base size / gaps', 'Layout editing is browser-side only — nothing to send to the keyboard');
+  mkBtn(t('basic.editKeyShape'), t('basic.editKeyShapeWhy'));
+  mkBtn(t('basic.hiddenKeys'), t('basic.hiddenKeysWhy'));
+  mkBtn(t('basic.baseSize'), t('basic.baseSizeWhy'));
   c.body.append(disabled);
   root.append(c.card);
 }
@@ -536,33 +522,21 @@ function renderConfig(root: HTMLElement): void {
     importBusy = false;
     importLog = [];
     root.append(
-      disconnectedCard(
-        'Backup & restore',
-        'Save everything stored on the keyboard to a file, or restore a ' +
-          'previously saved file.',
-      ),
+      disconnectedCard(t('config.title'), t('config.disconnectedBlurb')),
     );
     return;
   }
 
   // ── Export ──
-  const ex = card('Save a backup');
-  ex.body.append(
-    el(
-      'p',
-      'hint',
-      'Downloads a JSON file containing everything currently stored on the ' +
-        'keyboard — key assignments, lighting, macros and device info. ' +
-        'Use it to restore later or to move settings between keyboards.',
-    ),
-  );
-  const exBtn = el('button', 'sec-btn', 'Download backup file');
+  const ex = card(t('config.exportTitle'));
+  ex.body.append(el('p', 'hint', t('config.exportHint')));
+  const exBtn = el('button', 'sec-btn', t('config.downloadBtn'));
   exBtn.type = 'button';
   exBtn.disabled = app.busy;
   exBtn.addEventListener('click', () => {
     void (async () => {
       exBtn.disabled = true;
-      exBtn.textContent = 'Reading device…';
+      exBtn.textContent = t('config.reading');
       try {
         const doc = await buildProfileExport();
         const blob = new Blob([JSON.stringify(doc, null, 2) + '\n'], {
@@ -574,12 +548,12 @@ function renderConfig(root: HTMLElement): void {
         a.download = `omg-khub916-${stamp}.json`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
-        setStatus('Backup file downloaded.');
+        setStatus(t('config.downloaded'));
       } catch (e) {
-        setStatus(`Could not create the backup: ${e instanceof Error ? e.message : String(e)}`, true);
+        setStatus(t('config.exportFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
       } finally {
         exBtn.disabled = false;
-        exBtn.textContent = 'Download backup file';
+        exBtn.textContent = t('config.downloadBtn');
       }
     })();
   });
@@ -587,16 +561,8 @@ function renderConfig(root: HTMLElement): void {
   root.append(ex.card);
 
   // ── Import ──
-  const im = card('Restore from backup');
-  im.body.append(
-    el(
-      'p',
-      'hint',
-      'Pick a backup file made by this page (or the omg CLI). The page shows ' +
-        'exactly what will change before anything is written; each part is ' +
-        'checked on the keyboard afterwards.',
-    ),
-  );
+  const im = card(t('config.importTitle'));
+  im.body.append(el('p', 'hint', t('config.importHint')));
 
   const fileInput = el('input', 'sec-file');
   fileInput.type = 'file';
@@ -615,12 +581,12 @@ function renderConfig(root: HTMLElement): void {
           importPreview = parseProfileImport(text, f.name);
         } catch (e) {
           importPreview = null;
-          importLog = [`That file cannot be used: ${e instanceof Error ? e.message : String(e)}`];
+          importLog = [t('config.fileBad', { msg: e instanceof Error ? e.message : String(e) })];
         }
         renderConfig(root);
       },
       (e) => {
-        importLog = [`Could not read that file: ${e instanceof Error ? e.message : String(e)}`];
+        importLog = [t('config.fileUnreadable', { msg: e instanceof Error ? e.message : String(e) })];
         renderConfig(root);
       },
     );
@@ -635,9 +601,9 @@ function renderConfig(root: HTMLElement): void {
 
   if (importPreview) {
     const p = importPreview;
-    im.body.append(el('p', 'hint', `File: ${p.fileName} — model "${p.model}"`));
+    im.body.append(el('p', 'hint', t('config.fileLine', { name: p.fileName, model: p.model })));
     if (p.sections.length === 0) {
-      im.body.append(el('p', 'hint warn', 'No writable sections found in this file.'));
+      im.body.append(el('p', 'hint warn', t('config.noWritable')));
     } else {
       const ul = el('ul', 'fact-list');
       for (const s of p.sections) ul.append(el('li', '', `${s.name}: ${s.summary}`));
@@ -645,7 +611,9 @@ function renderConfig(root: HTMLElement): void {
       const applyBtn = el(
         'button',
         'sec-btn sec-btn-danger',
-        importConfirm ? `Yes — write ${p.sections.length} section(s) to the keyboard` : 'Write to keyboard',
+        importConfirm
+          ? t('config.writeBtnConfirm', { n: p.sections.length })
+          : t('config.writeBtn'),
       );
       applyBtn.type = 'button';
       applyBtn.disabled = importBusy || app.busy;
@@ -666,10 +634,10 @@ function renderConfig(root: HTMLElement): void {
             for (const s of sections) {
               results.push(`${s.name}: ${await s.apply()}`);
             }
-            results.push('All sections saved.');
+            results.push(t('config.allSaved'));
             await refresh();
           } catch (e) {
-            results.push(`FAILED: ${e instanceof Error ? e.message : String(e)}`);
+            results.push(t('config.failed', { msg: e instanceof Error ? e.message : String(e) }));
           } finally {
             importBusy = false;
             importPreview = null;
@@ -680,12 +648,12 @@ function renderConfig(root: HTMLElement): void {
       });
       im.body.append(applyBtn);
       im.body.append(
-        el('p', 'hint warn', 'This writes to the keyboard and checks each part afterwards.'),
+        el('p', 'hint warn', t('config.writeWarn')),
       );
     }
     if (p.skipped.length) {
       const ul = el('ul', 'fact-list');
-      for (const s of p.skipped) ul.append(el('li', '', `skipped — ${s}`));
+      for (const s of p.skipped) ul.append(el('li', '', t('config.skippedPrefix', { what: s })));
       im.body.append(ul);
     }
   }
@@ -697,15 +665,7 @@ function renderConfig(root: HTMLElement): void {
 function renderRhythm(root: HTMLElement): void {
   root.replaceChildren();
   root.append(
-    comingSoon(
-      'Music-reactive lighting',
-      'The vendor app can make the keyboard lights react to music, but it ' +
-        'needs their Windows companion program — a web page cannot do that part.',
-      [
-        'Keyboard-side lighting is fully available today — see the Lighting page.',
-        'Live per-key colours are visible on the Keys page.',
-      ],
-    ),
+    comingSoon(t('rhythm.title'), t('rhythm.blurb'), [t('rhythm.fact1'), t('rhythm.fact2')]),
   );
 }
 
@@ -724,10 +684,7 @@ function renderSetting(root: HTMLElement): void {
     sleepBusy = false;
     sleepLog = [];
     root.append(
-      disconnectedCard(
-        'Settings',
-        'Device settings that can be changed safely from the browser.',
-      ),
+      disconnectedCard(t('setting.title'), t('setting.disconnectedBlurb')),
     );
     return;
   }
@@ -735,16 +692,11 @@ function renderSetting(root: HTMLElement): void {
   const snap = app.snapshot;
   const current = snap.profile.sleepSeconds;
 
-  const c = card('Sleep timer');
+  const c = card(t('setting.sleepTitle'));
   const dl = el('dl', 'kv');
-  kv(dl, 'Current', current !== null ? `${current} seconds` : '—');
-  kv(dl, 'What it does', 'how long the keyboard stays awake before sleeping');
-  kv(
-    dl,
-    'Note',
-    'The vendor app only shows this for wireless keyboards and warns it may ' +
-      'have no effect when plugged in — your mileage may vary.',
-  );
+  kv(dl, t('setting.sleepCurrent'), current !== null ? t('setting.sleepSeconds', { n: current }) : '—');
+  kv(dl, t('setting.sleepWhat'), t('setting.sleepWhatText'));
+  kv(dl, t('setting.sleepNote'), t('setting.sleepNoteText'));
   c.body.append(dl);
 
   const row = el('div', 'sec-actions');
@@ -753,7 +705,7 @@ function renderSetting(root: HTMLElement): void {
   input.min = '0';
   input.max = '255';
   input.step = '1';
-  input.placeholder = current !== null ? String(current) : 'seconds';
+  input.placeholder = current !== null ? String(current) : t('setting.secondsPlaceholder');
   input.value = sleepInput || (current !== null ? String(current) : '');
   input.addEventListener('input', () => {
     sleepInput = input.value;
@@ -763,14 +715,14 @@ function renderSetting(root: HTMLElement): void {
   const applyBtn = el(
     'button',
     'sec-btn sec-btn-danger',
-    sleepConfirm ? 'Yes — save to keyboard' : 'Set sleep time',
+    sleepConfirm ? t('setting.confirmSleep') : t('setting.setSleep'),
   );
   applyBtn.type = 'button';
   applyBtn.disabled = sleepBusy || app.busy;
   applyBtn.addEventListener('click', () => {
     const seconds = Number(input.value);
     if (!Number.isInteger(seconds) || seconds < 0 || seconds > 255) {
-      sleepLog = ['Enter a whole number of seconds between 0 and 255.'];
+      sleepLog = [t('setting.badSeconds')];
       renderSetting(root);
       return;
     }
@@ -788,7 +740,7 @@ function renderSetting(root: HTMLElement): void {
       const writeProfile = session ? sessionWrites(session).writeProfile : undefined;
       if (!session || !writeProfile) {
         sleepBusy = false;
-        sleepLog = [`Saving sleep time is ${PENDING}.`];
+        sleepLog = [t('setting.sleepPending', { why: PENDING })];
         renderSetting(root);
         return;
       }
@@ -798,9 +750,13 @@ function renderSetting(root: HTMLElement): void {
         const out = await writeProfile.call(session, blob);
         sleepInput = '';
         await refresh();
-        sleepLog = [`Sleep time set to ${seconds} seconds${out.verified ? ' — checked on the keyboard' : ' — sent but not confirmed'}.`];
+        sleepLog = [
+          out.verified
+            ? t('setting.sleepSaved', { n: seconds })
+            : t('setting.sleepSent', { n: seconds }),
+        ];
       } catch (e) {
-        sleepLog = [`Could not save the sleep time: ${e instanceof Error ? e.message : String(e)}`];
+        sleepLog = [t('setting.sleepFailed', { msg: e instanceof Error ? e.message : String(e) })];
       } finally {
         sleepBusy = false;
         renderSetting(root);
@@ -817,13 +773,13 @@ function renderSetting(root: HTMLElement): void {
   }
   root.append(c.card);
 
-  const facts = card('Other settings available elsewhere');
+  const facts = card(t('setting.otherTitle'));
   const ul = el('ul', 'fact-list');
   ul.append(
-    el('li', '', 'Lighting effects, speed and brightness — see the Lighting page.'),
-    el('li', '', 'Connection details, firmware version and battery — see the Device page.'),
-    el('li', '', 'Key assignments, macros and advanced keys — see the Keys, Macro and Advanced pages.'),
-    el('li', '', 'Factory reset and firmware updates are deliberately not offered here for safety.'),
+    el('li', '', t('setting.factLight')),
+    el('li', '', t('setting.factDevice')),
+    el('li', '', t('setting.factKeys')),
+    el('li', '', t('setting.factSafety')),
   );
   facts.body.append(ul);
   root.append(facts.card);

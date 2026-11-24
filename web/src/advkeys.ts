@@ -43,6 +43,7 @@ import {
 } from './proto/advkey916.ts';
 import { decodeKeyValue, keyValueLabel, KEYMAP_ENTRIES } from './proto/khub916.ts';
 import { KEY_POOL, POOL_UNASSIGN, type PoolEntry } from './keypool.ts';
+import { t } from './i18n.ts';
 
 // ── DOM helpers (same style as macro.ts) ───────────────────────────────
 
@@ -83,7 +84,7 @@ function hex8(v: number): string {
  */
 function valueText(v: number): string {
   const label = valueLabel(v);
-  return label !== '' && !label.startsWith('0x') ? label : '(custom value)';
+  return label !== '' && !label.startsWith('0x') ? label : t('adv.customValue');
 }
 
 /** `title` tooltip carrying the raw hex for a list of values. */
@@ -95,18 +96,18 @@ function valuesTitle(values: readonly number[]): string {
 function detailText(b: AdvBinding): string {
   const d = b.detail;
   if (d.kind === 'socd') {
-    const dirs = ['last-input priority', 'key A priority', 'key B priority', 'all-cancel'];
-    return `${dirs[d.direction] ?? `mode ${d.direction}`}${d.keyB ? ' · involves key B' : ' · involves key A'}`;
+    const dirs = [t('adv.dirLast'), t('adv.dirA'), t('adv.dirB'), t('adv.dirAll')];
+    return `${dirs[d.direction] ?? `mode ${d.direction}`}${d.keyB ? ` · ${t('adv.involvesB')}` : ` · ${t('adv.involvesA')}`}`;
   }
-  if (d.kind === 'mt') return `hold after ${d.time * 10} ms`
-  return 'toggle';
+  if (d.kind === 'mt') return t('adv.holdAfter', { ms: d.time * 10 })
+  return t('adv.toggle');
 }
 
-const SOCD_DIRECTIONS: readonly { id: number; label: string }[] = [
-  { id: 0, label: 'Last input wins' },
-  { id: 1, label: 'Key A priority' },
-  { id: 2, label: 'Key B priority' },
-  { id: 3, label: 'All cancel' },
+const SOCD_DIRECTIONS: readonly { id: number; labelKey: string }[] = [
+  { id: 0, labelKey: 'adv.socdLastWins' },
+  { id: 1, labelKey: 'adv.socdAPriority' },
+  { id: 2, labelKey: 'adv.socdBPriority' },
+  { id: 3, labelKey: 'adv.socdAllCancel' },
 ];
 
 // ── Page ───────────────────────────────────────────────────────────────
@@ -153,7 +154,7 @@ export class AdvPage {
       this.keymap = km.map((v) => v >>> 0);
       this.blobUnconfirmed = false;
     } catch (e) {
-      setStatus(`Could not read advanced-key settings: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(t('adv.readFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
     } finally {
       this.loading = false;
       this.render();
@@ -174,10 +175,10 @@ export class AdvPage {
     this.el.replaceChildren();
     if (!app.connected || !app.snapshot) {
       const c = el('section', 'card');
-      c.append(el('h2', '', 'Advanced keys'));
+      c.append(el('h2', '', t('adv.title')));
       const body = el('div', 'card-body');
       body.append(
-        el('p', 'hint', 'Connect a keyboard to manage advanced keys — SOCD, mod-tap and toggle functions.'),
+        el('p', 'hint', t('adv.connectBlurb')),
       );
       c.append(body);
       this.el.append(c);
@@ -185,10 +186,10 @@ export class AdvPage {
     }
     if (this.blob === null || this.keymap === null) {
       const c = el('section', 'card');
-      c.append(el('h2', '', 'Advanced keys'));
+      c.append(el('h2', '', t('adv.title')));
       const body = el('div', 'card-body');
-      body.append(el('p', 'hint', this.loading ? 'Reading adv-key state…' : 'Adv-key state unavailable — press Refresh.'));
-      const r = btn('Refresh');
+      body.append(el('p', 'hint', this.loading ? t('adv.reading') : t('adv.unavailable')));
+      const r = btn(t('shell.refresh'));
       r.disabled = this.busy;
       r.addEventListener('click', () => void this.refresh());
       body.append(r);
@@ -206,53 +207,32 @@ export class AdvPage {
 
   private renderInfo(): void {
     const c = el('section', 'card');
-    c.append(el('h2', '', 'Advanced keys — SOCD / MT / TGL'));
+    c.append(el('h2', '', t('adv.cardTitle')));
     const body = el('div', 'card-body');
     const entries = this.entries();
     const bindings = this.bindings();
     const chips = el('div', 'chip-row');
     for (const k of ['mt', 'socd', 'tgl'] as const) {
       chips.append(
-        el('span', 'chip', `${KIND_LABEL[k]}: ${entries.filter((e) => e.kind === k).length} history · ${bindings.filter((b) => b.kind === k).length} bound`),
+        el('span', 'chip', t('adv.chipCounts', {
+          label: KIND_LABEL[k],
+          hist: entries.filter((e) => e.kind === k).length,
+          bound: bindings.filter((b) => b.kind === k).length,
+        })),
       );
     }
     body.append(chips);
-    body.append(
-      el(
-        'p',
-        'hint',
-        'SOCD makes two opposing keys share one output, mod-tap (MT) gives a key ' +
-          'two actions depending on how long you hold it, and toggle (TGL) makes ' +
-          'a key switch another key on or off with each press. There is no delete ' +
-          'on the device — "Unbind" clears the key\'s assignment but keeps its ' +
-          'stored settings.',
-      ),
-    );
+    body.append(el('p', 'hint', t('adv.hint')));
     const tech = el('details', 'advanced');
-    tech.append(el('summary', '', 'Technical details'));
+    tech.append(el('summary', '', t('common.technicalDetails')));
     const techBody = el('div', 'advanced-body');
-    techBody.append(
-      el(
-        'p',
-        'hint',
-        `History blob: ${ADV_BLOB_BYTES} B — SOCD/MT slots are 8 B, TGL slots 4 B. ` +
-          'Bindings live in the layer-0 keymap as 0x20/0x21/0x22 values.',
-      ),
-    );
+    techBody.append(el('p', 'hint', t('adv.techHint', { n: ADV_BLOB_BYTES })));
     tech.append(techBody);
     body.append(tech);
     if (this.blobUnconfirmed) {
-      body.append(
-        el(
-          'p',
-          'hint warn',
-          'The last settings write was sent but the keyboard did not confirm it. ' +
-            'On K1 Pro firmware this particular save does not always stick — ' +
-            'press Refresh in a minute to check, or try again.',
-        ),
-      );
+      body.append(el('p', 'hint warn', t('adv.unconfirmedWarn')));
     }
-    const r = btn('Refresh');
+    const r = btn(t('shell.refresh'));
     r.disabled = this.busy;
     r.addEventListener('click', () => void this.refresh());
     body.append(r);
@@ -266,16 +246,16 @@ export class AdvPage {
     const entries = this.entries().filter((e) => e.kind === kind);
     const bindings = this.bindings().filter((b) => b.kind === kind);
     const c = el('section', 'card');
-    c.append(el('h2', '', `${KIND_LABEL[kind]} advanced keys`));
+    c.append(el('h2', '', t('adv.kindTitle', { kind: KIND_LABEL[kind] })));
     const body = el('div', 'card-body');
 
     // Bindings table.
     if (bindings.length === 0) {
-      body.append(el('p', 'hint', 'No keys use this kind of advanced function yet.'));
+      body.append(el('p', 'hint', t('adv.noneBound')));
     } else {
       const table = el('table', 'macro-table');
       const head = el('tr');
-      for (const h of ['Key slot', 'Position', 'Setting', 'Detail', 'Saved values', '']) {
+      for (const h of [t('adv.colSlot'), t('adv.colPos'), t('adv.colSetting'), t('adv.colDetail'), t('adv.colSaved'), '']) {
         head.append(el('th', '', h));
       }
       const thead = el('thead');
@@ -287,7 +267,7 @@ export class AdvPage {
         const payload = this.blob ? bindingPayload(this.blob, b) : null;
         const payloadText = payload
           ? payload.map((v) => valueText(v)).join(', ')
-          : '(no saved settings — stale assignment)';
+          : t('adv.noSaved');
         const setting = el('td', 'mono', valueLabel(b.value) || KIND_LABEL[b.kind]);
         setting.title = hex8(b.value);
         const saved = el('td', 'mono adv-payload', payloadText);
@@ -300,7 +280,7 @@ export class AdvPage {
           saved,
         );
         const actions = el('td', 'macro-row-actions');
-        const un = btn('Unbind', 'Remove this key\'s advanced function. The saved settings stay stored on the keyboard.');
+        const un = btn(t('adv.unbind'), t('adv.unbindWhy'));
         un.disabled = this.busy;
         un.addEventListener('click', () => void this.unbind(b));
         actions.append(un);
@@ -313,10 +293,10 @@ export class AdvPage {
 
     // History table.
     if (entries.length > 0) {
-      body.append(el('p', 'hint', 'Saved settings on the keyboard:'));
+      body.append(el('p', 'hint', t('adv.savedOnKb')));
       const htable = el('table', 'macro-table');
       const hhead = el('tr');
-      for (const h of ['Slot', 'Stored values']) hhead.append(el('th', '', h));
+      for (const h of [t('adv.colPos'), t('adv.colStored')]) hhead.append(el('th', '', h));
       const hthead = el('thead');
       hthead.append(hhead);
       htable.append(hthead);
@@ -345,7 +325,7 @@ export class AdvPage {
     const km = this.keymap ?? [];
     km.forEach((v, i) => {
       if (exclude.includes(i)) return;
-      const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
+      const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || t('common.empty')}`);
       o.title = hex8(v);
       o.value = String(i);
       sel.append(o);
@@ -356,7 +336,7 @@ export class AdvPage {
   /** Key-value picker for MT tap/hold: vendor `Ca[]` pool + (none). */
   private valueSelect(): HTMLSelectElement {
     const sel = el('select', 'macro-select') as HTMLSelectElement;
-    const none = el('option', '', '(none)');
+    const none = el('option', '', t('common.noneShort'));
     none.value = String(POOL_UNASSIGN.value);
     sel.append(none);
     for (const e of KEY_POOL as readonly PoolEntry[]) {
@@ -375,34 +355,34 @@ export class AdvPage {
     if (kind === 'mt') {
       const bind = this.slotSelect();
       bind.value = String(this.firstBindableSlot());
-      row.append(field('Key to change', bind));
+      row.append(field(t('adv.fKeyToChange'), bind));
       const tap = this.valueSelect();
       tap.value = '4'; // 'A' (HID usage 0x04)
-      row.append(field('Tap (short press)', tap));
+      row.append(field(t('adv.fTap'), tap));
       const hold = this.valueSelect();
       hold.value = '131072'; // L_shift (vendor pool value)
-      row.append(field('Hold (long press)', hold));
+      row.append(field(t('adv.fHold'), hold));
       const time = el('input', 'macro-num') as HTMLInputElement;
       time.type = 'number';
       time.min = '0';
       time.max = '100';
       time.step = '1';
       time.value = '50';
-      time.title = 'How long you must hold the key before the Hold action fires';
-      row.append(field('Hold time (×10 ms)', time));
+      time.title = t('adv.holdTimeWhy');
+      row.append(field(t('adv.fHoldTime'), time));
       body.append(row);
-      const go = btn(`Add MT key`, 'Saves the key binding and its settings to the keyboard');
+      const go = btn(t('adv.addMt'), t('adv.saveToKb'));
       go.classList.add('primary');
       go.disabled = this.busy;
-      go.title = 'Saves the key binding and its settings to the keyboard';
+      go.title = t('adv.saveToKb');
       go.addEventListener('click', () => void this.addMt(bind, tap, hold, time));
       body.append(go);
     } else if (kind === 'socd') {
       const keyA = this.slotSelect();
       keyA.value = String(this.firstBindableSlot());
-      row.append(field('Key A (slot)', keyA));
+      row.append(field(t('adv.fKeyA'), keyA));
       const keyB = this.slotSelect([Number(keyA.value)]);
-      row.append(field('Key B (slot)', keyB));
+      row.append(field(t('adv.fKeyB'), keyB));
       keyA.addEventListener('change', () => {
         // Keep B distinct from A.
         const cur = Number(keyB.value);
@@ -410,7 +390,7 @@ export class AdvPage {
         const km = this.keymap ?? [];
         km.forEach((v, i) => {
           if (i === Number(keyA.value)) return;
-          const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
+          const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || t('common.empty')}`);
           o.title = hex8(v);
           o.value = String(i);
           keyB.append(o);
@@ -419,13 +399,13 @@ export class AdvPage {
       });
       const dir = el('select', 'macro-select') as HTMLSelectElement;
       for (const d of SOCD_DIRECTIONS) {
-        const o = el('option', '', d.label);
+        const o = el('option', '', t(d.labelKey));
         o.value = String(d.id);
         dir.append(o);
       }
-      row.append(field('Direction', dir));
+      row.append(field(t('adv.fDirection'), dir));
       body.append(row);
-      const go = btn('Add SOCD pair', 'Saves the key bindings and settings to the keyboard');
+      const go = btn(t('adv.addSocd'), t('adv.saveToKb'));
       go.classList.add('primary');
       go.disabled = this.busy;
       go.addEventListener('click', () => void this.addSocd(keyA, keyB, dir));
@@ -433,16 +413,16 @@ export class AdvPage {
     } else {
       const bind = this.slotSelect();
       bind.value = String(this.firstBindableSlot());
-      row.append(field('Key to change', bind));
+      row.append(field(t('adv.fKeyToChange'), bind));
       const toggle = this.slotSelect([Number(bind.value)]);
-      row.append(field('Toggle target (slot)', toggle));
+      row.append(field(t('adv.fToggleTarget'), toggle));
       bind.addEventListener('change', () => {
         const cur = Number(toggle.value);
         const km = this.keymap ?? [];
         if (cur !== Number(bind.value) && km[cur] !== undefined) toggle.value = String(cur);
       });
       body.append(row);
-      const go = btn('Add TGL key', 'Saves the key binding and settings to the keyboard');
+      const go = btn(t('adv.addTgl'), t('adv.saveToKb'));
       go.classList.add('primary');
       go.disabled = this.busy;
       go.addEventListener('click', () => void this.addTgl(bind, toggle));
@@ -453,13 +433,11 @@ export class AdvPage {
   private addHint(kind: AdvKind): string {
     switch (kind) {
       case 'mt':
-        return 'Mod-tap: short press emits Tap, long press emits Hold after the threshold. ' +
-          'The bind key\'s current value is replaced by the adv binding.';
+        return t('adv.addHintMt');
       case 'socd':
-        return 'SOCD: two opposing keys share one output; the Direction picks the resolution mode. ' +
-          'Both keys\' current values are stored as the history entry.';
+        return t('adv.addHintSocd');
       case 'tgl':
-        return 'Toggle: pressing the bind key toggles the output stored from the toggle slot\'s current value.';
+        return t('adv.addHintTgl');
     }
   }
 
@@ -484,12 +462,7 @@ export class AdvPage {
   private async applyPlan(plan: AdvPlan, desc: string): Promise<void> {
     if (this.busy || !app.connected || !app.snapshot) return;
     if (
-      !window.confirm(
-        `${desc}\n\n` +
-          'This saves the change to the keyboard. Note: on some firmware the ' +
-          'saved settings may not stick — the page will tell you honestly if ' +
-          'that happens. Continue?',
-      )
+      !window.confirm(t('adv.confirmWrite', { desc }))
     ) {
       return;
     }
@@ -513,13 +486,11 @@ export class AdvPage {
       app.snapshot.keymaps.delete(0);
       void ensureKeymap(0).catch(() => {});
 
-      const hist = ho.verified
-        ? 'settings saved and checked'
-        : 'settings sent but NOT confirmed (this firmware may not keep them — press Refresh in a minute to check)';
-      setStatus(`${desc} — key binding saved; ${hist}.`);
+      const hist = ho.verified ? t('adv.histSaved') : t('adv.histUnconfirmed');
+      setStatus(t('adv.savedOk', { desc, hist }));
       emit();
     } catch (e) {
-      setStatus(`Could not save the advanced-key change: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(t('adv.saveFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
       // The keymap half may have landed; refresh both reads.
       void this.refresh();
     } finally {
@@ -531,26 +502,31 @@ export class AdvPage {
   private async addMt(bind: HTMLSelectElement, tap: HTMLSelectElement, hold: HTMLSelectElement, time: HTMLInputElement): Promise<void> {
     if (!this.blob || !this.keymap) return;
     const key = Number(bind.value);
-    const t = Number(time.value);
-    if (!Number.isInteger(t) || t < 0 || t > 100) {
-      setStatus('Hold time must be a whole number between 0 and 100', true);
+    const holdTime = Number(time.value);
+    if (!Number.isInteger(holdTime) || holdTime < 0 || holdTime > 100) {
+      setStatus(t('adv.badHoldTime'), true);
       return;
     }
     const tapV = Number(tap.value) >>> 0;
     const holdV = Number(hold.value) >>> 0;
     let plan: AdvPlan;
     try {
-      plan = planMt(this.blob, this.keymap, key, tapV, holdV, t);
+      plan = planMt(this.blob, this.keymap, key, tapV, holdV, holdTime);
     } catch (e) {
-      setStatus(`Could not set up that mod-tap key: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(t('adv.mtFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
       return;
     }
     const tapName = valueLabel(tapV) || hex8(tapV);
     const holdName = valueLabel(holdV) || hex8(holdV);
     await this.applyPlan(
       plan,
-      `MT key[#${key}] (${keyValueLabel(decodeKeyValue(this.keymap[key] ?? 0)) || 'empty'}): ` +
-        `tap ${tapName}, hold ${holdName}, threshold ${t * 10} ms`,
+      t('adv.mtDesc', {
+        key,
+        old: keyValueLabel(decodeKeyValue(this.keymap[key] ?? 0)) || t('common.empty'),
+        tap: tapName,
+        hold: holdName,
+        ms: holdTime * 10,
+      }),
     );
   }
 
@@ -563,31 +539,33 @@ export class AdvPage {
     try {
       plan = planSocd(this.blob, this.keymap, a, b, d);
     } catch (e) {
-      setStatus(`Could not set up that SOCD pair: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(t('adv.socdFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
       return;
     }
-    const dirLabel = SOCD_DIRECTIONS.find((x) => x.id === d)?.label ?? String(d);
+    const dirLabel = SOCD_DIRECTIONS.find((x) => x.id === d)?.labelKey
+      ? t(SOCD_DIRECTIONS.find((x) => x.id === d)!.labelKey)
+      : String(d);
     await this.applyPlan(
       plan,
-      `SOCD key[#${a}] + key[#${b}]: direction ${dirLabel}`,
+      t('adv.socdDesc', { a, b, dir: dirLabel }),
     );
   }
 
   private async addTgl(bind: HTMLSelectElement, toggle: HTMLSelectElement): Promise<void> {
     if (!this.blob || !this.keymap) return;
     const key = Number(bind.value);
-    const t = Number(toggle.value);
+    const toggleIdx = Number(toggle.value);
     let plan: AdvPlan;
     try {
-      plan = planTgl(this.blob, this.keymap, key, t);
+      plan = planTgl(this.blob, this.keymap, key, toggleIdx);
     } catch (e) {
-      setStatus(`Could not set up that toggle key: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(t('adv.tglFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
       return;
     }
-    const tgt = this.keymap[t] ?? 0;
+    const tgt = this.keymap[toggleIdx] ?? 0;
     await this.applyPlan(
       plan,
-      `TGL key[#${key}] toggles key[#${t}] (${valueLabel(tgt) || hex8(tgt)})`,
+      t('adv.tglDesc', { key, t: toggleIdx, v: valueLabel(tgt) || hex8(tgt) }),
     );
   }
 
@@ -599,9 +577,7 @@ export class AdvPage {
     const oldLabel = keyValueLabel(decodeKeyValue(b.value)) || hex8(b.value);
     if (
       !window.confirm(
-        `Remove the ${KIND_LABEL[b.kind]} function from key slot #${b.index}?\n\n` +
-          `The key currently runs ${oldLabel}. Its saved settings stay stored on ` +
-          'the keyboard (the device has no delete), but the key goes back to normal.',
+        t('adv.unbindQ', { kind: KIND_LABEL[b.kind], i: b.index, old: oldLabel }),
       )
     ) {
       return;
@@ -616,10 +592,10 @@ export class AdvPage {
       this.keymap = values.map((v) => v >>> 0);
       app.snapshot.keymaps.delete(0);
       void ensureKeymap(0).catch(() => {});
-      setStatus(`Removed the ${KIND_LABEL[b.kind]} function from key slot #${b.index} — checked on the keyboard.`);
+      setStatus(t('adv.unbound', { kind: KIND_LABEL[b.kind], i: b.index }));
       emit();
     } catch (e) {
-      setStatus(`Could not remove that function: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(t('adv.unbindFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
       void this.refresh();
     } finally {
       this.busy = false;
