@@ -250,3 +250,80 @@ export async function restoreLast(
   if (!newest) return null;
   return restoreSnapshot(store, newest.id, opts);
 }
+
+// ── Partial-failure rollback (SAFETY-SPEC §5 R2) ───────────────────────
+
+export interface RollbackUnavailable {
+  section: SnapshotSectionName;
+  detail: string;
+}
+
+export interface RollbackOutcome {
+  /** Requested sections, deduped into canonical write order. */
+  requested: SnapshotSectionName[];
+  /**
+   * Requested sections with no payload in the snapshot — there is
+   * nothing to write back, so they are listed, never silently skipped.
+   */
+  unavailable: RollbackUnavailable[];
+  /** Per-section aggregate of the rollback transaction. */
+  sections: SectionResult[];
+  tx: TransactionResult;
+  /** Sections whose prior values were written back (success or sent-unverified). */
+  rolledBack: number;
+  /** Sections whose rollback write failed. */
+  failed: number;
+}
+
+/**
+ * Best-effort rollback of `sections` from `snapshot` — the R2 fix for a
+ * multi-section write that stopped part-way: write the pre-write values
+ * back for exactly the sections that were touched. Runs through
+ * `runTransaction`, so it stops on the first rollback failure and
+ * journals honestly; callers MUST report `rolledBack`/`failed`/
+ * `unavailable` — never claim the device is fully restored when it is
+ * not.
+ *
+ * `opts.approve` should normally be `() => true`: the rollback is part
+ * of the same user-approved operation that just failed.
+ */
+export async function rollbackSections(
+  snapshot: DeviceSnapshot,
+  writer: RestoreWriter,
+  sections: readonly SnapshotSectionName[],
+  opts: TransactionOptions = {},
+): Promise<RollbackOutcome> {
+  const wanted = SECTION_ORDER.filter((s) => sections.includes(s));
+  const present = new Set(
+    (Object.keys(snapshot.sections) as SnapshotSectionName[]).filter(
+      (s) => snapshot.sections[s] !== undefined,
+    ),
+  );
+  const unavailable: RollbackUnavailable[] = wanted
+    .filter((s) => !present.has(s))
+    .map((s) => ({
+      section: s,
+      detail: 'no data captured in the pre-write snapshot',
+    }));
+  const restorable = wanted.filter((s) => present.has(s));
+
+  const ops = planRestore(snapshot, writer, restorable);
+  const tx = await runTransaction(ops, {
+    approve: opts.approve,
+    audit: opts.audit,
+    session: opts.session,
+  });
+  const results: SectionResult[] = restorable.map((name) =>
+    aggregateSection(name, tx.journal, !tx.completed),
+  );
+  return {
+    requested: wanted,
+    unavailable,
+    sections: results,
+    tx,
+    rolledBack: results.filter(
+      (r) => r.result === 'success' || r.result === 'unverified',
+    ).length,
+    failed: results.filter((r) => r.result === 'failed').length,
+  };
+}

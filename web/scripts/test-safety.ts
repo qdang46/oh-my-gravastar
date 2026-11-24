@@ -22,6 +22,7 @@ import {
   planRestore,
   restoreLast,
   restoreSnapshot,
+  rollbackSections,
   runTransaction,
   snapshotBeforeWrite,
   validateKeymapEntry,
@@ -611,6 +612,134 @@ section('rollback — restore snapshot, per-section results');
   const res = await restoreLast(store, { writer, sections: ['profile'], approve: approveAll });
   check('restoreLast used the newest snapshot', res?.snapshotId === second.id && res.snapshotId !== first.id);
   check('empty store → null', (await restoreLast(new SnapshotStore(freshStorage()), { writer, approve: approveAll })) === null);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// rollback.ts — rollbackSections (SAFETY-SPEC §5 R2 partial-failure)
+// ══════════════════════════════════════════════════════════════════════
+
+section('rollbackSections — best-effort rollback of touched sections');
+
+{
+  // Happy path: every touched section writes back.
+  const store = new SnapshotStore(freshStorage());
+  const snap = await store.capture(mockSource, 'pre-import');
+  const { writer, calls } = mockWriter();
+  const rb = await rollbackSections(snap, writer, ['keymap', 'lighting', 'macro', 'profile'], {
+    approve: approveAll,
+  });
+  check('all four sections rolled back', rb.rolledBack === 4 && rb.failed === 0 && rb.unavailable.length === 0);
+  check('rollback tx completed + ok', rb.tx.ok && rb.tx.completed);
+  check('rollback wrote every section',
+    calls.some((c) => c.name === 'writeKeymap') &&
+      calls.some((c) => c.name === 'writeLightData') &&
+      calls.some((c) => c.name === 'writeCustomLightColors') &&
+      calls.some((c) => c.name === 'writeMacroRegion') &&
+      calls.some((c) => c.name === 'writeProfile'));
+}
+
+{
+  // Partial rollback: macro write-back fails → profile (later) never runs.
+  const store = new SnapshotStore(freshStorage());
+  const snap = await store.capture(mockSource, 'pre-import');
+  const { writer, calls } = mockWriter(['writeMacroRegion']);
+  const rb = await rollbackSections(snap, writer, ['keymap', 'lighting', 'macro', 'profile'], {
+    approve: approveAll,
+  });
+  const bySection = Object.fromEntries(rb.sections.map((s) => [s.section, s.result]));
+  check('keymap+lighting rolled back before the failure', bySection.keymap === 'success' && bySection.lighting === 'success');
+  check('macro rollback failed, profile skipped', bySection.macro === 'failed' && bySection.profile === 'skipped');
+  check('counts honest: 2 rolled back, 1 failed', rb.rolledBack === 2 && rb.failed === 1);
+  check('rollback tx incomplete', !rb.tx.ok && !rb.tx.completed);
+  check('writeProfile never attempted during rollback', !calls.some((c) => c.name === 'writeProfile'));
+}
+
+{
+  // Section absent from a partial snapshot → listed unavailable, others still roll back.
+  const store = new SnapshotStore(freshStorage());
+  const flaky: SnapshotSource = {
+    ...mockSource,
+    macroRegion: async () => {
+      throw new Error('macro read timeout');
+    },
+  };
+  const snap = await store.capture(flaky, 'partial pre-import');
+  const { writer, calls } = mockWriter();
+  const rb = await rollbackSections(snap, writer, ['macro', 'keymap'], { approve: approveAll });
+  check('missing section listed as unavailable',
+    rb.unavailable.length === 1 && rb.unavailable[0]?.section === 'macro');
+  check('present section still rolled back', rb.rolledBack === 1 && rb.sections[0]?.section === 'keymap');
+  check('no macro write attempted', !calls.some((c) => c.name === 'writeMacroRegion'));
+  check('requested keeps canonical order regardless of arg order',
+    rb.requested.join(',') === 'keymap,macro');
+}
+
+{
+  // Dedupe + canonical ordering: profile requested twice and out of order.
+  const store = new SnapshotStore(freshStorage());
+  const snap = await store.capture(mockSource, 'pre-import');
+  const { writer, calls } = mockWriter();
+  const rb = await rollbackSections(snap, writer, ['profile', 'keymap', 'profile'], {
+    approve: approveAll,
+  });
+  check('requested deduped + ordered', rb.requested.join(',') === 'keymap,profile');
+  const firstWrite = calls[0]?.name;
+  check('keymap writes ran before profile write', firstWrite === 'writeKeymap' && calls.at(-1)?.name === 'writeProfile');
+}
+
+{
+  // Empty request → no device traffic.
+  const store = new SnapshotStore(freshStorage());
+  const snap = await store.capture(mockSource, 'pre-import');
+  const { writer, calls } = mockWriter();
+  const rb = await rollbackSections(snap, writer, [], { approve: approveAll });
+  check('empty rollback makes no calls', calls.length === 0 && rb.rolledBack === 0);
+}
+
+{
+  // Unverified write-back counts as rolled back but stays honest in the tx.
+  const store = new SnapshotStore(freshStorage());
+  const snap = await store.capture(mockSource, 'pre-import');
+  const calls: string[] = [];
+  const writer: RestoreWriter = {
+    writeProfile: async () => {
+      calls.push('writeProfile');
+      return { verified: false };
+    },
+  };
+  const rb = await rollbackSections(snap, writer, ['profile'], { approve: approveAll });
+  check('unverified write-back counts as rolled back', rb.rolledBack === 1 && rb.sections[0]?.result === 'unverified');
+  check('unverified still ok at tx level', rb.tx.ok);
+}
+
+{
+  // End-to-end R2 scenario: a multi-section apply fails mid-way; only the
+  // sections that actually landed are rolled back (caller-side rule:
+  // journal success/unverified → snapSection). Mirrors applyParsedImport.
+  const store = new SnapshotStore(freshStorage());
+  const snap = await store.capture(mockSource, 'pre-import');
+  const { writer: applyWriter } = mockWriter(['writeCustomLightColors']);
+  const touched = new Set<'keymap' | 'lighting' | 'macro'>();
+  // Simulated import: keymap ok, colours fail, macro never reached.
+  const tx = await runTransaction(
+    [
+      { type: 'keymap_write', section: 'Key assignments', apply: async () => applyWriter.writeKeymap!(0, 0, [1]) },
+      { type: 'light_write', section: 'Per-key colours', apply: async () => applyWriter.writeCustomLightColors!([]) },
+      { type: 'macro_write', section: 'Macros', apply: async () => applyWriter.writeMacroRegion!(new Uint8Array(4)) },
+    ],
+    { approve: approveAll },
+  );
+  check('simulated apply stopped on failure', !tx.ok && !tx.completed);
+  tx.journal.forEach((e, i) => {
+    if (e.result === 'success' || e.result === 'unverified') {
+      touched.add((['keymap', 'lighting', 'macro'] as const)[i]!);
+    }
+  });
+  check('only the landed section is marked touched', touched.size === 1 && touched.has('keymap'));
+  const { writer: rbWriter, calls: rbCalls } = mockWriter();
+  const rb = await rollbackSections(snap, rbWriter, [...touched], { approve: approveAll });
+  check('rollback restores only keymap', rb.rolledBack === 1 && rbCalls.every((c) => c.name === 'writeKeymap'));
+  check('no macro/profile writes during rollback', !rbCalls.some((c) => c.name === 'writeMacroRegion' || c.name === 'writeProfile'));
 }
 
 // ── Done ───────────────────────────────────────────────────────────────

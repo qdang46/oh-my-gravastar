@@ -35,12 +35,15 @@ import { initProfileHistory, renderProfileHistory } from './profiles.ts';
 import {
   SnapshotStore,
   hexToBytes,
+  rollbackSections,
   runTransaction,
   snapshotBeforeWrite,
   validateKeymapSection,
   validateProfileJson,
+  type DeviceSnapshot as SafetySnapshot,
   type OpType,
   type PlannedOp,
+  type SnapshotSectionName,
 } from './safety/index.ts';
 
 // ── DOM helpers (mirror pages.ts) ──────────────────────────────────────
@@ -221,6 +224,13 @@ interface ImportSection {
   summary: string;
   /** Policy op type for the transaction journal (safety/policy.ts). */
   opType: OpType;
+  /**
+   * Snapshot section (safety/snapshots.ts) this import part maps to —
+   * used for the best-effort rollback after a partial failure (R2).
+   * Two import parts may share one snapshot section (the two lighting
+   * writes both restore from `lighting`).
+   */
+  snapSection?: SnapshotSectionName;
   /** Apply this section; returns a result line + verify flag. */
   apply: () => Promise<SectionOutcome>;
 }
@@ -361,6 +371,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
             name: 'Key assignments',
             summary: `${jobs.length} key set(s)`,
             opType: 'keymap_write',
+            snapSection: 'keymap',
             apply: async () => {
               const done: string[] = [];
               let verified = true;
@@ -430,6 +441,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
           name: 'Per-key colours',
           summary: `${byIndex.size} key colour(s) from the file`,
           opType: 'light_write',
+          snapSection: 'lighting',
           apply: async () => {
             const out = await writeColors(colors);
             return {
@@ -461,6 +473,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
           name: 'Lighting effects',
           summary: `${bytes.length} bytes of effect data`,
           opType: 'light_write',
+          snapSection: 'lighting',
           apply: async () => {
             const out = await writeLightData(bytes);
             return {
@@ -488,6 +501,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
           name: 'Macros',
           summary: `${bytes.length} bytes of macro data`,
           opType: 'macro_write',
+          snapSection: 'macro',
           apply: async () => {
             const out = await writeMacro(bytes);
             return {
@@ -528,7 +542,9 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
  *   compatWarnings → explicit confirm dialog (model mismatch override)
  *   → `snapshotBeforeWrite` pre-write backup (aborts before any byte on
  *     failure) → `runTransaction` sequential multi-section apply with
- *     policy journal → `refresh()`.
+ *     policy journal → on partial failure, best-effort
+ *     `rollbackSections` of the touched snapshot sections (SAFETY-SPEC
+ *     R2) → `refresh()`.
  *
  * Returns human-readable result lines for the caller to display; never
  * throws for ordinary write failures (they land in the journal).
@@ -555,30 +571,31 @@ export async function applyParsedImport(p: ParsedImport): Promise<string[]> {
     if (!ok) return ['Import cancelled — the keyboard was not changed.'];
   }
 
+  // SAFETY-SPEC §5 / vision §4 layer 4: snapshot every writable section
+  // BEFORE the first write so the previous state can be restored — and
+  // so a partial failure can be rolled back (R2). A snapshot failure
+  // aborts the import — never write without a restore point.
+  let backupNote = '';
+  let preSnap: SafetySnapshot | null = null;
   try {
-    // SAFETY-SPEC §5 / vision §4 layer 4: snapshot every writable section
-    // BEFORE the first write so the previous state can be restored. A
-    // snapshot failure aborts the import — never write without a restore
-    // point.
-    let backupNote = '';
-    try {
-      const snap = await snapshotBeforeWrite(
-        new SnapshotStore(),
-        c.session,
-        `profile-import ${p.fileName}`,
-      );
-      const missing = snap.errors ? Object.keys(snap.errors) : [];
-      backupNote = missing.length
-        ? ` Pre-write backup ${snap.id} is partial (no ${missing.join(', ')} captured).`
-        : ` Pre-write backup ${snap.id} saved.`;
-    } catch (e) {
-      results.push(
-        `ABORTED before any write — could not save a backup: ${msg(e)}. ` +
-          'Nothing was sent to the keyboard.',
-      );
-    }
+    preSnap = await snapshotBeforeWrite(
+      new SnapshotStore(),
+      c.session,
+      `profile-import ${p.fileName}`,
+    );
+    const missing = preSnap.errors ? Object.keys(preSnap.errors) : [];
+    backupNote = missing.length
+      ? ` Pre-write backup ${preSnap.id} is partial (no ${missing.join(', ')} captured).`
+      : ` Pre-write backup ${preSnap.id} saved.`;
+  } catch (e) {
+    results.push(
+      `ABORTED before any write — could not save a backup: ${msg(e)}. ` +
+        'Nothing was sent to the keyboard.',
+    );
+  }
 
-    if (backupNote) {
+  if (backupNote) {
+    try {
       // Multi-section apply runs as a transaction (safety/
       // transaction.ts): ops execute sequentially, policy classes are
       // journaled, and the first failure stops the rest — the report
@@ -619,14 +636,80 @@ export async function applyParsedImport(p: ParsedImport): Promise<string[]> {
         results.push(
           `Stopped early — ${tx.counts.failed} part(s) failed; ${wrote} of ` +
             `${sections.length} part(s) reached the keyboard.${backupNote} ` +
-            'The keyboard may be in a mixed state; the pre-write backup ' +
-            'can restore the previous values.',
+            'The keyboard may be in a mixed state.',
         );
+
+        // SAFETY-SPEC §5 R2 — best-effort rollback: write the pre-import
+        // values back for exactly the snapshot sections that received
+        // (or may have received) writes. Every outcome is reported;
+        // sections with no captured data are listed, never silently
+        // skipped, and nothing here claims a full restore it did not do.
+        if (preSnap) {
+          const touched = new Set<SnapshotSectionName>();
+          const untouchable: string[] = [];
+          tx.journal.forEach((entry, i) => {
+            if (entry.result !== 'success' && entry.result !== 'unverified') return;
+            const s = sections[i];
+            if (s?.snapSection) touched.add(s.snapSection);
+            else untouchable.push(s?.name ?? entry.section ?? entry.op);
+          });
+          if (untouchable.length) {
+            results.push(
+              `No automatic rollback for: ${untouchable.join(', ')} — ` +
+                'the pre-write backup does not cover those parts.',
+            );
+          }
+          if (touched.size) {
+            try {
+              const rb = await rollbackSections(
+                preSnap,
+                sessionWrites(c.session),
+                [...touched],
+                // Rolling back the failed apply is part of the same
+                // user-approved operation — no second prompt.
+                { approve: () => true },
+              );
+              const restored = rb.sections.filter(
+                (s) => s.result === 'success' || s.result === 'unverified',
+              );
+              const unverifiedN = restored.filter((s) => s.result === 'unverified').length;
+              const stillBad = [
+                ...rb.sections
+                  .filter((s) => s.result !== 'success' && s.result !== 'unverified')
+                  .map((s) => `${s.section} (${s.detail ?? s.result})`),
+                ...rb.unavailable.map((u) => `${u.section} (${u.detail})`),
+              ];
+              if (stillBad.length === 0) {
+                results.push(
+                  `Rolled back ${restored.length}/${rb.requested.length} section(s)` +
+                    `${unverifiedN ? ` (${unverifiedN} write(s) sent but not confirmed)` : ''}` +
+                    ' — the keyboard is back to its pre-import state.',
+                );
+              } else {
+                results.push(
+                  `Rollback incomplete — restored ${restored.length}/${rb.requested.length} ` +
+                    `section(s)${unverifiedN ? ` (${unverifiedN} unconfirmed)` : ''}. ` +
+                    `Still not restored: ${stillBad.join('; ')}.`,
+                );
+              }
+            } catch (e) {
+              results.push(
+                `Automatic rollback failed: ${msg(e)} — restore pre-write backup ` +
+                  `${preSnap.id} manually from the Backup & restore page.`,
+              );
+            }
+          }
+        } else {
+          results.push(
+            'No pre-write backup was captured — the keyboard may be in a ' +
+              'mixed state and cannot be rolled back automatically.',
+          );
+        }
       }
       await refresh();
+    } catch (e) {
+      results.push(`FAILED: ${msg(e)}`);
     }
-  } catch (e) {
-    results.push(`FAILED: ${msg(e)}`);
   }
   return results;
 }
