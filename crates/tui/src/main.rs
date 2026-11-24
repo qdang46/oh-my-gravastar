@@ -1,8 +1,9 @@
 //! `omg-tui` — ratatui TUI dashboard for GravaStar devices.
 //!
 //! Screens: device list, HE keyboard layout/perf editor, Compx mouse
-//! summary, SparkPlayJoy 6x21 travel heatmap. Vim-style navigation
-//! (hjkl/arrows), `Tab`/`1`-`4` screen switching, `?` help, `q` quit.
+//! summary, SparkPlayJoy 6x21 travel heatmap, khub916 K1/K98 read-only
+//! browser (info/keymap/lighting/macros/profile). Vim-style navigation
+//! (hjkl/arrows), `Tab`/`1`-`5` screen switching, `?` help, `q` quit.
 //!
 //! Safety contract (docs/plan.md §2): the TUI is read-only by default.
 //! The only write path is the HE actuation-point edit, which goes through
@@ -27,6 +28,7 @@ use crossterm::terminal::{
 use crossterm::ExecutableCommand;
 use omg_hid::{find_devices, DeviceInfo, DeviceKind};
 use omg_proto_he as he;
+use omg_proto_khub916 as khub;
 use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use ratatui::backend::CrosstermBackend;
@@ -51,8 +53,9 @@ OPTIONS:
     -h         Show this help
 
 KEYS (inside the TUI):
-    Tab / 1-4   switch screen (devices / keyboard / mouse / sparkplayjoy)
-    hjkl/arrows navigate (keyboard layout)
+    Tab / 1-5   switch screen (devices / keyboard / mouse / sparkplayjoy / k1-k98)
+    hjkl/arrows navigate (keyboard layout, k1-k98 keymap scroll)
+    [ / ]       cycle khub916 keymap layer (read-only)
     + / -       adjust HE actuation point (asks y/n before writing)
     r           refresh the current screen's device data
     ?           help overlay        Esc/?   close overlay / cancel prompt
@@ -133,7 +136,118 @@ fn demo_devices() -> Vec<DeviceInfo> {
             DeviceKind::SparkPlayJoy,
             "Mercury HE analog (demo)",
         ),
+        mk(
+            0x258a,
+            0x010c,
+            0xff00,
+            0,
+            DeviceKind::Khub916Wired,
+            "Mercury K1 Pro (demo)",
+        ),
     ]
+}
+
+/// Synthetic khub916 screen state for `--demo` (K1 Pro identity, the
+/// live-verified UUID `0x030000000197` → catalog `916_K1_PRO`).
+fn demo_khub916(mut st: Khub916Screen) -> Khub916Screen {
+    use khub::macro916::{MacroEntry, MacroStep, StepKind};
+    st.info = Some(khub::DeviceInfo {
+        uuid: khub::Uuid([0x03, 0x00, 0x00, 0x00, 0x01, 0x97]),
+        version: 0x0100,
+        screen_size: 0,
+        screen: None,
+        catalog_model: Some("916_K1_PRO".into()),
+        catalog_name: Some("GravaStar Mercury K1 PRO".into()),
+    });
+    st.power = Some(khub::PowerInfo {
+        percent: 87,
+        flags: 0x11,
+    });
+    // Synthetic profile blob: mode 2 (breathing) at raw[9..11], sleep 30 s
+    // at raw[24], FF FF marker at 40 so decode_light_state finds base 42,
+    // brightness 15 at 44, packed speed 8 / mixing at 45.
+    let mut raw = vec![0u8; 135];
+    raw[10] = 2;
+    raw[24] = 30;
+    raw[40] = 0xFF;
+    raw[41] = 0xFF;
+    raw[44] = 15;
+    raw[45] = (8 << 4) | 7;
+    let profile = khub::Profile { raw };
+    st.light_state = khub::light::decode_light_state(&profile);
+    st.profile = Some(profile);
+    // Synthetic 483-byte light-data blob (23 groups of 21); mode 2's group
+    // colour sits at offset 42.
+    let mut light = vec![0u8; 483];
+    light[42] = 0x40;
+    light[43] = 0x80;
+    light[44] = 0xFF;
+    st.light_data = Some(light);
+    // 126-slot synthetic keymap: letters cycle a-z, with a few special
+    // values sprinkled in (Fn, macro ref, SOCD, unassigned).
+    let mut km = Vec::with_capacity(khub::KEYMAP_ENTRIES);
+    for i in 0..126usize {
+        km.push(match i {
+            10 => khub::KeyValue::Fn { layer: 0 },
+            20 => khub::KeyValue::Macro {
+                macro_type: 0,
+                number: 1,
+                index: 0,
+            },
+            30 => khub::KeyValue::Socd { raw: 0x20000000 },
+            40 => khub::KeyValue::SecondaryLayer { raw: 0x07000001 },
+            100..=105 => khub::KeyValue::Empty,
+            _ => khub::KeyValue::Normal {
+                usage: 0x04 + (i % 26) as u16,
+                ctrl: i % 17 == 0,
+                shift: false,
+                alt: false,
+                gui: false,
+            },
+        });
+    }
+    st.keymap = Some(km);
+    st.macros = Some(vec![
+        MacroEntry {
+            name: "demo-greeting".into(),
+            steps: vec![
+                MacroStep {
+                    action: 0,
+                    delay_ms: 40,
+                    usage: 11,
+                    kind: StepKind::Key,
+                },
+                MacroStep {
+                    action: 1,
+                    delay_ms: 30,
+                    usage: 11,
+                    kind: StepKind::Key,
+                },
+                MacroStep {
+                    action: 0,
+                    delay_ms: 50,
+                    usage: 5,
+                    kind: StepKind::Key,
+                },
+                MacroStep {
+                    action: 1,
+                    delay_ms: 40,
+                    usage: 5,
+                    kind: StepKind::Key,
+                },
+            ],
+        },
+        MacroEntry {
+            name: "demo-mouse".into(),
+            steps: vec![MacroStep {
+                action: 0,
+                delay_ms: 120,
+                usage: 8,
+                kind: StepKind::Mouse,
+            }],
+        },
+    ]);
+    st
 }
 
 // ── app state ──────────────────────────────────────────────────────────
@@ -144,14 +258,16 @@ enum Screen {
     Keyboard,
     Mouse,
     Spark,
+    Kh916,
 }
 
 impl Screen {
-    const ALL: [Screen; 4] = [
+    const ALL: [Screen; 5] = [
         Screen::Devices,
         Screen::Keyboard,
         Screen::Mouse,
         Screen::Spark,
+        Screen::Kh916,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -159,6 +275,7 @@ impl Screen {
             Screen::Keyboard => "Keyboard",
             Screen::Mouse => "Mouse",
             Screen::Spark => "SparkPlayJoy",
+            Screen::Kh916 => "K1/K98",
         }
     }
 }
@@ -195,6 +312,44 @@ struct MouseScreen {
     error: Option<String>,
 }
 
+struct Khub916Screen {
+    /// Live session; `None` in demo mode (all display data is synthetic).
+    kb: Option<khub::Khub916>,
+    device_label: String,
+    info: Option<khub::DeviceInfo>,
+    info_err: Option<String>,
+    power: Option<khub::PowerInfo>,
+    profile: Option<khub::Profile>,
+    light_state: Option<khub::light::LightState>,
+    light_data: Option<Vec<u8>>,
+    /// Keymap arg (`layer & 3 | (system & 1) << 2`), 0..8.
+    keymap_arg: u8,
+    keymap: Option<Vec<khub::KeyValue>>,
+    keymap_err: Option<String>,
+    keymap_scroll: usize,
+    macros: Option<Vec<khub::macro916::MacroEntry>>,
+    macros_err: Option<String>,
+    error: Option<String>,
+}
+
+impl Khub916Screen {
+    /// Fetch + decode the keymap for `arg` via the live session.
+    fn fetch_keymap(&mut self, kb: &mut khub::Khub916, arg: u8) {
+        match fetch_keymap(kb, arg) {
+            Ok(kv) => {
+                self.keymap = Some(kv);
+                self.keymap_err = None;
+            }
+            Err(e) => self.keymap_err = Some(e),
+        }
+    }
+}
+
+/// One read-only cmd-131 round trip; errors are strings for display.
+fn fetch_keymap(kb: &mut khub::Khub916, arg: u8) -> std::result::Result<Vec<khub::KeyValue>, String> {
+    kb.keymap(arg).map_err(|e| format!("{e:#}"))
+}
+
 struct SparkScreen {
     sp: Option<spj::SparkPlayJoy>,
     device_label: String,
@@ -216,6 +371,7 @@ struct App {
     kb: Option<KbScreen>,
     mouse: Option<MouseScreen>,
     spark: Option<SparkScreen>,
+    kh916: Option<Khub916Screen>,
     quit: bool,
 }
 
@@ -235,6 +391,7 @@ impl App {
             kb: None,
             mouse: None,
             spark: None,
+            kh916: None,
             quit: false,
         }
     }
@@ -265,6 +422,11 @@ impl App {
                     self.spark = Some(self.load_spark());
                 }
             }
+            Screen::Kh916 => {
+                if self.kh916.is_none() {
+                    self.kh916 = Some(self.load_khub916());
+                }
+            }
         }
     }
 
@@ -279,6 +441,9 @@ impl App {
             }
             Screen::Spark => {
                 self.spark = Some(self.load_spark());
+            }
+            Screen::Kh916 => {
+                self.kh916 = Some(self.load_khub916());
             }
         }
         self.status = format!("{} refreshed", self.screen.label());
@@ -456,6 +621,104 @@ impl App {
         }
         st.sp = Some(sp);
         st
+    }
+
+    fn load_khub916(&self) -> Khub916Screen {
+        let mut st = Khub916Screen {
+            kb: None,
+            device_label: String::new(),
+            info: None,
+            info_err: None,
+            power: None,
+            profile: None,
+            light_state: None,
+            light_data: None,
+            keymap_arg: 0,
+            keymap: None,
+            keymap_err: None,
+            keymap_scroll: 0,
+            macros: None,
+            macros_err: None,
+            error: None,
+        };
+        let label = self
+            .first_of(DeviceKind::Khub916Wired)
+            .map(|d| format!("{} ({})", d.vid_pid(), d.kind.label()))
+            .unwrap_or_else(|| "khub916 (no device)".into());
+        st.device_label = label;
+        if self.demo {
+            return demo_khub916(st);
+        }
+        let Some(d) = self.first_of(DeviceKind::Khub916Wired) else {
+            st.error = Some("no khub916 wired keyboard detected — see Devices screen".into());
+            return st;
+        };
+        let mut link = match d.open_link() {
+            Ok(l) => l,
+            Err(e) => {
+                st.error = Some(format!("open {}: {e:#}", d.vid_pid()));
+                return st;
+            }
+        };
+        // hidapi does not expose report descriptors; probe for the feature
+        // report id with the read-only device-info query (spec §1).
+        let report_id = match khub::probe_report_id(&mut link) {
+            Ok(id) => id,
+            Err(e) => {
+                st.error = Some(format!("report id probe: {e:#}"));
+                return st;
+            }
+        };
+        let mut kb = khub::Khub916::new(Box::new(link), report_id);
+        match kb.device_info() {
+            Ok(i) => st.info = Some(i),
+            Err(e) => st.info_err = Some(format!("{e:#}")),
+        }
+        match kb.power() {
+            Ok(p) => st.power = Some(p),
+            Err(e) => st.error = Some(format!("power: {e:#}")),
+        }
+        match kb.profile() {
+            Ok(p) => {
+                st.light_state = khub::light::decode_light_state(&p);
+                st.profile = Some(p);
+            }
+            Err(e) => st.error = Some(format!("profile: {e:#}")),
+        }
+        match kb.light_color_data() {
+            Ok(d) => st.light_data = Some(d),
+            Err(e) => st.error = Some(format!("light data: {e:#}")),
+        }
+        st.fetch_keymap(&mut kb, 0);
+        match kb.macro_region() {
+            Ok(region) => match khub::macro916::parse_macro_region(&region) {
+                Ok(entries) => st.macros = Some(entries),
+                Err(e) => st.macros_err = Some(format!("{e:#}")),
+            },
+            Err(e) => st.macros_err = Some(format!("{e:#}")),
+        }
+        st.kb = Some(kb);
+        st
+    }
+
+    /// (Re)fetch the keymap for `arg` through the live session. In demo
+    /// mode the synthetic keymap is kept as-is.
+    fn kh916_keymap(&mut self, arg: u8) {
+        let Some(st) = self.kh916.as_mut() else { return };
+        st.keymap_arg = arg;
+        st.keymap_scroll = 0;
+        // Split the borrows: the session and the display fields are
+        // disjoint, but `fetch_keymap` needs `&mut self` for its result.
+        let fetched = st.kb.as_mut().map(|kb| fetch_keymap(kb, arg));
+        if let Some(res) = fetched {
+            match res {
+                Ok(kv) => {
+                    st.keymap = Some(kv);
+                    st.keymap_err = None;
+                }
+                Err(e) => st.keymap_err = Some(e),
+            }
+        }
     }
 
     // ── HE keyboard editing (the only write path) ────────────────────
@@ -643,24 +906,48 @@ impl App {
             KeyCode::Char('2') => self.enter(Screen::Keyboard),
             KeyCode::Char('3') => self.enter(Screen::Mouse),
             KeyCode::Char('4') => self.enter(Screen::Spark),
+            KeyCode::Char('5') => self.enter(Screen::Kh916),
             KeyCode::Char('r') | KeyCode::Char('R') => self.refresh(),
             _ => self.screen_key(key),
         }
     }
 
     fn screen_key(&mut self, key: KeyEvent) {
-        if self.screen != Screen::Keyboard {
-            return;
-        }
-        match key.code {
-            KeyCode::Char('h') | KeyCode::Left => self.kb_move(-1, 0),
-            KeyCode::Char('l') | KeyCode::Right => self.kb_move(1, 0),
-            KeyCode::Char('k') | KeyCode::Up => self.kb_move(0, -1),
-            KeyCode::Char('j') | KeyCode::Down => self.kb_move(0, 1),
-            KeyCode::Char('+') => self.stage_actuation_edit(1.0),
-            KeyCode::Char('-') => self.stage_actuation_edit(-1.0),
+        match self.screen {
+            Screen::Keyboard => match key.code {
+                KeyCode::Char('h') | KeyCode::Left => self.kb_move(-1, 0),
+                KeyCode::Char('l') | KeyCode::Right => self.kb_move(1, 0),
+                KeyCode::Char('k') | KeyCode::Up => self.kb_move(0, -1),
+                KeyCode::Char('j') | KeyCode::Down => self.kb_move(0, 1),
+                KeyCode::Char('+') => self.stage_actuation_edit(1.0),
+                KeyCode::Char('-') => self.stage_actuation_edit(-1.0),
+                _ => {}
+            },
+            Screen::Kh916 => self.kh916_key(key),
             _ => {}
         }
+    }
+
+    /// khub916 screen keys: j/k scroll the keymap, [ / ] cycle the keymap
+    /// arg (read-only fetches only — this screen never writes).
+    fn kh916_key(&mut self, key: KeyEvent) {
+        let arg = {
+            let Some(st) = self.kh916.as_mut() else { return };
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    st.keymap_scroll = st.keymap_scroll.saturating_add(1);
+                    return;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    st.keymap_scroll = st.keymap_scroll.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Char(']') | KeyCode::Char('}') => (st.keymap_arg + 1) % 8,
+                KeyCode::Char('[') | KeyCode::Char('{') => (st.keymap_arg + 7) % 8,
+                _ => return,
+            }
+        };
+        self.kh916_keymap(arg);
     }
 }
 
@@ -783,6 +1070,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         Screen::Keyboard => draw_keyboard(f, body, app),
         Screen::Mouse => draw_mouse(f, body, app),
         Screen::Spark => draw_spark(f, body, app),
+        Screen::Kh916 => draw_khub916(f, body, app),
     }
 
     // Status / hint bar.
@@ -1387,6 +1675,241 @@ fn draw_spark(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
+// ── khub916 (K1/K98) screen ─────────────────────────────────────────────
+
+fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
+    let Some(st) = app.kh916.as_mut() else {
+        f.render_widget(
+            Paragraph::new("khub916 screen not initialised")
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
+        return;
+    };
+    if st.info.is_none() && st.keymap.is_none() && st.power.is_none() {
+        let msg = st
+            .error
+            .clone()
+            .or_else(|| st.info_err.clone())
+            .unwrap_or_else(|| "no khub916 wired keyboard detected".into());
+        f.render_widget(
+            Paragraph::new(format!("{msg}\n\nsee Devices screen for detected hardware")).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" K1/K98 "),
+            ),
+            area,
+        );
+        return;
+    }
+    let cols = Layout::horizontal([Constraint::Length(46), Constraint::Min(34)]).split(area);
+
+    // Left: device info, power, profile/lighting, macros.
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(info) = &st.info {
+        lines.push(Line::from(format!(
+            "model:      {}",
+            info.catalog_name
+                .clone()
+                .unwrap_or_else(|| "unknown (UUID not in catalog)".into())
+        )));
+        if let Some(m) = &info.catalog_model {
+            lines.push(Line::from(format!("catalog:    {m}")));
+        }
+        lines.push(Line::from(format!("firmware:   0x{:04X}", info.version)));
+        // The 6-byte UUID is the vendor license/password — never shown
+        // (privacy rule, AGENTS.md §5); the catalog name identifies it.
+        lines.push(Line::from("uuid:       [redacted]"));
+        match info.screen {
+            Some((w, h)) => lines.push(Line::from(format!("screen:     {w}x{h} (code {})", info.screen_size))),
+            None => lines.push(Line::from("screen:     none on this interface")),
+        }
+    } else if let Some(e) = &st.info_err {
+        lines.push(Line::from(Span::styled(
+            format!("device info: {e}"),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    lines.push(Line::from(""));
+    if let Some(p) = &st.power {
+        lines.push(Line::from(format!(
+            "battery:    {}% · flags 0x{:02X}",
+            p.percent, p.flags
+        )));
+    }
+    if let Some(p) = &st.profile {
+        if let Some(mode) = p.light_mode() {
+            lines.push(Line::from(format!("light mode: raw {mode}")));
+        }
+        if let Some(s) = p.sleep_seconds() {
+            lines.push(Line::from(format!("sleep:      {s} s")));
+        }
+    }
+    if let Some(ls) = &st.light_state {
+        lines.push(Line::from(""));
+        let name = khub::light::light_mode_info(ls.mode)
+            .map(|m| m.name)
+            .unwrap_or("(unknown effect)");
+        lines.push(Line::from(format!(
+            "effect:     {} (mode {})",
+            name, ls.mode
+        )));
+        lines.push(Line::from(format!(
+            "speed {} · brightness {} · {}",
+            ls.speed,
+            ls.brightness,
+            if ls.color_model == khub::light::color_model::MIXING {
+                "colour mixing"
+            } else {
+                "monochrome"
+            }
+        )));
+        if let (Some(data), Some(mode)) = (&st.light_data, st.profile.as_ref().and_then(|p| p.light_mode()))
+        {
+            if let Some(c) = khub::light::group_color(data, mode) {
+                lines.push(Line::from(format!(
+                    "colour:     #{:02X}{:02X}{:02X}",
+                    c.r, c.g, c.b
+                )));
+            }
+        }
+    }
+    lines.push(Line::from(""));
+    match &st.macros {
+        Some(ms) => {
+            lines.push(Line::from(format!(
+                "macros:     {}",
+                if ms.len() == 1 {
+                    "1 entry".to_string()
+                } else {
+                    format!("{} entries", ms.len())
+                }
+            )));
+            for m in ms.iter().take(8) {
+                let total_ms: u32 = m.steps.iter().map(|s| s.delay_ms).sum();
+                lines.push(Line::from(format!(
+                    "  {} — {} steps (~{} ms)",
+                    m.name,
+                    m.steps.len(),
+                    total_ms
+                )));
+            }
+            if ms.len() > 8 {
+                lines.push(Line::from(format!("  … {} more", ms.len() - 8)));
+            }
+        }
+        None => {
+            if let Some(e) = &st.macros_err {
+                lines.push(Line::from(Span::styled(
+                    format!("macros:     {e}"),
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+        }
+    }
+    if let Some(e) = &st.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("note: {e}"),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "read-only — [ ] keymap layer · j/k scroll · r refresh",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Device ")),
+        cols[0],
+    );
+
+    // Right: keymap slots decoded via omg-model labels.
+    let mut klines: Vec<Line> = Vec::new();
+    klines.push(Line::from(Span::styled(
+        format!(
+            "keymap arg {} — layer {} · system {}",
+            st.keymap_arg,
+            st.keymap_arg & 3,
+            (st.keymap_arg >> 2) & 1
+        ),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    klines.push(Line::from(Span::styled(
+        "slot: label (NN = keymap index)",
+        Style::default().fg(Color::DarkGray),
+    )));
+    klines.push(Line::from(""));
+    match &st.keymap {
+        Some(km) => {
+            let assigned = km.iter().filter(|kv| !matches!(kv, khub::KeyValue::Empty)).count();
+            klines.push(Line::from(format!(
+                "{} slots · {} assigned",
+                km.len(),
+                assigned
+            )));
+            klines.push(Line::from(""));
+            // Grid rows: each cell "NNN label" (~15 cols); columns adapt to
+            // panel width. j/k scrolls by row.
+            let inner_w = cols[1].width.saturating_sub(4) as usize;
+            let ncols = (inner_w / 15).clamp(1, 9);
+            let mut rows: Vec<Line> = Vec::new();
+            for (r, chunk) in km.chunks(ncols).enumerate() {
+                let mut cells = vec![Span::raw("  ")];
+                for (c, kv) in chunk.iter().enumerate() {
+                    let idx = r * ncols + c;
+                    let label = kv.label();
+                    let label = if label.is_empty() {
+                        "·".to_string()
+                    } else {
+                        truncate(&label, 10)
+                    };
+                    let cell = format!("{idx:>3} {label}");
+                    let style = if label == "·" {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default()
+                    };
+                    cells.push(Span::styled(format!("{cell:<15}"), style));
+                }
+                rows.push(Line::from(cells));
+            }
+            let visible = cols[1].height.saturating_sub(5) as usize;
+            let max_scroll = rows.len().saturating_sub(visible.max(1));
+            let scroll = st.keymap_scroll.min(max_scroll) as u16;
+            klines.extend(rows);
+            f.render_widget(
+                Paragraph::new(klines)
+                    .scroll((scroll, 0))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Keymap "),
+                    ),
+                cols[1],
+            );
+        }
+        None => {
+            let msg = st
+                .keymap_err
+                .clone()
+                .unwrap_or_else(|| "keymap unavailable".into());
+            klines.push(Line::from(Span::styled(
+                msg,
+                Style::default().fg(Color::Yellow),
+            )));
+            f.render_widget(
+                Paragraph::new(klines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Keymap "),
+                ),
+                cols[1],
+            );
+        }
+    }
+}
+
 // ── overlays ───────────────────────────────────────────────────────────
 
 fn draw_help(f: &mut Frame, area: Rect) {
@@ -1405,8 +1928,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(" Tab / 1-4   switch screen"),
-        Line::from(" hjkl/arrows navigate keyboard layout"),
+        Line::from(" Tab / 1-5   switch screen"),
+        Line::from(" hjkl/arrows navigate keyboard layout / scroll keymap"),
+        Line::from(" [ / ]       cycle khub916 keymap layer (read-only)"),
         Line::from(" + / -       adjust HE actuation ±step (y/n confirm)"),
         Line::from(" r           reload device data on this screen"),
         Line::from(" ?           this help            Esc close"),
@@ -1460,4 +1984,25 @@ fn draw_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
         ),
         r,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every screen must render without panic on synthetic demo data —
+    /// this is what `omg-tui --demo` smoke-tests for the Devices frame.
+    #[test]
+    fn demo_draws_all_screens() {
+        for screen in Screen::ALL {
+            let mut app = App::new(demo_devices(), true);
+            app.enter(screen);
+            if screen == Screen::Kh916 {
+                app.kh916_keymap(3); // exercise the arg-cycle path too
+            }
+            let backend = ratatui::backend::TestBackend::new(110, 36);
+            let mut terminal = Terminal::new(backend).expect("test backend");
+            terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        }
+    }
 }

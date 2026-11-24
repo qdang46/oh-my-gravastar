@@ -1410,6 +1410,7 @@ dependencies = [
  "omg-hid",
  "omg-model",
  "omg-proto-he",
+ "omg-proto-khub916",
  "omg-proto-mouse",
  "omg-proto-sparkplayjoy",
  "ratatui",

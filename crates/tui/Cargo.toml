@@ -15,6 +15,7 @@ anyhow.workspace = true
 omg-hid = { path = "../hid" }
 omg-model = { path = "../model" }
 omg-proto-he = { path = "../proto-he" }
+omg-proto-khub916 = { path = "../proto-khub916" }
 omg-proto-mouse = { path = "../proto-mouse" }
 omg-proto-sparkplayjoy = { path = "../proto-sparkplayjoy" }
 ratatui = "0.30"
