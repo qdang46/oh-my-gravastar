@@ -30,6 +30,7 @@ import { mountLayoutEditor } from './layout-editor.ts';
 import { physicalLayoutForModel, PHYSICAL_LAYOUTS } from './layout-model.ts';
 import { confirmDialog } from './modal.ts';
 import { initProfileHistory, renderProfileHistory } from './profiles.ts';
+import { renderProfileSwitcher } from './profile-switcher.ts';
 import {
   SnapshotStore,
   rollbackSections,
@@ -517,7 +518,9 @@ function renderConfig(root: HTMLElement): void {
       ),
     );
     // Version history still works offline (diff two snapshots); only
-    // capture/restore needs the device.
+    // capture/restore needs the device. The profile switcher lists
+    // saved profiles with Apply disabled until a keyboard connects.
+    renderProfileSwitcher(root);
     renderProfileHistory(root);
     return;
   }
@@ -713,6 +716,11 @@ function renderConfig(root: HTMLElement): void {
     }
   }
   root.append(im.card);
+  // Game/app profile switcher (bead 0hl) — named snapshots, manual
+  // apply through the same hardened restore path, active-profile
+  // indicator. Browser pages cannot detect the foreground app, so
+  // switching here is manual by design.
+  renderProfileSwitcher(root);
   // Profile version history / diff / restore (bead th0) — profiles.ts.
   renderProfileHistory(root);
 }

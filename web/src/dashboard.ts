@@ -32,6 +32,7 @@ import {
 import type { DeviceLike } from './core/device-model.ts';
 import { isFeatureAvailable, type FeatureId } from './core/feature-registry.ts';
 import { AuditLog } from './safety/audit-log.ts';
+import { profileSwitcherSummary } from './profile-switcher.ts';
 
 // ── DOM helpers (same style as pages.ts) ───────────────────────────────
 
@@ -210,6 +211,17 @@ export function renderDashboard(root: HTMLElement): void {
   }
   kv(pdl, 'Sleep timer', snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—');
   kv(pdl, 'Key layer', `Layer ${app.layer + 1} of 4`);
+  // Named game/app profiles (bead 0hl): which saved profile was last
+  // applied — manual switching only, a browser page cannot detect the
+  // foreground app (see the Backup & restore → Game & app profiles card).
+  const sw = profileSwitcherSummary();
+  kv(
+    pdl,
+    'Saved profile',
+    sw.activeName
+      ? `${sw.activeName}${sw.switchCount ? ` · ${sw.switchCount} switch(es) logged` : ''}`
+      : '—',
+  );
   profCard.body.append(pdl);
   profCard.body.append(
     el(
@@ -217,6 +229,15 @@ export function renderDashboard(root: HTMLElement): void {
       'hint',
       'Unsaved edits live inside each editor (Keys, Lighting, Macro) and ' +
         'are not tracked here — open a section to see its dirty state.',
+    ),
+  );
+  profCard.body.append(
+    el(
+      'p',
+      'hint',
+      'Named game/app profiles can be applied manually on the Backup & ' +
+        'restore page — automatic per-app switching is not possible from ' +
+        'a browser page.',
     ),
   );
   root.append(profCard.card);

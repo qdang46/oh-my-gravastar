@@ -3212,3 +3212,17 @@ details.beh-more .beh-choices {
 .fn-doc-note--bad {
   color: var(--warn);
 }
+
+/* ── Game & app profiles (bead 0hl, profile-switcher.ts) ────────────── */
+.prof-compat {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.prof-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+.prof-sub {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 14px;
+}

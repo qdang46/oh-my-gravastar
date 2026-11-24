@@ -112,6 +112,11 @@ function history(): ProfileHistory {
   return historyStore;
 }
 
+/** Shared history store — also used by the profile switcher (bead 0hl). */
+export function profileHistoryStore(): ProfileHistory {
+  return history();
+}
+
 // ── Capture (build a doc from the live device) ─────────────────────────
 
 function newEntryId(): string {
@@ -353,6 +358,27 @@ async function restoreDoc(
     return [`Snapshot "${entry.name}" has no writable sections selected.`];
   }
   return applyParsedImport(parsed);
+}
+
+/**
+ * Capture the live device state under an explicit name — the switcher's
+ * "Save current as profile" flow (bead 0hl). Returns the entry, or null
+ * when there is nothing capturable.
+ */
+export async function captureNamedSnapshot(
+  name: string,
+): Promise<ProfileHistoryEntry | null> {
+  return captureEntry(name, false);
+}
+
+/**
+ * Apply EVERY restorable section of a history entry through the same
+ * validated restore path as the section picker (bead 0hl — the profile
+ * switcher's "Apply"). Returns the result lines; does not touch the
+ * active-profile store (profile-switcher.ts owns that).
+ */
+export async function applyWholeEntry(entry: ProfileHistoryEntry): Promise<string[]> {
+  return restoreDoc(entry, `profile apply ${entry.name}`, allRestorableIn(entry));
 }
 
 async function runRestore(entry: ProfileHistoryEntry): Promise<void> {
