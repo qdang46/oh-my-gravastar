@@ -13,6 +13,7 @@ use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 use omg_hid::{find_devices, DeviceInfo, DeviceKind, NoAnswer};
 use omg_proto_he as he;
+use omg_proto_khub916 as khub;
 use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
@@ -57,6 +58,13 @@ enum Commands {
     Kb {
         #[command(subcommand)]
         command: KbCommands,
+    },
+    /// GravaStar K1/K98 series keyboards (khub916 wired feature-report
+    /// protocol, docs/protocol-khub916.md). Screen commands, the wireless
+    /// 916_wireLess transport and all writes are not wired yet.
+    Kb916 {
+        #[command(subcommand)]
+        command: Kb916Commands,
     },
     /// GravaStar mice with a Compx chipset (Mercury M/X series).
     Mouse {
@@ -251,6 +259,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Devices => cmd_devices(cli),
         Commands::Probe { deep } => cmd_probe(cli, *deep),
         Commands::Kb { command } => cmd_kb(cli, command),
+        Commands::Kb916 { command } => cmd_kb916(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
     }
 }
@@ -461,11 +470,29 @@ fn probe_spark(d: &DeviceInfo, deep: bool) -> serde_json::Value {
 }
 
 fn probe_khub916(d: &DeviceInfo) -> serde_json::Value {
+    if d.kind == DeviceKind::Khub916Wireless {
+        return json!({
+            "kind": d.kind.label(),
+            "note": "916_wireLess transport is not implemented yet (docs/protocol-khub916.md §3/§7)",
+        });
+    }
+    let mut link = match d.open_link() {
+        Ok(l) => l,
+        Err(e) => return json!({ "error": format!("open: {e:#}") }),
+    };
+    let report_id = match khub::probe_report_id(&mut link) {
+        Ok(id) => id,
+        Err(e) => return json!({ "error": format!("report id probe: {e:#}") }),
+    };
+    let mut kb = khub::Khub916::new(Box::new(link), report_id);
     json!({
         "kind": d.kind.label(),
-        "note": "khub916 protocol is not yet reversed (docs/protocol-khub916.md); \
-                 omg-proto-khub916 exposes no read API, so no protocol reads were performed",
-        "raw_hex": serde_json::Value::Null,
+        "report_id": report_id,
+        "device_info": probe_read(kb.device_info()),
+        "power": probe_read(kb.power()),
+        "keymap_entries": probe_read(kb.key_values(0).map(|v| v.len())),
+        "profile_bytes": probe_read(kb.profile().map(|p| p.raw.len())),
+        "custom_light_entries": probe_read(kb.custom_light_colors().map(|c| c.len())),
     })
 }
 
@@ -2668,6 +2695,385 @@ fn parse_polling_rate(s: &str) -> Result<u8> {
         _ => bail!("invalid polling rate '{s}' (want 8k|4k|2k|1k|500|250|125)"),
     };
     Ok(id)
+}
+
+// ── khub916 keyboards (K1 / K1 Pro / K98 Pro, wired "916") ─────────────
+//
+// Read commands only. The proto crate also exposes write_keymap /
+// write_profile / write_custom_light_colors, but they are deliberately NOT
+// wired into the CLI yet: the keymap write needs a full 128-entry table
+// while the device only returns 126 entries on read (length mismatch —
+// docs/protocol-khub916.md §8), the profile field semantics are only
+// partially proven, and no write has been live-verified. Screen commands
+// (11/12/13) and the 916_wireLess transport are separate beads.
+
+#[derive(Subcommand)]
+enum Kb916Commands {
+    /// Device identity: UUID, catalog model name, firmware version, screen.
+    Info,
+    /// Full keymap decoded to labels (one u32 per position). `--layer`
+    /// (0-3) and `--system` (0-1) select the read argument; the default
+    /// `arg = layer | system<<2 = 0` is what the vendor driver reads.
+    Keys {
+        /// Layer bits 0-1 of the keymap argument.
+        #[arg(long, default_value_t = 0)]
+        layer: u8,
+        /// System/layout bit (<<2) of the keymap argument.
+        #[arg(long, default_value_t = 0)]
+        system: u8,
+    },
+    /// Device profile/config blob (~128 B, cmd 132): current light mode,
+    /// sleep timeout and the raw bytes.
+    Profile {
+        #[command(subcommand)]
+        command: Kb916Profile,
+    },
+    /// Battery percent and raw status flags (cmd 135).
+    Power,
+    /// Per-key custom RGB colours (126 entries, cmd 134).
+    LightColors {
+        #[command(subcommand)]
+        command: Kb916LightColors,
+    },
+    /// Per-mode light colour/effect blob (~480 B, cmd 138) as a hex dump.
+    LightData,
+    /// Macro region (≤512 B, cmd 133) as a hex dump.
+    Macro,
+    /// Screen commands (time/image, spec docs/protocol-khub916-screen.md)
+    /// are a separate bead — always "not implemented".
+    Screen,
+    /// The 916_wireLess 2.4 GHz transport is a separate bead — always
+    /// "not implemented".
+    Wireless,
+    /// Writes (keymap / profile / custom light colours) are not wired
+    /// into the CLI yet — always "not implemented" (see module comment).
+    Set {
+        #[command(subcommand)]
+        command: Kb916Set,
+    },
+}
+
+#[derive(Subcommand)]
+enum Kb916Profile {
+    /// Show the decoded profile blob.
+    Get,
+}
+
+#[derive(Subcommand)]
+enum Kb916LightColors {
+    /// Show all 126 per-key RGB colours.
+    Get,
+}
+
+#[derive(Subcommand)]
+enum Kb916Set {
+    /// `omg kb916 set key <index> <keyvalue>` — pending.
+    Key { index: usize, value: String },
+    /// Full keymap write — pending.
+    Keymap,
+    /// Profile write — pending.
+    Profile,
+    /// Custom light colour write — pending.
+    LightColors,
+}
+
+/// What `open_khub916` resolved to.
+enum Kb916Session {
+    Wired(DeviceInfo, khub::Khub916),
+    /// A 916_wireLess device was selected — different transport.
+    Wireless,
+}
+
+/// Select a khub916 wired device and open a session. Explicit `--device`
+/// must resolve to a Khub916Wired interface (a wireless dongle or another
+/// protocol's device is rejected); otherwise the single connected wired
+/// khub916 device is auto-selected.
+fn open_khub916(cli: &Cli) -> Result<Option<Kb916Session>> {
+    let devices = find_devices()?;
+    let candidates: Vec<DeviceInfo> = devices
+        .iter()
+        .filter(|d| {
+            d.kind == DeviceKind::Khub916Wired || d.kind == DeviceKind::Khub916Wireless
+        })
+        .cloned()
+        .collect();
+    let device = if let Some(sel) = cli.device.as_deref() {
+        // Explicit selector may match any GravaStar device so the error
+        // can say what it actually is.
+        let matches: Vec<&DeviceInfo> = devices.iter().filter(|d| device_matches(d, sel)).collect();
+        match matches.len() {
+            0 => return Ok(None),
+            1 => matches[0].clone(),
+            n => bail!("selector '{sel}' matches {n} devices; be more specific"),
+        }
+    } else {
+        let wired: Vec<DeviceInfo> = candidates
+            .iter()
+            .filter(|d| d.kind == DeviceKind::Khub916Wired)
+            .cloned()
+            .collect();
+        match select_device(&wired, None)? {
+            Some(d) => d.clone(),
+            None => return Ok(None),
+        }
+    };
+    if device.kind == DeviceKind::Khub916Wireless {
+        return Ok(Some(Kb916Session::Wireless));
+    }
+    if device.kind != DeviceKind::Khub916Wired {
+        bail!(
+            "{} ({}) is {}, not a khub916 keyboard — `omg kb916` only drives the wired 916 protocol",
+            device.vid_pid(),
+            device.path,
+            device.kind.label()
+        );
+    }
+    let mut link = device.open_link()?;
+    let report_id = khub::probe_report_id(&mut link)?;
+    Ok(Some(Kb916Session::Wired(
+        device,
+        khub::Khub916::new(Box::new(link), report_id),
+    )))
+}
+
+fn kb916_absent(cli: &Cli) -> Result<ExitCode> {
+    if cli.json {
+        print_json(
+            &json!({ "error": "no khub916 wired keyboard detected (omg devices lists what was found)" }),
+        )?;
+    } else {
+        println!("no khub916 wired keyboard detected (omg devices lists what was found)");
+    }
+    Ok(no_device())
+}
+
+/// Exit-code-3 "not implemented" path shared by screen / wireless / set.
+fn kb916_unsupported(cli: &Cli, what: &str, pending: &str) -> Result<ExitCode> {
+    let msg = format!("{what}: not implemented yet — {pending}");
+    if cli.json {
+        print_json(&json!({ "error": msg, "unsupported": true }))?;
+    } else {
+        eprintln!("error: {msg}");
+    }
+    Ok(ExitCode::from(3))
+}
+
+fn kb916_wireless_pending() -> &'static str {
+    "the 916_wireLess transport (19-byte output reports, chunked writes, additive checksum) is a separate bead — docs/protocol-khub916.md §3/§7"
+}
+
+fn kb916_write_pending() -> &'static str {
+    "writes are not wired into the CLI yet: the keymap write needs a full 128-entry table but the device returns 126 entries on read (length mismatch, docs/protocol-khub916.md §8), profile field semantics are only partially proven, and no khub916 write has been live-verified. Pending: `set key <index> <keyvalue>` via read-modify-write of the full keymap, `set profile`, `set light-colors`"
+}
+
+/// Resolve the session for a read command, mapping the wireless selection
+/// to the unsupported exit.
+fn kb916_session(cli: &Cli) -> Result<Result<(DeviceInfo, khub::Khub916), ExitCode>> {
+    match open_khub916(cli)? {
+        None => Ok(Err(kb916_absent(cli)?)),
+        Some(Kb916Session::Wireless) => Ok(Err(kb916_unsupported(cli, "916_wireLess transport", kb916_wireless_pending())?)),
+        Some(Kb916Session::Wired(d, k)) => Ok(Ok((d, k))),
+    }
+}
+
+fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
+    // Commands that never touch the device.
+    match command {
+        Kb916Commands::Screen => {
+            return kb916_unsupported(
+                cli,
+                "khub916 screen commands (11/12/13)",
+                "the screen/GIF protocol is code-verified only (docs/protocol-khub916-screen.md) and is a separate bead",
+            );
+        }
+        Kb916Commands::Wireless => {
+            return kb916_unsupported(cli, "916_wireLess transport", kb916_wireless_pending());
+        }
+        Kb916Commands::Set { .. } => {
+            return kb916_unsupported(cli, "khub916 writes", kb916_write_pending());
+        }
+        _ => {}
+    }
+
+    let (device, mut kb) = match kb916_session(cli)? {
+        Ok(s) => s,
+        Err(code) => return Ok(code),
+    };
+
+    match command {
+        Kb916Commands::Info => {
+            let info = kb.device_info()?;
+            if cli.json {
+                print_json(&json!({ "device": device, "info": info }))?;
+            } else {
+                println!("{}", device.vid_pid());
+                println!("uuid:          {}", info.uuid);
+                match (&info.catalog_model, &info.catalog_name) {
+                    (Some(m), Some(n)) => println!("model:         {n} ({m})"),
+                    (Some(m), None) => println!("model:         {m}"),
+                    _ => println!("model:         (UUID not in the vendor catalog)"),
+                }
+                println!("version:       0x{:04X}", info.version);
+                match info.screen {
+                    Some((w, h)) => println!("screen:        {w}x{h} (code {})", info.screen_size),
+                    None => println!("screen:        none (code {})", info.screen_size),
+                }
+            }
+        }
+        Kb916Commands::Keys { layer, system } => {
+            if *layer > 3 || *system > 1 {
+                bail!("invalid keymap argument: --layer must be 0-3, --system 0-1");
+            }
+            let arg = (*layer & 3) | ((*system & 1) << 2);
+            let values = kb.key_values(arg)?;
+            let keys: Vec<khub::KeyValue> = values.iter().map(|&v| khub::decode_key_value(v)).collect();
+            if cli.json {
+                let entries: Vec<serde_json::Value> = values
+                    .iter()
+                    .zip(&keys)
+                    .enumerate()
+                    .map(|(i, (&v, k))| {
+                        json!({
+                            "index": i,
+                            "value": format!("0x{v:08X}"),
+                            "label": k.label(),
+                            "decoded": serde_json::to_value(k).unwrap_or(serde_json::Value::Null),
+                        })
+                    })
+                    .collect();
+                print_json(&json!({
+                    "device": device,
+                    "arg": format!("0x{arg:02X}"),
+                    "layer": layer,
+                    "system": system,
+                    "count": values.len(),
+                    "keys": entries,
+                }))?;
+            } else {
+                println!(
+                    "keymap: {} entries (arg 0x{arg:02X}, layer {layer}, system {system})",
+                    values.len()
+                );
+                for (i, (v, k)) in values.iter().zip(&keys).enumerate() {
+                    let label = k.label();
+                    println!(
+                        "  [{i:3}] 0x{v:08X}  {}",
+                        if label.is_empty() { "—".to_string() } else { label }
+                    );
+                }
+            }
+        }
+        Kb916Commands::Profile { command } => match command {
+            Kb916Profile::Get => {
+                let profile = kb.profile()?;
+                let light_mode = profile.light_mode();
+                let sleep = profile.sleep_seconds();
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "profile": {
+                            "bytes": profile.raw.len(),
+                            "light_mode": light_mode,
+                            "sleep_seconds": sleep,
+                            "hex": profile.raw.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        },
+                    }))?;
+                } else {
+                    println!("profile: {} bytes", profile.raw.len());
+                    println!(
+                        "light mode: {}",
+                        light_mode.map(|m| m.to_string()).unwrap_or_else(|| "(unparsed)".into())
+                    );
+                    println!(
+                        "sleep:      {}",
+                        sleep.map(|s| format!("{s} s")).unwrap_or_else(|| "(unparsed)".into())
+                    );
+                    println!("hex:        {}", hex32_full(&profile.raw));
+                }
+            }
+        },
+        Kb916Commands::Power => {
+            let p = kb.power()?;
+            if cli.json {
+                print_json(&json!({ "device": device, "power": p }))?;
+            } else {
+                println!("battery: {}%", p.percent);
+                println!("flags:   0x{:02X} (raw — individual bits unconfirmed, spec §8)", p.flags);
+            }
+        }
+        Kb916Commands::LightColors { command } => match command {
+            Kb916LightColors::Get => {
+                let colors = kb.custom_light_colors()?;
+                if cli.json {
+                    let entries: Vec<serde_json::Value> = colors
+                        .iter()
+                        .map(|c| json!({
+                            "index": c.index,
+                            "pos": c.pos,
+                            "r": c.r, "g": c.g, "b": c.b,
+                            "hex": format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b),
+                        }))
+                        .collect();
+                    print_json(&json!({
+                        "device": device,
+                        "count": colors.len(),
+                        "colors": entries,
+                    }))?;
+                } else {
+                    println!("custom light colours: {} entries", colors.len());
+                    for c in &colors {
+                        println!(
+                            "  [{:3}] pos {:<3} #{:02X}{:02X}{:02X}",
+                            c.index, c.pos, c.r, c.g, c.b
+                        );
+                    }
+                }
+            }
+        },
+        Kb916Commands::LightData => {
+            let data = kb.light_color_data()?;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "bytes": data.len(),
+                    "hex": data.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                }))?;
+            } else {
+                println!("light colour data: {} bytes", data.len());
+                print_hex_dump(&data);
+            }
+        }
+        Kb916Commands::Macro => {
+            let data = kb.macro_region()?;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "bytes": data.len(),
+                    "hex": data.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                }))?;
+            } else {
+                println!("macro region: {} bytes (raw — entry parsing not yet implemented)", data.len());
+                print_hex_dump(&data);
+            }
+        }
+        Kb916Commands::Screen | Kb916Commands::Wireless | Kb916Commands::Set { .. } => {
+            unreachable!("handled before the session is opened")
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Full hex string (no truncation) for profile/config blobs.
+fn hex32_full(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Wrapped hex dump, 16 bytes per line with offsets.
+fn print_hex_dump(bytes: &[u8]) {
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+        println!("  {:04x}: {}", i * 16, hex.join(" "));
+    }
 }
 
 // ── device selection ───────────────────────────────────────────────────
