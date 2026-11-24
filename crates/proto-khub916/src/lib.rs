@@ -88,7 +88,10 @@ pub struct Uuid(pub [u8; 6]);
 impl Uuid {
     /// Parse `"0x030000000197"` / `"030000000197"` (12 hex digits).
     pub fn parse_hex(s: &str) -> Result<Self> {
-        let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+        let hex = s
+            .strip_prefix("0x")
+            .or_else(|| s.strip_prefix("0X"))
+            .unwrap_or(s);
         if hex.len() != 12 {
             bail!("khub916 UUID must be 6 bytes (12 hex digits), got {s:?}");
         }
@@ -136,22 +139,102 @@ const fn u(hex: &[u8; 6]) -> Uuid {
 /// UUID pairing inside the JP/DE/K98 families follows the catalog listing
 /// order [inferred]; the headline models are exact.
 pub const CATALOG: &[CatalogEntry] = &[
-    CatalogEntry { model: "916_K1", name: "GravaStar Mercury K1", uuid: u(&[0x03, 0, 0, 0, 0x01, 0xb4]), key_type: Some(0) },
-    CatalogEntry { model: "916_K1_PRO", name: "GravaStar Mercury K1 PRO", uuid: u(&[0x03, 0, 0, 0, 0x01, 0x97]), key_type: Some(0) },
-    CatalogEntry { model: "916_K1_LITE", name: "GravaStar Mercury K1 LITE", uuid: u(&[0x03, 0, 0, 0, 0x01, 0xb5]), key_type: Some(0) },
-    CatalogEntry { model: "916_K98Pro", name: "K98", uuid: u(&[0x06, 0, 0, 0, 0x00, 0xb3]), key_type: Some(0) },
-    CatalogEntry { model: "916_GravaStar_Mercury_NP_PRO", name: "GravaStar Mercury NP PRO", uuid: u(&[0x06, 0, 0, 0, 0x00, 0xad]), key_type: Some(0) },
-    CatalogEntry { model: "916_GravaStar_Mercury_NP", name: "GravaStar Mercury NP", uuid: u(&[0x06, 0, 0, 0, 0x00, 0xd4]), key_type: Some(0) },
-    CatalogEntry { model: "916_K1_JP", name: "GravaStar Mercury K1 (JP)", uuid: u(&[0x03, 0, 0, 0, 0x04, 0x01]), key_type: Some(3) },
-    CatalogEntry { model: "916_K1_LITE_JP", name: "GravaStar Mercury K1 LITE (JP)", uuid: u(&[0x03, 0, 0, 0, 0x04, 0x02]), key_type: Some(3) },
-    CatalogEntry { model: "916_K1_LITE_PRO_JP", name: "GravaStar Mercury K1 LITE PRO (JP)", uuid: u(&[0x03, 0, 0, 0, 0x04, 0x00]), key_type: Some(3) },
-    CatalogEntry { model: "916_K1_PRO_DE", name: "GravaStar Mercury K1 PRO (DE)", uuid: u(&[0x03, 0, 0, 0, 0x03, 0xf4]), key_type: None },
-    CatalogEntry { model: "916_K1_DE", name: "GravaStar Mercury K1 (DE)", uuid: u(&[0x03, 0, 0, 0, 0x03, 0xf5]), key_type: None },
-    CatalogEntry { model: "916_K1_LITE_DE", name: "GravaStar Mercury K1 LITE (DE)", uuid: u(&[0x03, 0, 0, 0, 0x03, 0xf6]), key_type: None },
-    CatalogEntry { model: "916_K98Pro_JP", name: "K98 (JP)", uuid: u(&[0x06, 0, 0, 0, 0x01, 0x0c]), key_type: Some(3) },
-    CatalogEntry { model: "916_K98Pro_DE", name: "K98 (DE)", uuid: u(&[0x06, 0, 0, 0, 0x01, 0x04]), key_type: None },
-    CatalogEntry { model: "916_K98Pro_SE", name: "K98 (SE)", uuid: u(&[0x06, 0, 0, 0, 0x01, 0x10]), key_type: None },
-    CatalogEntry { model: "916_K98Pro_KR", name: "K98 (KR)", uuid: u(&[0x06, 0, 0, 0, 0x01, 0x13]), key_type: None },
+    CatalogEntry {
+        model: "916_K1",
+        name: "GravaStar Mercury K1",
+        uuid: u(&[0x03, 0, 0, 0, 0x01, 0xb4]),
+        key_type: Some(0),
+    },
+    CatalogEntry {
+        model: "916_K1_PRO",
+        name: "GravaStar Mercury K1 PRO",
+        uuid: u(&[0x03, 0, 0, 0, 0x01, 0x97]),
+        key_type: Some(0),
+    },
+    CatalogEntry {
+        model: "916_K1_LITE",
+        name: "GravaStar Mercury K1 LITE",
+        uuid: u(&[0x03, 0, 0, 0, 0x01, 0xb5]),
+        key_type: Some(0),
+    },
+    CatalogEntry {
+        model: "916_K98Pro",
+        name: "K98",
+        uuid: u(&[0x06, 0, 0, 0, 0x00, 0xb3]),
+        key_type: Some(0),
+    },
+    CatalogEntry {
+        model: "916_GravaStar_Mercury_NP_PRO",
+        name: "GravaStar Mercury NP PRO",
+        uuid: u(&[0x06, 0, 0, 0, 0x00, 0xad]),
+        key_type: Some(0),
+    },
+    CatalogEntry {
+        model: "916_GravaStar_Mercury_NP",
+        name: "GravaStar Mercury NP",
+        uuid: u(&[0x06, 0, 0, 0, 0x00, 0xd4]),
+        key_type: Some(0),
+    },
+    CatalogEntry {
+        model: "916_K1_JP",
+        name: "GravaStar Mercury K1 (JP)",
+        uuid: u(&[0x03, 0, 0, 0, 0x04, 0x01]),
+        key_type: Some(3),
+    },
+    CatalogEntry {
+        model: "916_K1_LITE_JP",
+        name: "GravaStar Mercury K1 LITE (JP)",
+        uuid: u(&[0x03, 0, 0, 0, 0x04, 0x02]),
+        key_type: Some(3),
+    },
+    CatalogEntry {
+        model: "916_K1_LITE_PRO_JP",
+        name: "GravaStar Mercury K1 LITE PRO (JP)",
+        uuid: u(&[0x03, 0, 0, 0, 0x04, 0x00]),
+        key_type: Some(3),
+    },
+    CatalogEntry {
+        model: "916_K1_PRO_DE",
+        name: "GravaStar Mercury K1 PRO (DE)",
+        uuid: u(&[0x03, 0, 0, 0, 0x03, 0xf4]),
+        key_type: None,
+    },
+    CatalogEntry {
+        model: "916_K1_DE",
+        name: "GravaStar Mercury K1 (DE)",
+        uuid: u(&[0x03, 0, 0, 0, 0x03, 0xf5]),
+        key_type: None,
+    },
+    CatalogEntry {
+        model: "916_K1_LITE_DE",
+        name: "GravaStar Mercury K1 LITE (DE)",
+        uuid: u(&[0x03, 0, 0, 0, 0x03, 0xf6]),
+        key_type: None,
+    },
+    CatalogEntry {
+        model: "916_K98Pro_JP",
+        name: "K98 (JP)",
+        uuid: u(&[0x06, 0, 0, 0, 0x01, 0x0c]),
+        key_type: Some(3),
+    },
+    CatalogEntry {
+        model: "916_K98Pro_DE",
+        name: "K98 (DE)",
+        uuid: u(&[0x06, 0, 0, 0, 0x01, 0x04]),
+        key_type: None,
+    },
+    CatalogEntry {
+        model: "916_K98Pro_SE",
+        name: "K98 (SE)",
+        uuid: u(&[0x06, 0, 0, 0, 0x01, 0x10]),
+        key_type: None,
+    },
+    CatalogEntry {
+        model: "916_K98Pro_KR",
+        name: "K98 (KR)",
+        uuid: u(&[0x06, 0, 0, 0, 0x01, 0x13]),
+        key_type: None,
+    },
 ];
 
 /// Catalog row for a device UUID (the vendor "password" check).
@@ -238,17 +321,33 @@ pub enum KeyValue {
         gui: bool,
     },
     /// Type tag `0x0D`: Fn layer key (`0x0D000000` = Fn, `0x0D010000` = Fn1).
-    Fn { layer: u8 },
+    Fn {
+        layer: u8,
+    },
     /// Type tag 3: macro reference; bits 23..16 type, 15..8 number, 7..0 index.
-    Macro { macro_type: u8, number: u8, index: u8 },
+    Macro {
+        macro_type: u8,
+        number: u8,
+        index: u8,
+    },
     /// Type tag 7: secondary-layer key (exact semantics unconfirmed).
-    SecondaryLayer { raw: u32 },
+    SecondaryLayer {
+        raw: u32,
+    },
     /// Type tags 32/33/34: SOCD / MT / TGL advanced-key slots.
-    Socd { raw: u32 },
-    Mt { raw: u32 },
-    Tgl { raw: u32 },
+    Socd {
+        raw: u32,
+    },
+    Mt {
+        raw: u32,
+    },
+    Tgl {
+        raw: u32,
+    },
     /// Anything else, kept verbatim.
-    Unknown { raw: u32 },
+    Unknown {
+        raw: u32,
+    },
 }
 
 /// Decode one big-endian u32 keymap value. Tag = bits 31..24 (spec §6).
@@ -270,7 +369,9 @@ pub fn decode_key_value(v: u32) -> KeyValue {
             index: (v & 0xFF) as u8,
         },
         0x07 => KeyValue::SecondaryLayer { raw: v },
-        0x0D => KeyValue::Fn { layer: ((v >> 16) & 0xFF) as u8 },
+        0x0D => KeyValue::Fn {
+            layer: ((v >> 16) & 0xFF) as u8,
+        },
         0x20 => KeyValue::Socd { raw: v },
         0x21 => KeyValue::Mt { raw: v },
         0x22 => KeyValue::Tgl { raw: v },
@@ -284,9 +385,20 @@ impl KeyValue {
     pub fn label(&self) -> String {
         match self {
             KeyValue::Empty => String::new(),
-            KeyValue::Normal { usage, ctrl, shift, alt, gui } => {
+            KeyValue::Normal {
+                usage,
+                ctrl,
+                shift,
+                alt,
+                gui,
+            } => {
                 let mut mods = Vec::new();
-                for (on, name) in [(*ctrl, "Ctrl"), (*shift, "Shift"), (*alt, "Alt"), (*gui, "Win")] {
+                for (on, name) in [
+                    (*ctrl, "Ctrl"),
+                    (*shift, "Shift"),
+                    (*alt, "Alt"),
+                    (*gui, "Win"),
+                ] {
                     if on {
                         mods.push(name);
                     }
@@ -294,7 +406,11 @@ impl KeyValue {
                 // usage 0 with modifier bits set is how the firmware encodes
                 // bare modifier keys (observed live: Shift/Ctrl/Win rows).
                 if *usage == 0 {
-                    return if mods.is_empty() { String::new() } else { mods.join("+") };
+                    return if mods.is_empty() {
+                        String::new()
+                    } else {
+                        mods.join("+")
+                    };
                 }
                 let mut s = mods.join("+");
                 if !s.is_empty() {
@@ -304,9 +420,17 @@ impl KeyValue {
                 s
             }
             KeyValue::Fn { layer } => {
-                if *layer == 0 { "Fn".to_string() } else { format!("Fn{layer}") }
+                if *layer == 0 {
+                    "Fn".to_string()
+                } else {
+                    format!("Fn{layer}")
+                }
             }
-            KeyValue::Macro { macro_type, number, index } => {
+            KeyValue::Macro {
+                macro_type,
+                number,
+                index,
+            } => {
                 format!("Macro({macro_type},{number},{index})")
             }
             KeyValue::SecondaryLayer { raw } => format!("Layer2(0x{raw:08X})"),
@@ -323,7 +447,11 @@ impl KeyValue {
 /// their low u16 — decode is best-effort, spec §8).
 fn usage_label(usage: u16) -> String {
     let label = omg_model::key_label(usage, false);
-    if label.is_empty() { format!("0x{usage:02X}") } else { label }
+    if label.is_empty() {
+        format!("0x{usage:02X}")
+    } else {
+        label
+    }
 }
 
 /// Profile/config blob wrapper (cmd 132 read / cmd 4 write, ~128 B).
@@ -341,7 +469,11 @@ impl Profile {
         if e.len() < 11 {
             return None;
         }
-        Some(if e[9] != 0 { ((e[9] as u16) << 8) | e[10] as u16 } else { e[10] as u16 })
+        Some(if e[9] != 0 {
+            ((e[9] as u16) << 8) | e[10] as u16
+        } else {
+            e[10] as u16
+        })
     }
 
     /// Keyboard sleep time in seconds (`profile[24]`).
@@ -378,7 +510,11 @@ pub fn wireless_not_implemented() -> Result<()> {
 
 impl Khub916 {
     pub fn new(link: Box<dyn Link>, report_id: u8) -> Self {
-        Self { link, report_id, poisoned: false }
+        Self {
+            link,
+            report_id,
+            poisoned: false,
+        }
     }
 
     pub fn is_poisoned(&self) -> bool {
@@ -405,9 +541,19 @@ impl Khub916 {
 
     /// Builds the 519-byte feature payload: 7-byte header + command payload,
     /// zero-padded. Bytes 2/3/4 are the constant `00 01 00` triple.
-    fn packet(cmd: u8, arg: u8, tag_a: u8, tag_b: u8, payload: &[u8]) -> Result<[u8; FEATURE_PAYLOAD_BYTES]> {
+    fn packet(
+        cmd: u8,
+        arg: u8,
+        tag_a: u8,
+        tag_b: u8,
+        payload: &[u8],
+    ) -> Result<[u8; FEATURE_PAYLOAD_BYTES]> {
         if HEADER_LEN + payload.len() > FEATURE_PAYLOAD_BYTES {
-            bail!("khub916 packet too large: {} + {} > {FEATURE_PAYLOAD_BYTES}", HEADER_LEN, payload.len());
+            bail!(
+                "khub916 packet too large: {} + {} > {FEATURE_PAYLOAD_BYTES}",
+                HEADER_LEN,
+                payload.len()
+            );
         }
         let mut pkt = [0u8; FEATURE_PAYLOAD_BYTES];
         pkt[0] = cmd;
@@ -492,15 +638,24 @@ impl Khub916 {
             // Tags 248/1.
             let p = s.query(CMD_KEYMAP_READ, arg, 0xF8, 0x01)?;
             if p.len() % 4 != 0 {
-                bail!("khub916 keymap: payload {} bytes not a multiple of 4", p.len());
+                bail!(
+                    "khub916 keymap: payload {} bytes not a multiple of 4",
+                    p.len()
+                );
             }
-            Ok(p.chunks_exact(4).map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect())
+            Ok(p.chunks_exact(4)
+                .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                .collect())
         })
     }
 
     /// Keymap decoded to [`KeyValue`]s (see [`decode_key_value`]).
     pub fn keymap(&mut self, arg: u8) -> Result<Vec<KeyValue>> {
-        Ok(self.key_values(arg)?.iter().map(|&v| decode_key_value(v)).collect())
+        Ok(self
+            .key_values(arg)?
+            .iter()
+            .map(|&v| decode_key_value(v))
+            .collect())
     }
 
     /// Profile/config blob (cmd 132, ~128 B; live reply was 135 B total =
@@ -520,7 +675,10 @@ impl Khub916 {
             if p.len() < 2 {
                 bail!("khub916 power: short payload {} bytes", p.len());
             }
-            Ok(PowerInfo { percent: p[0], flags: p[1] })
+            Ok(PowerInfo {
+                percent: p[0],
+                flags: p[1],
+            })
         })
     }
 
@@ -577,7 +735,10 @@ impl Khub916 {
     /// data differs).
     pub fn write_keymap(&mut self, layer: u8, system: u8, values: &[u32]) -> Result<WriteOutcome> {
         if values.len() != KEYMAP_ENTRIES {
-            bail!("khub916 keymap write needs exactly {KEYMAP_ENTRIES} values, got {}", values.len());
+            bail!(
+                "khub916 keymap write needs exactly {KEYMAP_ENTRIES} values, got {}",
+                values.len()
+            );
         }
         let arg = (layer & 3) | ((system & 1) << 2);
         let mut payload = Vec::with_capacity(KEYMAP_ENTRIES * 4 + 2);
@@ -592,7 +753,10 @@ impl Khub916 {
             if back != values {
                 bail!("khub916 keymap write not verified: read-back differs");
             }
-            Ok(WriteOutcome { command: CMD_KEYMAP_WRITE, verified: true })
+            Ok(WriteOutcome {
+                command: CMD_KEYMAP_WRITE,
+                verified: true,
+            })
         })
     }
 
@@ -611,7 +775,10 @@ impl Khub916 {
             if back != profile {
                 bail!("khub916 profile write not verified: read-back differs");
             }
-            Ok(WriteOutcome { command: CMD_PROFILE_WRITE, verified: true })
+            Ok(WriteOutcome {
+                command: CMD_PROFILE_WRITE,
+                verified: true,
+            })
         })
     }
 
@@ -641,11 +808,17 @@ impl Khub916 {
             s.transact(&pkt)?;
             let back = s.custom_light_colors()?;
             let matches = back.len() == colors.len()
-                && back.iter().zip(colors).all(|(b, w)| (b.r, b.g, b.b) == (w.r, w.g, w.b));
+                && back
+                    .iter()
+                    .zip(colors)
+                    .all(|(b, w)| (b.r, b.g, b.b) == (w.r, w.g, w.b));
             if !matches {
                 bail!("khub916 custom light write not verified: read-back differs");
             }
-            Ok(WriteOutcome { command: CMD_CUSTOM_LIGHT_WRITE, verified: true })
+            Ok(WriteOutcome {
+                command: CMD_CUSTOM_LIGHT_WRITE,
+                verified: true,
+            })
         })
     }
 }
@@ -663,7 +836,9 @@ pub struct Rgb {
 /// report descriptors, so this tries the known value first, then scans
 /// 1..=32. Only the read-only device-info query (cmd 130) is ever sent.
 pub fn probe_report_id(link: &mut dyn Link) -> Result<u8> {
-    let candidates: Vec<u8> = std::iter::once(6).chain((1..=32).filter(|&i| i != 6)).collect();
+    let candidates: Vec<u8> = std::iter::once(6)
+        .chain((1..=32).filter(|&i| i != 6))
+        .collect();
     let mut last_err = anyhow!("khub916: no report id answered");
     for id in candidates {
         let pkt = Khub916::packet(CMD_DEVICE_INFO, 0x01, 0x0A, 0x00, &[])?;
@@ -674,7 +849,10 @@ pub fn probe_report_id(link: &mut dyn Link) -> Result<u8> {
                 return Ok(id);
             }
             Ok(Some(resp)) => {
-                last_err = anyhow!("report id {id}: bad echo/short response ({} bytes)", resp.len());
+                last_err = anyhow!(
+                    "report id {id}: bad echo/short response ({} bytes)",
+                    resp.len()
+                );
             }
             Ok(None) => last_err = anyhow!("report id {id}: no answer"),
             Err(e) => last_err = anyhow!("report id {id}: {e:#}"),
@@ -697,7 +875,10 @@ mod tests {
 
     impl MockLink {
         fn new(responses: Vec<Result<Vec<u8>, String>>) -> Self {
-            Self { responses: responses.into(), sent: Vec::new() }
+            Self {
+                responses: responses.into(),
+                sent: Vec::new(),
+            }
         }
     }
 
@@ -759,7 +940,10 @@ mod tests {
         assert_eq!(info.screen_size, 0);
         assert_eq!(info.screen, None);
         assert_eq!(info.catalog_model.as_deref(), Some("916_K1_PRO"));
-        assert_eq!(info.catalog_name.as_deref(), Some("GravaStar Mercury K1 PRO"));
+        assert_eq!(
+            info.catalog_name.as_deref(),
+            Some("GravaStar Mercury K1 PRO")
+        );
     }
 
     #[test]
@@ -809,22 +993,44 @@ mod tests {
         assert_eq!(decode_key_value(0), KeyValue::Empty);
         assert_eq!(
             decode_key_value(0x00000029),
-            KeyValue::Normal { usage: 0x29, ctrl: false, shift: false, alt: false, gui: false }
+            KeyValue::Normal {
+                usage: 0x29,
+                ctrl: false,
+                shift: false,
+                alt: false,
+                gui: false
+            }
         );
         assert_eq!(
             decode_key_value(0x00040029),
-            KeyValue::Normal { usage: 0x29, ctrl: false, shift: false, alt: true, gui: false }
+            KeyValue::Normal {
+                usage: 0x29,
+                ctrl: false,
+                shift: false,
+                alt: true,
+                gui: false
+            }
         );
         assert_eq!(
             decode_key_value(0x03011234),
-            KeyValue::Macro { macro_type: 1, number: 0x12, index: 0x34 }
+            KeyValue::Macro {
+                macro_type: 1,
+                number: 0x12,
+                index: 0x34
+            }
         );
         assert_eq!(decode_key_value(0x0D000000), KeyValue::Fn { layer: 0 });
         assert_eq!(decode_key_value(0x0D010000), KeyValue::Fn { layer: 1 });
-        assert!(matches!(decode_key_value(0x20DEADBE), KeyValue::Socd { .. }));
+        assert!(matches!(
+            decode_key_value(0x20DEADBE),
+            KeyValue::Socd { .. }
+        ));
         assert!(matches!(decode_key_value(0x21000001), KeyValue::Mt { .. }));
         assert!(matches!(decode_key_value(0x22000002), KeyValue::Tgl { .. }));
-        assert!(matches!(decode_key_value(0xDEADBEEF), KeyValue::Unknown { raw: 0xDEADBEEF }));
+        assert!(matches!(
+            decode_key_value(0xDEADBEEF),
+            KeyValue::Unknown { raw: 0xDEADBEEF }
+        ));
         // Labels.
         assert_eq!(decode_key_value(0x0002001E).label(), "Shift+1");
         assert_eq!(decode_key_value(0x0D000000).label(), "Fn");
@@ -835,7 +1041,11 @@ mod tests {
     fn echo_mismatch_retries_then_fails() {
         // Wrong echo three times → error, session poisoned.
         let bad = vec![0xFFu8; 32];
-        let link = Box::new(MockLink::new(vec![Ok(bad.clone()), Ok(bad.clone()), Ok(bad)]));
+        let link = Box::new(MockLink::new(vec![
+            Ok(bad.clone()),
+            Ok(bad.clone()),
+            Ok(bad),
+        ]));
         let mut kb = Khub916::new(link, 6);
         assert!(kb.device_info().is_err());
         assert!(kb.is_poisoned());
@@ -866,7 +1076,16 @@ mod tests {
         let mut kb = Khub916::new(link, 6);
         let colors = kb.custom_light_colors().unwrap();
         assert_eq!(colors.len(), CUSTOM_LIGHT_ENTRIES);
-        assert_eq!(colors[0], LightColor { index: 0, pos: 8, r: 0x11, g: 0x22, b: 0x33 });
+        assert_eq!(
+            colors[0],
+            LightColor {
+                index: 0,
+                pos: 8,
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
         assert_eq!(colors[1].pos, 12);
         assert_eq!((colors[1].r, colors[1].g, colors[1].b), (0x44, 0x55, 0x66));
     }
