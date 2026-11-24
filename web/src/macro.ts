@@ -11,9 +11,10 @@
  * rebuilt, zero-padded to 512 B and sent as one cmd-5 feature report,
  * then verified by a cmd-133 read-back; key binds go through the cmd-3
  * keymap write (read-modify-write + verify). There is no `--yes` in the
- * web UI — every mutation is gated behind a `window.confirm` dialog
+ * web UI — every mutation is gated behind a confirm dialog
  * describing the exact change (docs/plan.md §2 read-only-by-default
- * contract adapted to a GUI).
+ * contract adapted to a GUI). Dialogs come from ./modal.ts — no native
+ * window.confirm/prompt anywhere in the UI.
  */
 
 import { app, emit, ensureKeymap, setStatus, subscribe } from './state.ts';
@@ -35,6 +36,7 @@ import {
   type MacroStep,
 } from './proto/macro916.ts';
 import { KEYMAP_ENTRIES, decodeKeyValue, keyValueLabel } from './proto/khub916.ts';
+import { confirmDialog, promptDialog } from './modal.ts';
 
 // ── DOM helpers (same style as pages.ts) ────────────────────────────────
 
@@ -276,22 +278,29 @@ export class MacroPage {
     const importBtn = btn('Import steps (JSON)…', 'Paste a steps list copied from the omg CLI — for advanced users');
     importBtn.disabled = this.busy;
     importBtn.addEventListener('click', () => {
-      const text = window.prompt(
-        'Paste steps JSON — a [{"action":"down","key":"KeyA","delay_ms":8}, …] array ' +
-          'or {"name":"…","steps":[…]} (docs/macro-schema.md):',
-      );
-      if (text === null || !this.draft) return;
-      try {
-        const parsed = parseStepsJson(text);
-        this.draft.steps = parsed.steps;
-        if (parsed.name !== null) this.draft.name = parsed.name;
-        nameInput.value = this.draft.name;
-        this.dirty = true;
-        this.renderSteps(stepsWrap);
-        setStatus(`Imported ${parsed.steps.length} step(s) — press Save to send them to the keyboard.`);
-      } catch (e) {
-        setStatus(`That JSON was not understood: ${e instanceof Error ? e.message : String(e)}`, true);
-      }
+      void promptDialog({
+        title: 'Import macro steps',
+        label:
+          'Paste a steps list copied from the omg CLI — for advanced users. ' +
+          'Accepted shapes: a [{"action":"down","key":"KeyA","delay_ms":8}, …] ' +
+          'array or {"name":"…","steps":[…]} (docs/macro-schema.md).',
+        multiline: true,
+        placeholder: '[{"action":"down","key":"KeyA","delay_ms":8}, …]',
+        confirmLabel: 'Import steps',
+      }).then((text) => {
+        if (text === null || text.trim() === '' || !this.draft) return;
+        try {
+          const parsed = parseStepsJson(text);
+          this.draft.steps = parsed.steps;
+          if (parsed.name !== null) this.draft.name = parsed.name;
+          nameInput.value = this.draft.name;
+          this.dirty = true;
+          this.renderSteps(stepsWrap);
+          setStatus(`Imported ${parsed.steps.length} step(s) — press Save to send them to the keyboard.`);
+        } catch (e) {
+          setStatus(`That JSON was not understood: ${e instanceof Error ? e.message : String(e)}`, true);
+        }
+      });
     });
     body.append(importBtn);
 
@@ -646,9 +655,13 @@ export class MacroPage {
     const desc = isNew
       ? `Create new macro "${entry.name}" with ${entry.steps.length} step(s)`
       : `Replace macro "${entries[slot]?.name ?? ''}" with "${entry.name}" (${entry.steps.length} step(s))`;
-    if (!window.confirm(`${desc}\n\nSave the whole macro list to the keyboard? Only the macros change — keys and lighting stay the same.`)) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: 'Save macros to the keyboard?',
+      bodyText: `${desc}.\n\nThis overwrites the whole macro list stored on the keyboard with the list shown on this page — including any macros you have not opened. Keys and lighting are not touched.`,
+      hint: 'You can save a full backup of the keyboard first on the Backup & restore page.',
+      confirmLabel: 'Save to keyboard',
+    });
+    if (!ok) return;
 
     this.busy = true;
     this.render();
@@ -692,14 +705,17 @@ export class MacroPage {
       setStatus(`Could not prepare the macro data: ${err instanceof Error ? err.message : String(err)}`, true);
       return;
     }
-    if (
-      !window.confirm(
-        `Delete macro "${e.name}" (${e.steps.length} step(s))?\n\n` +
-          'This removes it from the keyboard — keys already assigned to it will stop working. Your other macros are not affected.',
-      )
-    ) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: `Delete macro "${e.name}"?`,
+      bodyText:
+        `This removes "${e.name}" (${e.steps.length} step(s)) from the keyboard — ` +
+        'the whole macro list is rewritten without it. Keys already assigned to ' +
+        'this macro will stop working. Your other macros are not affected.',
+      hint: 'You can save a full backup of the keyboard first on the Backup & restore page.',
+      confirmLabel: 'Delete macro',
+      danger: true,
+    });
+    if (!ok) return;
     this.busy = true;
     this.render();
     try {
@@ -765,7 +781,12 @@ export class MacroPage {
     const desc = unbind
       ? `Clear key ${slot} on key set ${layer + 1} (currently ${before})`
       : `Assign macro "${macroName}" to key ${slot} on key set ${layer + 1} (currently ${before})`;
-    if (!window.confirm(`${desc}\n\nSave this change to the keyboard? Nothing else changes.`)) return;
+    const ok = await confirmDialog({
+      title: 'Save this key change?',
+      bodyText: `${desc}.\n\nThis writes the new key assignment to the keyboard — nothing else changes. The keyboard checks the change was saved.`,
+      confirmLabel: 'Save to keyboard',
+    });
+    if (!ok) return;
 
     this.busy = true;
     this.render();

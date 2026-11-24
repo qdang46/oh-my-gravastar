@@ -43,6 +43,7 @@ import {
 } from './proto/advkey916.ts';
 import { decodeKeyValue, keyValueLabel, KEYMAP_ENTRIES } from './proto/khub916.ts';
 import { KEY_POOL, POOL_UNASSIGN, type PoolEntry } from './keypool.ts';
+import { confirmDialog } from './modal.ts';
 
 // ── DOM helpers (same style as macro.ts) ───────────────────────────────
 
@@ -492,16 +493,16 @@ export class AdvPage {
    */
   private async applyPlan(plan: AdvPlan, desc: string): Promise<void> {
     if (this.busy || !app.connected || !app.snapshot) return;
-    if (
-      !window.confirm(
-        `${desc}\n\n` +
-          'This saves the change to the keyboard — other keys and settings stay the same. ' +
-          'Note: on some firmware the saved settings may not stick — the page will ' +
-          'tell you honestly if that happens. Continue?',
-      )
-    ) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: desc,
+      bodyText:
+        'This saves the change to the keyboard — other keys and settings stay the same. ' +
+        'Note: on some firmware the saved settings may not stick — the page will ' +
+        'tell you honestly if that happens.',
+      hint: 'Only this key\u2019s advanced function changes; the rest of the keymap is untouched.',
+      confirmLabel: 'Save to keyboard',
+    });
+    if (!ok) return;
     this.busy = true;
     this.render();
     const s = app.connected.session;
@@ -606,15 +607,16 @@ export class AdvPage {
   private async unbind(b: AdvBinding): Promise<void> {
     if (this.busy || !app.connected || !app.snapshot || !this.keymap) return;
     const oldLabel = keyValueLabel(decodeKeyValue(b.value)) || hex8(b.value);
-    if (
-      !window.confirm(
-        `Remove the ${KIND_LABEL[b.kind]} function from key ${b.index}?\n\n` +
-          `The key currently runs ${oldLabel}. Its saved settings stay stored on ` +
-          'the keyboard (the device has no delete), but the key goes back to normal.',
-      )
-    ) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: `Remove the ${KIND_LABEL[b.kind]} function from key ${b.index}?`,
+      bodyText:
+        `The key currently runs ${oldLabel}. Its saved settings stay stored on ` +
+        'the keyboard (the device has no delete), but the key goes back to normal — ' +
+        'this writes 0 to that one key position and checks the write.',
+      confirmLabel: 'Remove function',
+      danger: true,
+    });
+    if (!ok) return;
     this.busy = true;
     this.render();
     try {

@@ -34,6 +34,7 @@ import {
   type PoolEntry,
   type PoolGroup,
 } from './keypool.ts';
+import { confirmDialog } from './modal.ts';
 import './remap.css';
 
 /** Layout for the connected model (same rule as pages.ts `blocksForModel`). */
@@ -184,38 +185,16 @@ function describeChange(c: PendingChange, blocks: readonly KeyBlock[]): string {
 /**
  * Confirm dialog — the web equivalent of the CLI's `--yes` gate. Returns
  * true only when the user explicitly confirms the listed changes.
+ * Thin wrapper over the shared modal (./modal.ts).
  */
 function confirmWrite(title: string, lines: string[], confirmLabel: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const overlay = el('div', 'modal-overlay');
-    const modal = el('div', 'modal');
-    modal.setAttribute('role', 'dialog');
-    modal.append(el('h3', 'modal-title', title));
-    const ul = el('ul', 'modal-list');
-    for (const line of lines) ul.append(el('li', '', line));
-    modal.append(ul);
-    modal.append(
-      el('p', 'hint warn', 'Only the keys listed above change — everything else stays the same. The keyboard checks each change was saved.'),
-    );
-    const row = el('div', 'modal-actions');
-    const cancel = el('button', 'btn', 'Cancel');
-    const ok = el('button', 'btn btn-primary', confirmLabel);
-    cancel.type = 'button';
-    ok.type = 'button';
-    const done = (v: boolean): void => {
-      overlay.remove();
-      resolve(v);
-    };
-    cancel.addEventListener('click', () => done(false));
-    ok.addEventListener('click', () => done(true));
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) done(false);
-    });
-    row.append(cancel, ok);
-    modal.append(row);
-    overlay.append(modal);
-    document.body.append(overlay);
-    ok.focus();
+  return confirmDialog({
+    title,
+    details: lines,
+    hint:
+      'Only the keys listed above change — everything else stays the same. ' +
+      'The keyboard checks each change was saved.',
+    confirmLabel,
   });
 }
 

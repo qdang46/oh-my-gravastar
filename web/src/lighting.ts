@@ -45,6 +45,7 @@ import {
   type Rgb,
 } from './proto/light.ts';
 import type { LightColor } from './proto/khub916.ts';
+import { confirmDialog } from './modal.ts';
 
 // ── DOM helpers (same style as pages.ts) ───────────────────────────────
 
@@ -927,38 +928,18 @@ class LightingView {
   private confirmAndApply(): void {
     if (this.applying || !app.connected) return;
     const json = this.configJson();
-    const overlay = el('div', 'modal-overlay');
-    const modal = el('div', 'modal');
-    modal.append(el('h3', '', 'Save these lighting changes?'));
-    modal.append(
-      el(
-        'p',
-        'hint',
+    void confirmDialog({
+      title: 'Save these lighting changes?',
+      bodyText:
         'This writes the new effect, colours and speed to the keyboard and ' +
-          'checks each step was saved correctly. Key assignments and macros ' +
-          'stay the same. The keyboard may blink while it updates.',
-      ),
-    );
-    modal.append(el('p', 'hint', 'Exact settings that will be sent:'));
-    const pre = el('pre', 'json-view mono', json);
-    modal.append(pre);
-    const row = el('div', 'light-row');
-    const yes = el('button', 'apply-btn', 'Save to keyboard');
-    yes.type = 'button';
-    const no = el('button', 'segment-item', 'Cancel');
-    no.type = 'button';
-    row.append(yes, no);
-    modal.append(row);
-    overlay.append(modal);
-    document.body.append(overlay);
-    const close = (): void => overlay.remove();
-    no.addEventListener('click', close);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close();
-    });
-    yes.addEventListener('click', () => {
-      close();
-      void this.apply();
+        'checks each step was saved correctly. This overwrites the lighting ' +
+        'settings currently stored on the keyboard. Key assignments and ' +
+        'macros stay the same. The keyboard may blink while it updates.',
+      preText: json,
+      hint: 'You can save a full backup of the keyboard first on the Backup & restore page.',
+      confirmLabel: 'Save to keyboard',
+    }).then((ok) => {
+      if (ok) void this.apply();
     });
   }
 
