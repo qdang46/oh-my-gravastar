@@ -155,7 +155,7 @@ just documented (see `docs/plan.md` §2 and `AGENTS.md`):
 
 ```sh
 cargo build            # debug build
-cargo clippy           # lints (warnings are denied in CI)
+cargo clippy           # workspace lints (clippy::all = warn)
 cargo test             # unit tests incl. codec tests with mock Link
 ```
 
