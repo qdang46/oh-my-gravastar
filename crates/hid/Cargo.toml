@@ -1,0 +1,12 @@
+[package]
+name = "omg-hid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "HID link abstraction and GravaStar device identification for oh-my-gravastar"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+hidapi.workspace = true
