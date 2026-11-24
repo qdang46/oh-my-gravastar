@@ -918,5 +918,137 @@ function throws(fn: () => unknown): boolean {
   }
 }
 
+// ── Profile history / diff (bead th0, src/profile-history.ts) ──────────
+
+import {
+  PROFILE_HISTORY_MAX,
+  ProfileHistory,
+  diffProfileStates,
+  memoryProfileStorage,
+  profileStateHash,
+  sectionsInState,
+  stateOfDoc,
+  type ProfileState,
+} from '../src/profile-history.ts';
+
+{
+  const stateA: ProfileState = {
+    keymap: {
+      '0': ['0x00000004', '0x00000005'],
+      '1': ['0x00000000'],
+    },
+    light_colors: [
+      { index: 0, r: 255, g: 0, b: 0 },
+      { index: 1, r: 0, g: 0, b: 255 },
+    ],
+    light_data_hex: 'aabbcc',
+    macro_hex: '0011',
+    profile: { sleep_seconds: 30, light_mode: 1, hex: 'ffee' },
+    power: { percent: 80, flags: 0 },
+  };
+  const stateB: ProfileState = {
+    keymap: {
+      '0': ['0x00000004', '0x00000022'], // position 2 changed
+      '1': ['0x00000000'],
+    },
+    light_colors: [
+      { index: 0, r: 255, g: 0, b: 0 },
+      { index: 1, r: 0, g: 255, b: 255 }, // changed
+      { index: 2, r: 1, g: 2, b: 3 }, // added
+    ],
+    light_data_hex: 'aabbcd', // last byte differs
+    macro_hex: '0011', // identical
+    profile: { sleep_seconds: 60, light_mode: 1, hex: 'ffee' }, // sleep changed
+    power: { percent: 80, flags: 0 },
+  };
+
+  // stateOfDoc — schema-v1 envelope extraction.
+  const docA = {
+    schema: 1,
+    devices: [{ protocol: 'khub916', profiles: [{ name: 'current', state: stateA }] }],
+  };
+  check('stateOfDoc extracts state', stateOfDoc(docA) === stateA);
+  check('stateOfDoc rejects junk', stateOfDoc({ schema: 1 }) === null && stateOfDoc(null) === null);
+
+  // profileStateHash — stable + sensitive.
+  check('hash stable', profileStateHash(stateA) === profileStateHash(JSON.parse(JSON.stringify(stateA))));
+  check('hash differs on change', profileStateHash(stateA) !== profileStateHash(stateB));
+
+  const sections = sectionsInState(stateA);
+  check('sectionsInState finds 5', sections.length === 5, `got ${sections.length}`);
+
+  // diffProfileStates — identical states → all sections, zero lines.
+  const same = diffProfileStates(stateA, stateA);
+  check('diff identical → sections present', same.length === 5, `got ${same.length}`);
+  check('diff identical → no lines', same.every((s) => s.lines.length === 0));
+
+  // diffProfileStates — changed fields surface per section.
+  const d = diffProfileStates(stateA, stateB);
+  const byId = new Map(d.map((s) => [s.id, s]));
+  const km = byId.get('keymap');
+  check('diff keymap one line', km !== undefined && km.lines.length === 1, JSON.stringify(km?.lines));
+  check(
+    'diff keymap path+labels',
+    km?.lines[0]?.path === 'key set 0 · position 2' &&
+      km.lines[0].before.includes('0x00000005') &&
+      km.lines[0].after.includes('0x00000022'),
+    JSON.stringify(km?.lines[0]),
+  );
+  const col = byId.get('colours');
+  check('diff colours two lines', col !== undefined && col.lines.length === 2, JSON.stringify(col?.lines));
+  check(
+    'diff colour hex',
+    col?.lines.some((l) => l.path === 'colour 1' && l.before === '#0000FF' && l.after === '#00FFFF') === true &&
+      col.lines.some((l) => l.path === 'colour 2' && l.before === '—' && l.after === '#010203') === true,
+  );
+  const light = byId.get('lighting');
+  check('diff lighting one blob line', light !== undefined && light.lines.length === 1);
+  check(
+    'diff lighting note offset',
+    light?.lines[0]?.note === 'first difference at byte 2',
+    light?.lines[0]?.note,
+  );
+  const mac = byId.get('macros');
+  check('diff macros unchanged → 0 lines', mac !== undefined && mac.lines.length === 0);
+  const prof = byId.get('profile');
+  check(
+    'diff profile sleep+blob',
+    prof !== undefined &&
+      prof.lines.length === 1 &&
+      prof.lines[0]?.path === 'sleep timer (seconds)' &&
+      prof.lines[0].before === '30' &&
+      prof.lines[0].after === '60',
+    JSON.stringify(prof?.lines),
+  );
+
+  // diffProfileStates — null side = everything "added".
+  const fromEmpty = diffProfileStates(null, stateA);
+  check('diff null→state has lines', fromEmpty.every((s) => s.lines.length > 0));
+  const toEmpty = diffProfileStates(stateA, null);
+  check('diff state→null reverses', toEmpty.find((s) => s.id === 'keymap')?.lines[0]?.before.includes('0x00000004') === true);
+
+  // ProfileHistory — bound, ordering, remove, persistence.
+  const store = memoryProfileStorage();
+  const hist = new ProfileHistory(store);
+  check('history starts empty', hist.list().length === 0);
+  for (let i = 0; i < PROFILE_HISTORY_MAX + 5; i++) {
+    hist.add({
+      id: `e${i}`,
+      ts: new Date(2026, 0, 1, 0, i).toISOString(),
+      name: `snap ${i}`,
+      hash: `h${i}`,
+      doc: { schema: 1, devices: [{ protocol: 'khub916', profiles: [{ name: 'current', state: { keymap: { '0': [`0x${i.toString(16).padStart(8, '0')}`] } } }] }] },
+    });
+  }
+  check('history bounded to max', hist.list().length === PROFILE_HISTORY_MAX, `got ${hist.list().length}`);
+  check('history newest first', hist.list()[0]?.id === `e${PROFILE_HISTORY_MAX + 4}`);
+  check('history oldest dropped', hist.list()[hist.list().length - 1]?.id === 'e5', `got ${hist.list().at(-1)?.id}`);
+  check('history get', hist.get(`e${PROFILE_HISTORY_MAX + 4}`)?.name === `snap ${PROFILE_HISTORY_MAX + 4}`);
+  check('history remove', hist.remove(`e${PROFILE_HISTORY_MAX + 4}`) === true && hist.get(`e${PROFILE_HISTORY_MAX + 4}`) === null);
+  // Persistence: a second store over the same storage sees the entries.
+  const hist2 = new ProfileHistory(store);
+  check('history persists', hist2.list().length === PROFILE_HISTORY_MAX - 1, `got ${hist2.list().length}`);
+}
+
 console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

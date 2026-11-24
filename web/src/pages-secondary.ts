@@ -31,6 +31,7 @@ import { CUSTOM_LIGHT_SLOTS, LIGHT_DATA_MAX } from './proto/light.ts';
 import { MACRO_REGION_BYTES } from './proto/macro916.ts';
 import { confirmDialog } from './modal.ts';
 import { canApplyProfile } from './core/index.ts';
+import { initProfileHistory, renderProfileHistory } from './profiles.ts';
 import {
   SnapshotStore,
   hexToBytes,
@@ -519,6 +520,117 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
   };
 }
 
+/**
+ * Apply a parsed import through the hardened write path — the SAME
+ * pipeline the file-import button uses (bead th0 reuses it for profile
+ * history restore, never bypassing it):
+ *
+ *   compatWarnings → explicit confirm dialog (model mismatch override)
+ *   → `snapshotBeforeWrite` pre-write backup (aborts before any byte on
+ *     failure) → `runTransaction` sequential multi-section apply with
+ *     policy journal → `refresh()`.
+ *
+ * Returns human-readable result lines for the caller to display; never
+ * throws for ordinary write failures (they land in the journal).
+ */
+export async function applyParsedImport(p: ParsedImport): Promise<string[]> {
+  const c = app.connected;
+  const sections = p.sections;
+  if (!c) return ['The keyboard disconnected — nothing was written.'];
+  const results: string[] = [];
+
+  // Model-mismatch override: the backup targets a different keyboard
+  // model — require an explicit, informed confirm.
+  if (p.compatWarnings.length) {
+    const ok = await confirmDialog({
+      title: 'Backup targets a different keyboard model',
+      bodyText:
+        'This backup was made for a different keyboard model. ' +
+        'Applying it may produce unexpected results.',
+      details: p.compatWarnings,
+      confirmLabel: 'Apply anyway',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!ok) return ['Import cancelled — the keyboard was not changed.'];
+  }
+
+  try {
+    // SAFETY-SPEC §5 / vision §4 layer 4: snapshot every writable section
+    // BEFORE the first write so the previous state can be restored. A
+    // snapshot failure aborts the import — never write without a restore
+    // point.
+    let backupNote = '';
+    try {
+      const snap = await snapshotBeforeWrite(
+        new SnapshotStore(),
+        c.session,
+        `profile-import ${p.fileName}`,
+      );
+      const missing = snap.errors ? Object.keys(snap.errors) : [];
+      backupNote = missing.length
+        ? ` Pre-write backup ${snap.id} is partial (no ${missing.join(', ')} captured).`
+        : ` Pre-write backup ${snap.id} saved.`;
+    } catch (e) {
+      results.push(
+        `ABORTED before any write — could not save a backup: ${msg(e)}. ` +
+          'Nothing was sent to the keyboard.',
+      );
+    }
+
+    if (backupNote) {
+      // Multi-section apply runs as a transaction (safety/
+      // transaction.ts): ops execute sequentially, policy classes are
+      // journaled, and the first failure stops the rest — the report
+      // below says exactly which parts landed.
+      const outcomes: (SectionOutcome | undefined)[] = sections.map(() => undefined);
+      const ops: PlannedOp[] = sections.map((s, i) => ({
+        type: s.opType,
+        section: s.name,
+        label: s.summary,
+        apply: async () => {
+          const out = await s.apply();
+          outcomes[i] = out;
+          return { verified: out.verified };
+        },
+      }));
+      const tx = await runTransaction(ops, {
+        // The two-step button (plus the model-mismatch dialog when
+        // needed) is the human approval; every op is still journaled.
+        approve: () => true,
+      });
+      tx.journal.forEach((entry, i) => {
+        const s = sections[i];
+        const detail = outcomes[i]?.text;
+        if (entry.result === 'failed') {
+          results.push(`${s.name}: FAILED — ${entry.error ?? 'unknown error'}`);
+        } else if (entry.result === 'unverified') {
+          results.push(
+            `${s.name}: ${detail ?? 'written'} — sent but NOT confirmed on the keyboard`,
+          );
+        } else {
+          results.push(`${s.name}: ${detail ?? 'done'}`);
+        }
+      });
+      if (tx.completed && tx.ok) {
+        results.push(`All sections saved.${backupNote}`);
+      } else {
+        const wrote = tx.counts.success + tx.counts.unverified;
+        results.push(
+          `Stopped early — ${tx.counts.failed} part(s) failed; ${wrote} of ` +
+            `${sections.length} part(s) reached the keyboard.${backupNote} ` +
+            'The keyboard may be in a mixed state; the pre-write backup ' +
+            'can restore the previous values.',
+        );
+      }
+      await refresh();
+    }
+  } catch (e) {
+    results.push(`FAILED: ${msg(e)}`);
+  }
+  return results;
+}
+
 // ── Page: Basic functions (vendor basicFunctions / keyCodeMove) ────────
 
 function renderBasic(root: HTMLElement): void {
@@ -606,6 +718,9 @@ function renderConfig(root: HTMLElement): void {
           'previously saved file.',
       ),
     );
+    // Version history still works offline (diff two snapshots); only
+    // capture/restore needs the device.
+    renderProfileHistory(root);
     return;
   }
 
@@ -763,116 +878,19 @@ function renderConfig(root: HTMLElement): void {
           return;
         }
         void (async () => {
-          const c = app.connected;
-          const sections = p.sections;
-          if (!c) {
-            importBusy = false;
-            importConfirm = false;
-            importLog = ['The keyboard disconnected — nothing was written.'];
-            renderConfig(root);
-            return;
-          }
-          // Model-mismatch override: the backup targets a different
-          // keyboard model — require an explicit, informed confirm.
-          if (p.compatWarnings.length) {
-            const ok = await confirmDialog({
-              title: 'Backup targets a different keyboard model',
-              bodyText:
-                'This backup was made for a different keyboard model. ' +
-                'Applying it may produce unexpected results.',
-              details: p.compatWarnings,
-              confirmLabel: 'Apply anyway',
-              cancelLabel: 'Cancel',
-              danger: true,
-            });
-            if (!ok) {
-              importConfirm = false;
-              importLog = ['Import cancelled — the keyboard was not changed.'];
-              renderConfig(root);
-              return;
-            }
-          }
           importBusy = true;
           importConfirm = false;
           importLog = [];
           renderConfig(root);
-          const results: string[] = [];
           try {
-            // SAFETY-SPEC §5 / vision §4 layer 4: snapshot every writable
-            // section BEFORE the first write so the previous state can
-            // be restored. A snapshot failure aborts the import — never
-            // write without a restore point.
-            let backupNote = '';
-            try {
-              const snap = await snapshotBeforeWrite(
-                new SnapshotStore(),
-                c.session,
-                `profile-import ${p.fileName}`,
-              );
-              const missing = snap.errors ? Object.keys(snap.errors) : [];
-              backupNote = missing.length
-                ? ` Pre-write backup ${snap.id} is partial (no ${missing.join(', ')} captured).`
-                : ` Pre-write backup ${snap.id} saved.`;
-            } catch (e) {
-              results.push(
-                `ABORTED before any write — could not save a backup: ${msg(e)}. ` +
-                  'Nothing was sent to the keyboard.',
-              );
-            }
-
-            if (backupNote) {
-              // Multi-section apply runs as a transaction (safety/
-              // transaction.ts): ops execute sequentially, policy classes
-              // are journaled, and the first failure stops the rest — the
-              // report below says exactly which parts landed.
-              const outcomes: (SectionOutcome | undefined)[] = sections.map(() => undefined);
-              const ops: PlannedOp[] = sections.map((s, i) => ({
-                type: s.opType,
-                section: s.name,
-                label: s.summary,
-                apply: async () => {
-                  const out = await s.apply();
-                  outcomes[i] = out;
-                  return { verified: out.verified };
-                },
-              }));
-              const tx = await runTransaction(ops, {
-                // The two-step button (plus the model-mismatch dialog when
-                // needed) is the human approval; every op is still journaled.
-                approve: () => true,
-              });
-              tx.journal.forEach((entry, i) => {
-                const s = sections[i];
-                const detail = outcomes[i]?.text;
-                if (entry.result === 'failed') {
-                  results.push(`${s.name}: FAILED — ${entry.error ?? 'unknown error'}`);
-                } else if (entry.result === 'unverified') {
-                  results.push(
-                    `${s.name}: ${detail ?? 'written'} — sent but NOT confirmed on the keyboard`,
-                  );
-                } else {
-                  results.push(`${s.name}: ${detail ?? 'done'}`);
-                }
-              });
-              if (tx.completed && tx.ok) {
-                results.push(`All sections saved.${backupNote}`);
-              } else {
-                const wrote = tx.counts.success + tx.counts.unverified;
-                results.push(
-                  `Stopped early — ${tx.counts.failed} part(s) failed; ${wrote} of ` +
-                    `${sections.length} part(s) reached the keyboard.${backupNote} ` +
-                    'The keyboard may be in a mixed state; the pre-write backup ' +
-                    'can restore the previous values.',
-                );
-              }
-              await refresh();
-            }
+            // Shared hardened apply path (applyParsedImport) — also used
+            // by profile-history restore in profiles.ts.
+            importLog = await applyParsedImport(p);
           } catch (e) {
-            results.push(`FAILED: ${msg(e)}`);
+            importLog = [`FAILED: ${msg(e)}`];
           } finally {
             importBusy = false;
             importPreview = null;
-            importLog = results;
             renderConfig(root);
           }
         })();
@@ -897,6 +915,8 @@ function renderConfig(root: HTMLElement): void {
     }
   }
   root.append(im.card);
+  // Profile version history / diff / restore (bead th0) — profiles.ts.
+  renderProfileHistory(root);
 }
 
 // ── Page: Rhythm (vendor rhythm — MusicMAxisPlug companion) ────────────
@@ -1060,6 +1080,10 @@ export const SECONDARY_RENDERERS: Record<SecondaryPageId, (root: HTMLElement) =>
   rhythm: renderRhythm,
   setting: renderSetting,
 };
+
+// Profile history auto-capture (bead th0): wraps session write methods
+// once; captures post-write snapshots into localStorage.
+initProfileHistory();
 
 // Clear module state when the device disconnects.
 subscribe(() => {
