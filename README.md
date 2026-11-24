@@ -1,5 +1,7 @@
 # oh-my-gravastar
 
+![Demo: music-reactive keyboard lighting (MVP)](docs/demo-music-lighting.webp)
+
 Agent-first, offline CLI (`omg`) for configuring GravaStar keyboards and mice.
 Every command supports `--json` so AI agents can drive it. No daemon, no
 network, no telemetry.
