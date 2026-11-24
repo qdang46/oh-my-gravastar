@@ -230,7 +230,9 @@ fn json_type(parser: &clap::builder::ValueParser) -> &'static str {
     let id = parser.type_id();
     macro_rules! chk {
         ($t:ty, $n:expr) => {
-            if id == value_parser!($t).type_id() {
+            if id
+                == clap::builder::ValueParser::from(value_parser!($t)).type_id()
+            {
                 return $n;
             }
         };
@@ -372,6 +374,20 @@ pub(crate) fn schema_index() -> Value {
     json!({ "schema_version": 1, "kind": "omg.schema.index", "commands": commands })
 }
 
+/// `true` when the path resolves to a command *group* (has subcommands)
+/// rather than an executable leaf or nothing at all.
+pub(crate) fn is_group_path(path: &[String]) -> bool {
+    fn at(cmd: &Command, path: &[String]) -> bool {
+        match path.split_first() {
+            None => cmd.get_subcommands().next().is_some(),
+            Some((seg, rest)) => cmd
+                .find_subcommand(seg)
+                .is_some_and(|sub| at(sub, rest)),
+        }
+    }
+    at(&root_command(), path)
+}
+
 /// Suggestions for a mistyped schema path (prefix matches).
 pub(crate) fn path_suggestions(path: &[String]) -> Vec<String> {
     command_paths()
@@ -421,8 +437,8 @@ mod tests {
 
     #[test]
     fn enums_and_types_surface() {
-        let doc = command_schema(&["mouse".into(), "set".into(), "motion-sync".into(), "on".into()])
-            .expect("mouse set motion-sync on");
+        let doc = command_schema(&["mouse".into(), "set".into(), "motion-sync".into()])
+            .expect("mouse set motion-sync");
         let args = doc["args"].as_array().unwrap();
         let on = args.iter().find(|a| a["name"] == "on").unwrap();
         let vals: Vec<&str> = on["enum"]

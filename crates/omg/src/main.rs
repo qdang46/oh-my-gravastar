@@ -414,7 +414,14 @@ fn cmd_schema(cli: &Cli, path: &[String]) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         None => {
-            let msg = format!("unknown command path '{}'", path.join(" "));
+            let msg = if schema::is_group_path(path) {
+                format!(
+                    "'{}' is a command group — append a subcommand (see `omg schema`)",
+                    path.join(" ")
+                )
+            } else {
+                format!("unknown command path '{}'", path.join(" "))
+            };
             if cli.json {
                 print_json(&json!({
                     "error": {
@@ -4376,7 +4383,9 @@ fn kb916_absent(cli: &Cli) -> Result<ExitCode> {
 fn kb916_unsupported(cli: &Cli, what: &str, pending: &str) -> Result<ExitCode> {
     let msg = format!("{what}: not implemented yet — {pending}");
     if cli.json {
-        print_json(&json!({ "error": msg, "unsupported": true }))?;
+        print_json(&json!({
+            "error": { "code": "unsupported", "message": msg }
+        }))?;
     } else {
         eprintln!("error: {msg}");
     }
@@ -5086,9 +5095,7 @@ fn print_hex_dump(bytes: &[u8]) {
 fn cmd_profile(cli: &Cli, command: &ProfileCommands) -> Result<ExitCode> {
     match command {
         ProfileCommands::Export { file, full } => cmd_profile_export(cli, file, *full),
-        ProfileCommands::Import { file, dry_run, yes } => {
-            cmd_profile_import(cli, file, *dry_run, *yes)
-        }
+        ProfileCommands::Import { file, yes } => cmd_profile_import(cli, file, *yes),
     }
 }
 
@@ -5430,7 +5437,11 @@ fn import_he(
     }))
 }
 
-fn cmd_profile_import(cli: &Cli, file: &str, dry_run: bool, yes: bool) -> Result<ExitCode> {
+fn cmd_profile_import(cli: &Cli, file: &str, yes: bool) -> Result<ExitCode> {
+    let dry_run = cli.dry_run;
+    if dry_run && yes {
+        bail!("--dry-run and --yes are mutually exclusive");
+    }
     if !dry_run && !yes {
         bail!(
             "refusing to write without --yes (docs/plan.md §2: writes are opt-in); \
