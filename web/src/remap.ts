@@ -22,7 +22,7 @@
  *   out of scope (macro binding is bead ae3's UI).
  */
 
-import { app, ensureKeymap, setLayer, setStatus, subscribe, type KeyEntry } from './state.ts';
+import { app, ensureKeymap, keymapBase, setLayer, setStatus, subscribe, type KeyEntry } from './state.ts';
 import {
   K1_PRO_BLOCKS,
   K1_PRO_LAYOUT_MODELS,
@@ -370,11 +370,16 @@ async function writeChanges(changes: ReadonlyMap<number, number>): Promise<void>
   busy = true;
   sync();
   try {
-    await ensureKeymap(arg);
-    const entries = app.snapshot?.keymaps.get(arg) ?? [];
-    const values = entries.map((e) => e.value);
+    // AGENTS.md §Safety 6 — abort on a short/empty base read instead of
+    // zero-filling the tail of the table (keymapBase throws).
+    const values = await keymapBase(arg);
     for (const [index, v] of changes) {
-      while (values.length <= index) values.push(0);
+      if (index >= values.length) {
+        throw new Error(
+          `key slot ${index} is past the ${values.length} keys this keyboard ` +
+            'reports — nothing was sent',
+        );
+      }
       values[index] = v >>> 0;
     }
     await session.writeKeymap(layer, system, values);

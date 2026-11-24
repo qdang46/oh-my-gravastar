@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "smoke": "node scripts/smoke.ts && node scripts/smoke-core.ts && node scripts/smoke-scenes.ts && node scripts/smoke-presets.ts && node scripts/smoke-diag.ts && node scripts/smoke-import.ts",
+    "smoke": "node scripts/smoke.ts && node scripts/smoke-core.ts && node scripts/smoke-scenes.ts && node scripts/smoke-presets.ts && node scripts/smoke-diag.ts && node scripts/smoke-import.ts && node scripts/smoke-perf.ts",
     "smoke-he": "node scripts/smoke-he.ts",
     "test": "node scripts/test-safety.ts && node scripts/test-agent.ts && node scripts/test-simulator.ts && node scripts/test-intent.ts && node scripts/test-behavior.ts"
   },

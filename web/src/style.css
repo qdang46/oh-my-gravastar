@@ -2548,3 +2548,98 @@ input[type='color'] {
 .beh-unavailable-name {
   font-weight: 600;
 }
+
+/* ── Performance Studio (HE actuation/RT/DKS-MPT + live travel) ──────── */
+
+.perf-page {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.perf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.perf-kv dd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.perf-viewport {
+  background: var(--panel);
+}
+
+.perf-key {
+  overflow: hidden;
+}
+
+/* Live-travel fill: anchored to the bottom of the key cap, grows with
+   measured travel (0..max travel). */
+.perf-travel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0%;
+  background: linear-gradient(to top, rgba(198, 245, 78, 0.55), rgba(198, 245, 78, 0.15));
+  border-top: 1px solid rgba(198, 245, 78, 0.7);
+  pointer-events: none;
+  transition: height 90ms linear;
+}
+
+.perf-key--actuated {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 0 0 2px rgba(198, 245, 78, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.45);
+}
+
+.perf-key--actuated .kb-key-label {
+  color: var(--accent);
+}
+
+.perf-key-tag {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--faint);
+  pointer-events: none;
+}
+
+.perf-key--actuated .perf-key-tag {
+  color: var(--accent);
+}
+
+.perf-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.perf-hk-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+}
+
+.perf-hk-bank {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.perf-live-status {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

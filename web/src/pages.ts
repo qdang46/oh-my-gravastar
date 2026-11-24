@@ -17,6 +17,7 @@ import { renderKeysPage, destroyKeysPage } from './remap.ts';
 import { renderMusicPage, destroyMusicPage } from './music.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { renderDiagnostics, destroyDiagnostics } from './diagnostics.ts';
+import { renderPerfPage, destroyPerfPage } from './perf.ts';
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
@@ -26,6 +27,7 @@ export type PageId =
   | 'macro'
   | 'advanced'
   | 'music'
+  | 'performance'
   | 'device'
   | 'diagnostics'
   | 'basic'
@@ -45,6 +47,9 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   { id: 'macro', path: '/macro', title: 'Macro' },
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'music', path: '/music', title: 'Music' },
+  // Performance Studio (bead xp0): HE-only actuation/RT/DKS-MPT page —
+  // renders honest unsupported states on khub916 devices.
+  { id: 'performance', path: '/performance', title: 'Performance' },
   { id: 'device', path: '/device', title: 'Device' },
   { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
   // Secondary pages (bead jwb): vendor basicFunctions / configurationManagement
@@ -60,6 +65,7 @@ export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] =
   { id: 'macro', path: '/macro', title: 'Macro' },
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'music', path: '/music', title: 'Music' },
+  { id: 'performance', path: '/performance', title: 'Performance' },
   { id: 'device', path: '/device', title: 'Device' },
   { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
 ];
@@ -293,6 +299,7 @@ const renderers: Record<PageId, (root: HTMLElement) => void> = {
   macro: renderMacro,
   advanced: renderAdvanced,
   music: renderMusic,
+  performance: renderPerfPage,
   device: renderDevice,
   diagnostics: renderDiagnostics,
   ...SECONDARY_RENDERERS,
@@ -326,6 +333,9 @@ export function destroyPages(): void {
   advPage = null;
   destroyMusicPage();
   destroyDiagnostics();
+  // Leaving Performance stops the live-travel poll (the HE session
+  // itself survives — see perf.ts).
+  destroyPerfPage();
   window.removeEventListener('hashchange', route);
 }
 
@@ -360,6 +370,8 @@ function route(): void {
   if (page !== 'music') destroyMusicPage();
   // Leaving Diagnostics detaches the passive input-report listener.
   if (page !== 'diagnostics') destroyDiagnostics();
+  // Leaving Performance stops the live-travel poll.
+  if (page !== 'performance') destroyPerfPage();
   if (pageRoot) renderers[page](pageRoot);
   updateNav();
 }
