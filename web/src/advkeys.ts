@@ -136,7 +136,9 @@ export class AdvPage {
     this.loading = true;
     try {
       const s = app.connected.session;
-      const [rawBlob, km] = await Promise.all([s.advKeyConfig(), s.keyValues(0)]);
+      // Sequential — concurrent feature reports poison the session.
+      const rawBlob = await s.advKeyConfig();
+      const km = await s.keyValues(0);
       this.blob = normalizeBlob(rawBlob);
       this.keymap = km.map((v) => v >>> 0);
       this.blobUnconfirmed = false;

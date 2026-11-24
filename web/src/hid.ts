@@ -158,6 +158,7 @@ const WRITE_SETTLE_MS = 150;
  */
 export class Khub916Session {
   private poisoned = false;
+  private poisonReason = '';
 
   constructor(
     private readonly device: HIDDevice,
@@ -168,6 +169,11 @@ export class Khub916Session {
     return this.poisoned;
   }
 
+  /** Root cause captured when the session was poisoned (for status UI). */
+  get poisonMessage(): string {
+    return this.poisonReason;
+  }
+
   /**
    * Send one 519-byte feature report and return the response payload
    * (bytes after the echoed 7-byte header). Retries on no-answer / echo
@@ -175,7 +181,7 @@ export class Khub916Session {
    */
   private async transact(pkt: Uint8Array): Promise<Uint8Array> {
     if (this.poisoned) {
-      throw new Error('khub916 session poisoned by an earlier transport/framing error; reconnect the device');
+      throw new Error(`khub916 session poisoned: ${this.poisonReason || 'earlier transport/framing error'}; reconnect the device`);
     }
     if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
       throw new Error(`khub916 packet must be ${FEATURE_PAYLOAD_BYTES} bytes, got ${pkt.length}`);
@@ -206,7 +212,8 @@ export class Khub916Session {
       }
     }
     this.poisoned = true;
-    throw new Error(`khub916 command failed after ${MAX_ATTEMPTS} attempts: ${lastErr.message}`);
+    this.poisonReason = `command failed after ${MAX_ATTEMPTS} attempts: ${lastErr.message}`;
+    throw new Error(`khub916 ${this.poisonReason}`);
   }
 
   /** receiveFeatureReport raced against our own timeout (spec support varies). */
@@ -280,7 +287,7 @@ export class Khub916Session {
    */
   private async configWrite(pkt: Uint8Array): Promise<void> {
     if (this.poisoned) {
-      throw new Error('khub916 session poisoned by an earlier transport/framing error; reconnect the device');
+      throw new Error(`khub916 session poisoned: ${this.poisonReason || 'earlier transport/framing error'}; reconnect the device`);
     }
     if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
       throw new Error(`khub916 packet must be ${FEATURE_PAYLOAD_BYTES} bytes, got ${pkt.length}`);
@@ -292,7 +299,8 @@ export class Khub916Session {
       await new Promise((r) => setTimeout(r, WRITE_SETTLE_MS));
     } catch (e) {
       this.poisoned = true;
-      throw new Error(`khub916 config write failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.poisonReason = `config write failed: ${e instanceof Error ? e.message : String(e)}`;
+      throw new Error(`khub916 ${this.poisonReason}`);
     }
   }
 
@@ -621,6 +629,16 @@ export async function openKhub916(device: HIDDevice): Promise<ConnectedKhub> {
     await device.close().catch(() => {});
     throw e;
   }
+}
+
+/**
+ * Close and re-open an already-granted device, re-probing the report id.
+ * Used to recover from a poisoned session without a user gesture (device
+ * permission persists per origin).
+ */
+export async function reopenKhub916(device: HIDDevice): Promise<ConnectedKhub> {
+  await device.close().catch(() => {});
+  return openKhub916(device);
 }
 
 /**

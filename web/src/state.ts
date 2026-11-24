@@ -9,8 +9,10 @@
 import {
   getRememberedDevices,
   openKhub916,
+  reopenKhub916,
   requestKhubDevice,
   type ConnectedKhub,
+  type Khub916Session,
 } from './hid.ts';
 import {
   decodeKeyValue,
@@ -129,45 +131,58 @@ export async function disconnect(): Promise<void> {
   setStatus('Disconnected.');
 }
 
+/**
+ * Read the full snapshot. Queries run SEQUENTIALLY — concurrent feature
+ * reports interleave responses on this firmware and poison the session.
+ */
+async function loadSnapshot(session: Khub916Session): Promise<DeviceSnapshot> {
+  const info = await session.deviceInfo();
+  const power = await session.power();
+  const profile = await session.profile();
+  const lightData = await session.lightColorData();
+  const macro = await session.macroRegion();
+  const colors = await session.customLightColors();
+  return { info, power, profile, lightData, macro, colors, keymaps: new Map() };
+}
+
 export async function refresh(): Promise<void> {
-  const c = app.connected;
+  let c = app.connected;
   if (!c) return;
   app.busy = true;
   setStatus('Reading device…');
   emit();
   try {
-    const s = c.session;
-    const [info, power, profile, lightData, macro, colors] = await Promise.all([
-      s.deviceInfo(),
-      s.power(),
-      s.profile(),
-      s.lightColorData(),
-      s.macroRegion(),
-      s.customLightColors(),
-    ]);
-    app.snapshot = {
-      info,
-      power,
-      profile,
-      lightData,
-      macro,
-      colors,
-      keymaps: new Map(),
-    };
-    setStatus(`Connected — ${info.catalogName ?? info.uuid}`);
-    // Warm the current layer so the visualizer has labels immediately.
-    await ensureKeymap(app.layer).catch(() => {});
+    app.snapshot = await loadSnapshot(c.session);
   } catch (e) {
-    setStatus(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`, true);
+    // A poisoned session is recoverable: reopen the same (already
+    // authorised) HIDDevice and retry once before bothering the user.
     if (c.session.isPoisoned) {
-      app.connected = null;
-      app.snapshot = null;
-      setStatus('Session poisoned — please reconnect.', true);
+      setStatus('Device session dropped — reopening…');
+      try {
+        c = await reopenKhub916(c.device);
+        app.connected = c;
+        app.snapshot = await loadSnapshot(c.session);
+      } catch (e2) {
+        app.connected = null;
+        app.snapshot = null;
+        const reason = c.session.poisonMessage || (e2 instanceof Error ? e2.message : String(e2));
+        setStatus(`Session lost (${reason}) — please reconnect.`, true);
+        app.busy = false;
+        emit();
+        return;
+      }
+    } else {
+      setStatus(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      app.busy = false;
+      emit();
+      return;
     }
-  } finally {
-    app.busy = false;
-    emit();
   }
+  setStatus(`Connected — ${app.snapshot.info.catalogName ?? app.snapshot.info.uuid}`);
+  // Warm the current layer so the visualizer has labels immediately.
+  await ensureKeymap(app.layer).catch(() => {});
+  app.busy = false;
+  emit();
 }
 
 /** Boot check: WebHID presence + previously granted devices. */

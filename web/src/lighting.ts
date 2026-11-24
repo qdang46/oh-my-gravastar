@@ -901,13 +901,12 @@ class LightingView {
       this.stepLog.append(el('div', `step-line ${cls}`, text));
     };
     try {
-      // Fresh reads — resolve against live state like `light apply`.
+      // Fresh reads — SEQUENTIAL: concurrent feature reports poison the
+      // session on this firmware (same rule as state.loadSnapshot).
       log('Reading current device state…');
-      const [profile, lightData, customNow] = await Promise.all([
-        c.session.profile(),
-        c.session.lightColorData(),
-        c.session.customLightColors(),
-      ]);
+      const profile = await c.session.profile();
+      const lightData = await c.session.lightColorData();
+      const customNow = await c.session.customLightColors();
       const st = decodeLightState(profile.raw);
       if (!st) throw new Error('profile too short to decode light state');
 
