@@ -15,11 +15,13 @@ declare const process: { exit(code?: number): never };
 import {
   AGENT_SCHEMA_VERSION,
   buildDeviceContext,
+  buildDryRunReport,
   executePlan,
   planFromOps,
   validateOp,
   validatePlan,
   validatePlanAgainstContext,
+  WRITE_FRICTION_OPS,
   type AgentSession,
   type DeviceContext,
 } from '../src/agent/index.ts';
@@ -637,6 +639,219 @@ section('validator — capability / policy / conflicts / storage');
   check('invalid plan fails validation', !v.ok);
 }
 
+// ── fw6: deeper validation ─────────────────────────────────────────────
+
+section('validator — lighting interactions');
+
+{
+  const ctx = await khubContext();
+  // Per-key colour table under the current mode (breathing, SINGLE) —
+  // writes succeed but only 'custom' (277) displays them.
+  const plan = planFromOps(
+    [
+      {
+        op: 'set_light',
+        device_selector: SEL,
+        config: { keys: { colors: Array.from({ length: 126 }, () => '#ff0000') } },
+      },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('per-key colours under non-custom mode → warning', v.ok && v.warnings.some((w) => w.includes('custom') && w.includes('277')), v.warnings.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Same table WITH mode 277 in the same config → clean.
+  const plan = planFromOps(
+    [
+      {
+        op: 'set_light',
+        device_selector: SEL,
+        config: { mode: 277, keys: { colors: Array.from({ length: 126 }, () => '#ff0000') } },
+      },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('per-key colours + mode 277 → no mode warning', v.ok && !v.warnings.some((w) => w.includes('only displays')), v.warnings.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Group colour while switching to 'custom' (277) — no colour slot at
+  // mode*21 → the executor write would fail; validator must error.
+  const plan = planFromOps(
+    [
+      {
+        op: 'set_light',
+        device_selector: SEL,
+        config: { mode: 277, color: '#00ff00' },
+      },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('group colour + mode 277 → error', !v.ok && v.errors.some((e) => e.includes('colour slot')), v.errors.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Group colour under mode 0 (off) → warning, not error.
+  const plan = planFromOps(
+    [
+      {
+        op: 'set_light',
+        device_selector: SEL,
+        config: { mode: 0, color: '#00ff00' },
+      },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('group colour + mode off → warning', v.ok && v.warnings.some((w) => w.includes("mode is 'off'")), v.warnings.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Two set_light ops both picking a mode → error (last wins silently).
+  const plan = planFromOps(
+    [
+      { op: 'set_light', device_selector: SEL, config: { mode: 2 } },
+      { op: 'set_light', device_selector: SEL, config: { mode: 5, speed: 3 } },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('duplicate light mode → error', !v.ok && v.errors.some((e) => e.includes("set 'mode'")), v.errors.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // One set_light with mode, one without → no duplicate-mode error.
+  const plan = planFromOps(
+    [
+      { op: 'set_light', device_selector: SEL, config: { mode: 2 } },
+      { op: 'set_light', device_selector: SEL, config: { brightness: 8 } },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('light mode + field-only op → ok', v.ok, v.errors.join(';'));
+}
+
+section('validator — duplicate targets / ordering / friction');
+
+{
+  const ctx = await khubContext();
+  const plan = planFromOps(
+    [
+      { op: 'set_profile_section', device_selector: SEL, section: 'sleep_seconds', value: 30 },
+      { op: 'set_profile_section', device_selector: SEL, section: 'sleep_seconds', value: 60 },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('duplicate profile section → error', !v.ok && v.errors.some((e) => e.includes('sleep_seconds')), v.errors.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Two adv ops on the same key → slot warning + shared-blob warning.
+  const plan = planFromOps(
+    [
+      { op: 'set_adv', device_selector: SEL, mode: 'mt', key: 3, tap: 4, hold: 30 },
+      { op: 'set_adv', device_selector: SEL, mode: 'socd', key_a: 3, key_b: 4, direction: 0 },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('adv ops share blob → warning', v.ok && v.warnings.some((w) => w.includes('history blob')), v.warnings.join(';'));
+  check('adv same key → slot warning', v.warnings.some((w) => w.includes('adv key 3')), v.warnings.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Macro bind on layer 1 collides with a layer-1 keymap write — the
+  // old arg-0-only check missed this; the arg-keyed check catches it.
+  const plan = planFromOps(
+    [
+      { op: 'set_keymap', device_selector: SEL, layer: 1, entries: [{ index: 7, value: 30 }] },
+      {
+        op: 'set_macro',
+        device_selector: SEL,
+        name: 'bindme',
+        steps: [{ action: 'down', key: 'KeyA' }],
+        bind_key: 7,
+        bind_layer: 1,
+      },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('macro bind on layer 1 vs keymap L1 → warning', v.ok && v.warnings.some((w) => w.includes('arg 1 slot 7')), v.warnings.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Forge a plan with restore_snapshot NOT last — planner would never
+  // produce this, but a hand-built plan could.
+  const plan = planFromOps(
+    [
+      { op: 'restore_snapshot', device_selector: SEL, id: 'snap-x' },
+      { op: 'set_keymap', device_selector: SEL, layer: 0, entries: [{ index: 0, value: 1 }] },
+    ],
+    ctx,
+  );
+  // Reorder ops to simulate a forged/interleaved plan.
+  plan.ops.reverse();
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('restore not last → error', !v.ok && v.errors.some((e) => e.includes('not the last op')), v.errors.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Friction: more ops than WRITE_FRICTION_OPS → warning, still valid.
+  const ops: unknown[] = [];
+  for (let l = 0; l < 4; l++) {
+    ops.push({
+      op: 'set_keymap',
+      device_selector: SEL,
+      layer: l,
+      entries: [{ index: l, value: 30 }],
+    });
+  }
+  ops.push(
+    { op: 'set_light', device_selector: SEL, config: { speed: 5 } },
+    { op: 'set_light', device_selector: SEL, config: { brightness: 9 } },
+    {
+      op: 'set_macro',
+      device_selector: SEL,
+      name: 'f1',
+      steps: [{ action: 'down', key: 'KeyA' }],
+    },
+    {
+      op: 'set_macro',
+      device_selector: SEL,
+      name: 'f2',
+      steps: [{ action: 'down', key: 'KeyB' }],
+    },
+    { op: 'set_profile_section', device_selector: SEL, section: 'sleep_seconds', value: 20 },
+  );
+  const plan = planFromOps(ops, ctx);
+  check(`friction fixture has >${WRITE_FRICTION_OPS} ops`, plan.ops.length > WRITE_FRICTION_OPS, String(plan.ops.length));
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('oversized plan → friction warning', v.ok && v.warnings.some((w) => w.includes('large change set')), v.warnings.join(';'));
+}
+{
+  const ctx = await khubContext();
+  // Aggregate macro budget: two new macros each fit individually but
+  // overflow the region together.
+  ctx.state.macroFreeBytes = 100;
+  const step = { action: 'down', key: 'KeyA' };
+  const plan = planFromOps(
+    [
+      { op: 'set_macro', device_selector: SEL, name: 'agg1', steps: Array.from({ length: 20 }, () => step) },
+      { op: 'set_macro', device_selector: SEL, name: 'agg2', steps: Array.from({ length: 20 }, () => step) },
+    ],
+    ctx,
+  );
+  const v = validatePlanAgainstContext(plan, ctx);
+  check('aggregate macro overflow → error', !v.ok && v.errors.some((e) => e.includes('total')), v.errors.join(';'));
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // executor.ts
 // ══════════════════════════════════════════════════════════════════════
@@ -846,6 +1061,125 @@ section('executor — dry-run / approval / transaction');
   check('restore dry-run ok', res.ok === true, res.errors.join(';'));
   check('restore dry-run wrote nothing', calls.filter((c) => c.name.startsWith('write')).length === 0);
   check('restore dry-run preview expanded', (res.preview?.ops.length ?? 0) > 5);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// dry-run.ts — structured write preview
+// ══════════════════════════════════════════════════════════════════════
+
+section('dry-run report — predicted writes');
+
+{
+  const ctx = await khubContext();
+  const plan = planFromOps(
+    [
+      {
+        op: 'set_keymap',
+        device_selector: SEL,
+        layer: 0,
+        entries: [{ index: 3, value: 30 }],
+      },
+      {
+        op: 'set_macro',
+        device_selector: SEL,
+        name: 'fresh',
+        steps: [
+          { action: 'down', key: 'KeyA', delay_ms: 0 },
+          { action: 'up', key: 'KeyA', delay_ms: 30 },
+        ],
+        bind_key: 10,
+      },
+      {
+        op: 'set_adv',
+        device_selector: SEL,
+        mode: 'mt',
+        key: 3,
+        tap: 4,
+        hold: 30,
+      },
+      { op: 'set_profile_section', device_selector: SEL, section: 'sleep_seconds', value: 45 },
+    ],
+    ctx,
+  );
+  const report = buildDryRunReport(plan, { context: ctx });
+  check('report ok', report.ok === true, report.validation.errors.join(';'));
+  check('report covers every op', report.ops.length === plan.ops.length);
+  check('totals.writes > ops', report.totals.writes > report.totals.ops, JSON.stringify(report.totals));
+
+  const km = report.ops.find((o) => o.op === 'set_keymap');
+  check('keymap predicts writeKeymap', km?.writes[0]?.method === 'writeKeymap');
+  check('keymap arg is 0', km?.writes[0]?.arg === 0);
+
+  const macro = report.ops.find((o) => o.op === 'set_macro');
+  check(
+    'macro predicts region + bind writes',
+    macro?.writes.map((w) => w.method).join(',') === 'writeMacroRegion,writeKeymap',
+    macro?.writes.map((w) => w.method).join(','),
+  );
+  check('macro region bytes estimated', (macro?.writes[0]?.bytes ?? 0) > 0);
+
+  const adv = report.ops.find((o) => o.op === 'set_adv');
+  check(
+    'adv predicts keymap + blob writes',
+    adv?.writes.map((w) => w.method).join(',') === 'writeKeyConfiguration,writeAdvKeyConfig',
+  );
+  check('adv blob byte count', adv?.writes[1]?.bytes === 512);
+
+  const prof = report.ops.find((o) => o.op === 'set_profile_section');
+  check('profile section predicts writeProfile', prof?.writes[0]?.method === 'writeProfile');
+}
+
+{
+  // Restore expansion uses the real snapshot contents when a store is
+  // supplied; without one it reports generically.
+  const store = new SnapshotStore(memoryStorage());
+  const src: SnapshotSource = {
+    keyValues: async () => [1, 2],
+    lightColorData: async () => new Uint8Array(4),
+    customLightColors: async () => [],
+    profile: async () => ({ raw: new Uint8Array(128) }),
+    macroRegion: async () => new Uint8Array(512),
+  };
+  const snap = await store.capture(src, 'before');
+  const ctx = await khubContext(store);
+  const plan = planFromOps(
+    [{ op: 'restore_snapshot', device_selector: SEL, id: snap.id }],
+    ctx,
+  );
+
+  const withStore = buildDryRunReport(plan, { context: ctx, snapshots: store });
+  const restore = withStore.ops[0];
+  check('restore report ok', withStore.ok === true, withStore.validation.errors.join(';'));
+  const kmWrite = restore?.writes.find((w) => w.method === 'writeKeymap');
+  check('restore expands keymap args', kmWrite?.detail.includes('8 stored keymap set'), kmWrite?.detail);
+  check(
+    'restore predicts light+macro+profile writes',
+    ['writeLightData', 'writeMacroRegion', 'writeProfile'].every((m) =>
+      restore?.writes.some((w) => w.method === m),
+    ),
+    restore?.writes.map((w) => w.method).join(','),
+  );
+
+  const noStore = buildDryRunReport(plan, { context: ctx });
+  check(
+    'restore without store still predicts writes',
+    (noStore.ops[0]?.writes.length ?? 0) > 0 &&
+      noStore.ops[0]?.writes.every((w) => w.detail.includes('contents unknown')),
+    noStore.ops[0]?.writes.map((w) => w.detail).join(' | '),
+  );
+}
+
+{
+  // A plan that fails validation still produces a report (ok:false) —
+  // the UI can show WHY plus whatever predictions exist.
+  const ctx = await khubContext();
+  const plan = planFromOps(
+    [{ op: 'set_light', device_selector: SEL, config: { mode: 277, color: '#fff' } }],
+    ctx,
+  );
+  const report = buildDryRunReport(plan, { context: ctx });
+  check('failing plan → report.ok false', report.ok === false);
+  check('failing plan keeps validation errors', report.validation.errors.length > 0);
 }
 
 // ── Done ───────────────────────────────────────────────────────────────

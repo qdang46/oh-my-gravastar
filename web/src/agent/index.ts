@@ -11,7 +11,8 @@
  *   device-context.ts  buildDeviceContext() — "Explain my keyboard" data
  *   planner.ts         planFromOps() — ordering, policy class, diffs
  *   validator.ts       validatePlanAgainstContext() — capability/policy/
- *                      conflict/storage gates
+ *                      conflict/interaction/storage/friction gates
+ *   dry-run.ts         buildDryRunReport() — predicted writes per op
  *   executor.ts        executePlan() — dry-run + transaction execution
  */
 
@@ -19,4 +20,6 @@ export * from './action-schema.ts';
 export * from './device-context.ts';
 export * from './planner.ts';
 export * from './validator.ts';
+export * from './dry-run.ts';
 export * from './executor.ts';
+export * from './simulator.ts';
