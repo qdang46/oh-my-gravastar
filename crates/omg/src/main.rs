@@ -3792,6 +3792,18 @@ enum Kb916Commands {
         #[command(subcommand)]
         command: kb916_adv::Kb916Adv,
     },
+    /// Restore factory defaults / reset the keyboard MCU (cmd 17,
+    /// `setKeyboardReset`; type 0 = factory, type 2 = reset all keymap
+    /// layers — per the official webapp). Fire-and-forget — the device
+    /// reboots and drops off the bus, so there is no read-back verify.
+    /// Requires `--yes`.
+    Reset {
+        /// Reset type byte (0 = factory defaults, 2 = reset all layers).
+        #[arg(long, default_value_t = 0)]
+        kind: u8,
+        #[command(flatten)]
+        yes: Yes,
+    },
     /// The 916_wireLess 2.4 GHz transport is a separate bead — always
     /// "not implemented".
     Wireless,
@@ -4273,6 +4285,23 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                 }
             }
         },
+        Kb916Commands::Reset { kind, yes } => {
+            if !yes.yes {
+                bail!("refusing to reset without --yes");
+            }
+            kb.reset_keyboard(*kind)?;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "event": "reset_sent",
+                    "kind": kind,
+                    "verified": false,
+                    "note": "fire-and-forget; device reboots and drops off the bus",
+                }))?;
+            } else {
+                println!("reset sent (type {kind}); keyboard rebooting — replug if it does not come back");
+            }
+        }
         Kb916Commands::LightData => {
             let data = kb.light_color_data()?;
             if cli.json {

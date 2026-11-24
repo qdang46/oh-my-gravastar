@@ -49,7 +49,9 @@
 //!
 //! **Never implemented** (protocol blacklist / out of scope):
 //!
-//! - keyboard reset 17 (wired) and wireless cmd 6 factory reset
+//! - wireless cmd 6 factory reset (wired cmd 17 keyboard reset IS
+//!   implemented as [`Khub916::reset_keyboard`] — fire-and-forget, no
+//!   read-back possible, callers must gate it behind `--yes`)
 //! - no generic "send arbitrary command" API exists; [`Khub916::transact`]
 //!   is private so unknown opcodes cannot be emitted, and the wireless
 //!   chunked writer is private likewise.
@@ -94,6 +96,7 @@ const WRITE_SETTLE: Duration = Duration::from_millis(150);
 
 // Command opcodes (decimal values from spec §6).
 const CMD_KEYMAP_WRITE: u8 = 3;
+const CMD_KEYBOARD_RESET: u8 = 17;
 const CMD_PROFILE_WRITE: u8 = 4;
 const CMD_MACRO_WRITE: u8 = 5;
 const CMD_CUSTOM_LIGHT_WRITE: u8 = 6;
@@ -832,6 +835,18 @@ impl Khub916 {
             std::thread::sleep(WRITE_SETTLE);
             Ok(())
         })
+    }
+
+    /// Keyboard reset / restore-factory (cmd 17, vendor
+    /// `setKeyboardReset`, tags 1/0, 1-byte type payload). Type `0` is
+    /// the vendor's "restore factory settings"; type `2` is the keymap
+    /// page's "reset all layers".
+    ///
+    /// Fire-and-forget — the device reboots and drops off the bus, so
+    /// **no read-back verify is possible**. Gate behind `--yes`.
+    pub fn reset_keyboard(&mut self, kind: u8) -> Result<()> {
+        let pkt = Self::packet(CMD_KEYBOARD_RESET, 0x00, 0x01, 0x00, &[kind])?;
+        self.config_write(&pkt)
     }
 
     /// Write the keymap (cmd 3, tags 248/1). `layer`/`system` pack into
