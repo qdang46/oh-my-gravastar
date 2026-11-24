@@ -29,6 +29,28 @@ import {
   responsePayload,
   uuidHex,
 } from '../src/proto/khub916.ts';
+import {
+  COLOR_MODEL,
+  COLOR_SUPPORT,
+  CUSTOM_LIGHT_SLOTS,
+  LIGHT_GROUP_STRIDE,
+  LIGHT_MODES,
+  LIGHT_SPECIAL_MODES,
+  buildLightDataPacket,
+  buildPresetColors,
+  colorsEqual,
+  decodeLightData,
+  decodeLightState,
+  findSecond255Index,
+  groupColor,
+  hsvToRgb,
+  lightModeInfo,
+  parseColor,
+  rgbToHex,
+  rgbToHsv,
+  withGroupColor,
+  withLightMode,
+} from '../src/proto/light.ts';
 
 import {
   buildMacroRegion,
@@ -361,6 +383,170 @@ function step(action: number, delay: number, usage: number, kind: StepKind): Mac
   const mp = macroWritePacket(new Uint8Array([1, 2, 3]));
   check('macro write header', eq([...mp.slice(0, 7)], [5, 0, 0, 1, 0, 0, 0]));
   check('macro write payload', mp.length === 519 && mp[7] === 1 && mp[9] === 3 && mp[10] === 0);
+}
+
+// ── Lighting codec (proto/light.ts — port of light.rs tests) ───────────
+
+// K1 Pro live profile shape: FF FF at 56-57 → table base 58,
+// mode 15 → bright record at 86, packed at 87.
+function liveProfile(): Uint8Array {
+  const raw = new Uint8Array(128);
+  raw[56] = 0xff;
+  raw[57] = 0xff;
+  raw[10] = 15;
+  raw[86] = 10;
+  raw[87] = 0x47; // speed 4 << 4 | type 7 → mixing
+  raw[126] = 0x5a;
+  raw[127] = 0xa5;
+  return raw;
+}
+
+{
+  check('mode table has 18 ids', LIGHT_MODES.length === 18);
+  check(
+    'mode 277 = custom',
+    lightModeInfo(277)?.name === 'custom' &&
+      lightModeInfo(277)?.colorSupport === COLOR_SUPPORT.CUSTOM,
+  );
+  check('mode 15 = windmill', lightModeInfo(15)?.name === 'windmill');
+  check('mode 14/18 not in table', lightModeInfo(14) === undefined && lightModeInfo(18) === undefined);
+  check('special modes', eq([...LIGHT_SPECIAL_MODES], [0, 19, 275, 277]));
+
+  const s = decodeLightState(liveProfile());
+  check('light state mode', s?.mode === 15);
+  check(
+    'light state speed/bright/model',
+    s?.speed === 4 && s?.brightness === 10 && s?.colorModel === COLOR_MODEL.MIXING,
+  );
+
+  const mono = liveProfile();
+  mono[87] = 0x40;
+  check('monochrome packed nibble 0', decodeLightState(mono)?.colorModel === COLOR_MODEL.MONOCHROME);
+
+  const off = liveProfile();
+  off[10] = 0;
+  const s0 = decodeLightState(off);
+  check('special mode forces 0/0/1', s0?.speed === 0 && s0?.brightness === 0 && s0?.colorModel === 1);
+
+  const always = liveProfile();
+  always[10] = 1;
+  always[58] = 7;
+  always[59] = 0x45;
+  const s1 = decodeLightState(always);
+  check('mode 1 speed forced 0', s1?.speed === 0 && s1?.brightness === 7);
+
+  check('short profile → null', decodeLightState(new Uint8Array(10)) === null);
+  check('findSecond255Index', findSecond255Index(liveProfile()) === 58);
+
+  // with_light_mode layout (lightType 1 → packed type 0, else 7).
+  const v = withLightMode(liveProfile(), 15, 4, 10, 1);
+  check('withLightMode mode bytes', v[9] === 0 && v[10] === 15);
+  check('withLightMode bright', v[86] === 10);
+  check('withLightMode packed mono', v[87] === 0x40, `got 0x${(v[87] ?? 0).toString(16)}`);
+  const v7 = withLightMode(liveProfile(), 15, 20, 20, 2);
+  check('withLightMode packed mixing', v7[87] === (((20 & 15) << 4) | 7));
+  // Special mode: no record write.
+  const v0 = withLightMode(liveProfile(), 0, 9, 9, 2);
+  check('special mode no record', v0[86] === 10 && v0[87] === 0x47);
+  // Out-of-range mode throws.
+  let threw = false;
+  try {
+    withLightMode(liveProfile(), 40, 1, 1, 2);
+  } catch {
+    threw = true;
+  }
+  check('out-of-range mode refused', threw);
+  threw = false;
+  try {
+    withLightMode(liveProfile(), 15, 21, 0, 2);
+  } catch {
+    threw = true;
+  }
+  check('speed > 20 refused', threw);
+}
+
+// ── Light data blob (cmd 138) ──────────────────────────────────────────
+
+{
+  const blob = new Uint8Array(483);
+  for (let i = 0; i < blob.length; i += LIGHT_GROUP_STRIDE) {
+    blob[i] = 0xff;
+    blob[i + 1] = 0x00;
+    blob[i + 2] = 0x00;
+  }
+  const d = decodeLightData(blob);
+  check('light data groups', d.groups.length === 23 && d.tailLen === 0 && d.bytes === 483);
+  check(
+    'group 15 offset/color',
+    d.groups[15]?.offset === 315 && d.groups[15]?.color.r === 255,
+  );
+  check(
+    'group_color bounds',
+    groupColor(blob, 22) !== null && groupColor(blob, 23) === null && groupColor(blob, 277) === null,
+  );
+
+  const c = { r: 1, g: 2, b: 3 };
+  const out = withGroupColor(blob, 7, c);
+  check(
+    'withGroupColor applied',
+    out !== null && groupColor(out, 7)?.r === 1 && groupColor(out, 7)?.g === 2 && groupColor(out, 7)?.b === 3,
+  );
+  check('withGroupColor untouched', out !== null && groupColor(out, 0)?.r === 255);
+  check('withGroupColor oob', withGroupColor(blob, 23, c) === null);
+}
+
+// ── Colours / presets / cmd-10 packet ──────────────────────────────────
+
+{
+  const want = { r: 0x12, g: 0x34, b: 0xab };
+  check('parseColor hex', eq(parseColor('#1234ab'), want));
+  check('parseColor rgb', eq(parseColor('18,52,171'), want));
+  check('parseColor obj', eq(parseColor({ r: 18, g: 52, b: 171 }), want));
+  let threw = false;
+  try {
+    parseColor('#12345');
+  } catch {
+    threw = true;
+  }
+  check('parseColor rejects bad', threw);
+  check('rgbToHex', rgbToHex(want) === '#1234ab');
+
+  const hsv = rgbToHsv({ r: 255, g: 0, b: 0 });
+  check('rgbToHsv red', Math.abs(hsv.h) < 1 && hsv.s === 1 && Math.abs(hsv.v - 1) < 0.01);
+  check('hsvToRgb red', eq(hsvToRgb(0, 1, 1), { r: 255, g: 0, b: 0 }));
+  const blue = hsvToRgb(240, 1, 1);
+  check('hsvToRgb blue', blue.b === 255 && blue.r === 0);
+
+  const solid = buildPresetColors({ preset: 'solid', color: '#ff0000' });
+  check(
+    'preset solid',
+    solid.length === CUSTOM_LIGHT_SLOTS && solid.every((c) => c.r === 255 && c.g === 0 && c.b === 0),
+  );
+  const grad = buildPresetColors({ preset: 'gradient', color: '#ff0000', to: '#0000ff' });
+  check('preset gradient ends', eq(grad[0], { r: 255, g: 0, b: 0 }) && eq(grad[125], { r: 0, g: 0, b: 255 }));
+  const rain = buildPresetColors({ preset: 'rainbow' });
+  check('preset rainbow', rain.length === CUSTOM_LIGHT_SLOTS && rain[0]?.r === 255 && rain[0]?.g === 0);
+  check('colorsEqual', colorsEqual(solid, solid) && !colorsEqual(solid, grad));
+
+  // cmd-10 packet layout (Rust write_light_data).
+  const data = new Uint8Array(483);
+  data[0] = 0x12;
+  const pkt = buildLightDataPacket(data);
+  check('cmd10 packet 519', pkt.length === FEATURE_PAYLOAD_BYTES);
+  check(
+    'cmd10 header',
+    eq([...pkt.slice(0, 7)], [10, 0, 0, 0, 0, 0, 2]),
+    [...pkt.slice(0, 7)].join(','),
+  );
+  check('cmd10 payload at 7', pkt[7] === 0x12 && pkt[8] === 0);
+  check('cmd10 5A A5 pinned', pkt[513] === 0x5a && pkt[514] === 0xa5);
+  threw = false;
+  try {
+    buildLightDataPacket(new Uint8Array(600));
+  } catch {
+    threw = true;
+  }
+  check('cmd10 oversize refused', threw);
 }
 
 console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} check(s) failed.`);

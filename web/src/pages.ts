@@ -11,6 +11,7 @@
 import { app, ensureKeymap, setLayer, subscribe, type KeyEntry } from './state.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, keyIndexOf, type KeyBlock } from './k1pro-layout.ts';
 import { KeyboardView } from './keyboard.ts';
+import { renderLightingPage, destroyLightingPage } from './lighting.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { MacroPage } from './macro.ts';
 import { formatVidPid } from './hid.ts';
@@ -287,24 +288,10 @@ function renderDevice(root: HTMLElement): void {
 
 // ── Placeholder pages ──────────────────────────────────────────────────
 
+// ── Lighting (bead far — full page in lighting.ts) ────────────────────
+
 function renderLighting(root: HTMLElement): void {
-  root.replaceChildren();
-  const facts: string[] = [];
-  const snap = app.snapshot;
-  if (snap?.profile.lightMode != null) {
-    facts.push(`Current light mode: 0x${snap.profile.lightMode.toString(16).padStart(4, '0')} (from profile blob)`);
-  }
-  if (snap?.profile.sleepSeconds != null) facts.push(`Sleep time: ${snap.profile.sleepSeconds} s`);
-  facts.push('126 per-key custom colours are readable today (shown on the Device page).');
-  facts.push('Effect picker, speed/brightness sliders and custom colour writes land with the lighting bead.');
-  root.append(
-    comingSoon(
-      'Lighting',
-      'Vendor page: 灯光设置 — effect mode list, speed/brightness sliders (0–20), ' +
-        'colour presets and a per-key custom colour grid.',
-      facts,
-    ),
-  );
+  renderLightingPage(root);
 }
 
 // ── Macro (bead ae3) ───────────────────────────────────────────────────
@@ -375,6 +362,7 @@ export function destroyPages(): void {
   keysUnsub?.();
   macroPage?.destroy();
   macroPage = null;
+  destroyLightingPage();
   window.removeEventListener('hashchange', route);
 }
 

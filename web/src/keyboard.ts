@@ -29,6 +29,11 @@ export interface KeyboardData {
   colors: readonly LightColor[] | null;
 }
 
+export interface KeyboardViewOptions {
+  /** Called with the keymap index `n` (`pos = 8 + n*4`) on key click. */
+  onKeyClick?: (keyIndex: number) => void;
+}
+
 export class KeyboardView {
   private readonly viewport: HTMLElement;
   private readonly canvas: HTMLElement;
@@ -37,8 +42,10 @@ export class KeyboardView {
   private data: KeyboardData = { keymap: null, colors: null };
   private scale = 1;
   private resizeObserver: ResizeObserver | null = null;
+  private readonly onKeyClick?: (keyIndex: number) => void;
 
-  constructor(root: HTMLElement, blocks: readonly KeyBlock[]) {
+  constructor(root: HTMLElement, blocks: readonly KeyBlock[], opts: KeyboardViewOptions = {}) {
+    this.onKeyClick = opts.onKeyClick;
     this.blocks = blocks;
     this.viewport = document.createElement('div');
     this.viewport.className = 'kb-viewport';
@@ -118,6 +125,7 @@ export class KeyboardView {
         `pos ${block.pos} (n=${n})` +
         (km ? ` · 0x${km.value.toString(16).toUpperCase().padStart(8, '0')} · ${km.label || '(empty)'}` : '');
       el.addEventListener('click', () => {
+        this.onKeyClick?.(n);
         this.detail.textContent = km
           ? `#${n} ${block.name || '(unnamed)'} → ${km.label || '(empty)'} · 0x${km.value
               .toString(16)

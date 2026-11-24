@@ -12,8 +12,10 @@
  * - `reportId = featureReports[0].reportId` with a 6 → 1..32 probe fallback
  *   like `probe_report_id` (only the read-only cmd-130 query is ever sent);
  * - feature-report transact with 3 s timeout + 3 attempts and echo check;
- * - fire-and-forget config writes (cmd 3/5) followed by read-back verify —
- *   port of `Khub916::write_keymap` / `write_macro_region`.
+ * - fire-and-forget config writes (cmd 3/4/5/6/10) followed by read-back
+ *   verify — port of `Khub916::write_keymap` / `write_profile` /
+ *   `write_macro_region` / `write_custom_light_colors` /
+ *   `light::write_light_data`.
  */
 
 import {
@@ -41,6 +43,7 @@ import {
   type ProfileInfo,
 } from './proto/khub916.ts';
 import { decodeKeyValue, keyValueLabel } from './proto/khub916.ts';
+import { buildLightDataPacket, CUSTOM_LIGHT_SLOTS, type Rgb } from './proto/light.ts';
 
 // ── Device identity tables (spec §1, `Ts` table) ───────────────────────
 
@@ -341,6 +344,68 @@ export class Khub916Session {
       throw new Error('khub916 macro write not verified: read-back differs');
     }
     return { command: CMD.macroWrite, verified: true };
+  }
+
+  /**
+   * Write the profile/config blob (cmd 4, tags 128/0). `profile` is the
+   * ~128-byte blob as returned by `profile()`, optionally modified via
+   * `withLightMode` (proto/light.ts) or `profileWithSleepSeconds`
+   * (proto/khub916.ts). Verify: cmd-132 read-back must
+   * equal the sent bytes.
+   */
+  async writeProfile(profile: Uint8Array): Promise<WriteOutcome> {
+    if (profile.length === 0 || profile.length > FEATURE_PAYLOAD_BYTES - HEADER_LEN) {
+      throw new Error(`khub916 profile write: bad length ${profile.length}`);
+    }
+    await this.configWrite(buildPacket(CMD.profileWrite, 0x00, 0x80, 0x00, profile));
+    const back = await this.profile();
+    if (!bytesEqual(back.raw, profile)) {
+      throw new Error('khub916 profile write not verified: read-back differs');
+    }
+    return { command: CMD.profileWrite, verified: true };
+  }
+
+  /**
+   * Write custom light colours (cmd 6, tags 122/1). `colors` must have
+   * exactly 126 entries; the 378-byte payload is `[R×126][G×126][B×126]`.
+   * Verify: cmd-134 read-back planes must reproduce the same colours.
+   */
+  async writeCustomLightColors(colors: readonly Rgb[]): Promise<WriteOutcome> {
+    if (colors.length !== CUSTOM_LIGHT_SLOTS) {
+      throw new Error(
+        `khub916 custom light write needs exactly ${CUSTOM_LIGHT_SLOTS} colours, got ${colors.length}`,
+      );
+    }
+    const payload = new Uint8Array(CUSTOM_LIGHT_SLOTS * 3);
+    colors.forEach((c, i) => {
+      payload[i] = c.r & 0xff;
+      payload[CUSTOM_LIGHT_SLOTS + i] = c.g & 0xff;
+      payload[2 * CUSTOM_LIGHT_SLOTS + i] = c.b & 0xff;
+    });
+    await this.configWrite(buildPacket(CMD.customLightWrite, 0x00, 0x7a, 0x01, payload));
+    const back = await this.customLightColors();
+    const matches =
+      back.length === colors.length &&
+      back.every((b, i) => b.r === colors[i]?.r && b.g === colors[i]?.g && b.b === colors[i]?.b);
+    if (!matches) {
+      throw new Error('khub916 custom light write not verified: read-back differs');
+    }
+    return { command: CMD.customLightWrite, verified: true };
+  }
+
+  /**
+   * Write the per-mode light colour blob (wired cmd 10). `data` is the
+   * full ~483-byte blob from `lightColorData()`, typically modified via
+   * `withGroupColor`. Verify: cmd-138 read-back must reproduce `data` as
+   * a prefix (the device may pad/normalise the tail).
+   */
+  async writeLightData(data: Uint8Array): Promise<WriteOutcome> {
+    await this.configWrite(buildLightDataPacket(data));
+    const back = await this.lightColorData();
+    if (back.length < data.length || !bytesEqual(back.slice(0, data.length), data)) {
+      throw new Error('khub916 light data write not verified: read-back differs');
+    }
+    return { command: CMD.lightDataWrite, verified: true };
   }
 }
 

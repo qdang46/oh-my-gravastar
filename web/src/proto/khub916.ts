@@ -26,6 +26,7 @@ export const CMD = {
   profileWrite: 4,
   macroWrite: 5,
   customLightWrite: 6,
+  lightDataWrite: 10, // wired cmd-10 light-data write (proto/light.ts)
   deviceInfo: 130, // 0x82
   keymapRead: 131, // 0x83
   profileRead: 132, // 0x84
