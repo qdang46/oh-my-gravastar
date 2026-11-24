@@ -87,3 +87,65 @@ export function isOpaqueKeymapValue(v: number): boolean {
   if (v === 0) return false;
   return decodeKeyValue(v >>> 0).kind === 'unknown';
 }
+
+/**
+ * Indices of the slots in `values` that decode to an unknown tag —
+ * the opaque slots of §Safety 7. Used by the remap page to refuse edits
+ * and whole-table copies that would overwrite them.
+ */
+export function opaqueKeymapSlots(values: readonly number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (isOpaqueKeymapValue(values[i] ?? 0)) out.push(i);
+  }
+  return out;
+}
+
+/**
+ * Lock reason shown when a whole keymap arg must not be edited, or null
+ * when edits may proceed. Wraps [`guardKeymapBase`] for *cached* reads
+ * (display-time gating in `remap.ts`): `values` are the u32s already in
+ * `app.snapshot.keymaps`, `siblingLengths` the slot counts other args of
+ * the same keyboard reported (the fixed-count cross-check `keymapBase`
+ * performs). An absent/never-read arg is the caller's job — pass only
+ * real reads here; an empty read IS an error.
+ */
+export function keymapReadError(
+  arg: number,
+  values: readonly number[],
+  siblingLengths: readonly number[] = [],
+): string | null {
+  try {
+    guardKeymapBase(values, { arg, expectedLen: siblingLengths.find((n) => n > 0) });
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/**
+ * True for keymap args with the system bit set (`arg & 4` — the vendor's
+ * Win/Mac `systemModel` selector, packed as `layer & 3 | system << 2`).
+ */
+export function isSystemKeymapArg(arg: number): boolean {
+  return (arg & 4) !== 0;
+}
+
+/**
+ * Args 4–7 are NOT editable in this UI (bead
+ * oh-my-gravastar-remap-opaque-slots-nw5). The wire encoding itself is
+ * code-verified against the vendor JS (`getKeyboardKeys` sends
+ * `[131, layer&3 | (system&1)<<2, 0,1,0,248,1]`), but live reads on the
+ * K1 Pro return a differently-framed payload — the `5A A5` write marker
+ * lands mid-table and u32s come back byte-rotated (`0x29000000` vs
+ * `0x00000029`) — so the guard cannot vouch for the contents and a
+ * "verified" write-back would only prove the device stored the garbage
+ * it was sent. Locked until the system-arg read shape is understood.
+ */
+export const SYSTEM_KEYMAP_ARGS_TRUSTED = false;
+
+/** Human explanation for the system-arg lock (toggle tooltip/status). */
+export const SYSTEM_ARG_LOCK_REASON =
+  'the keyboard does not return a readable key table for the system-variant ' +
+  'key sets (args 4–7) — the read comes back garbled, so editing is disabled ' +
+  'until the encoding is understood';

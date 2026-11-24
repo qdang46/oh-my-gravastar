@@ -16,8 +16,18 @@
  * - staged edits live in `StagedEdits` (./remap-edit.ts): per-arg pending
  *   map + undo/redo history, layer copy/reset, all staged-only;
  * - keymap args are `layer | system<<2` (0–3 user "key sets", 4–7 the
- *   system-bit variants — spec §6); the page edits all eight via a
- *   User/System mode toggle + four layer tabs (bead c8y);
+ *   system-bit variants — spec §6); the page edits args 0–3 only. The
+ *   System-keys toggle is DISABLED: args 4–7 read back a garbled,
+ *   differently-framed payload on the K1 Pro (see keymap-guard.ts
+ *   `SYSTEM_KEYMAP_ARGS_TRUSTED`), so they are not editable until the
+ *   read shape is understood (bead nw5);
+ * - opaque slots (values decoding to an unknown tag — the tag-0x08
+ *   Fn-layer firmware actions, §Safety 7) render with an `· opaque`
+ *   label suffix, cannot be selected, and refuse pool assignment —
+ *   the vendor UI cannot express them either (docs/protocol-khub916.md
+ *   "Tag 0x08");
+ * - an arg whose cached read fails the keymap-base guard is locked
+ *   entirely: no staging, no pool picks, no copy source/destination;
  * - the vendor Win/Mac `modelList` selector and macro-binding tab are
  *   out of scope (macro binding is bead ae3's UI).
  */
@@ -40,6 +50,14 @@ import {
   type PoolGroup,
 } from './keypool.ts';
 import { StagedEdits } from './remap-edit.ts';
+import {
+  SYSTEM_ARG_LOCK_REASON,
+  SYSTEM_KEYMAP_ARGS_TRUSTED,
+  isOpaqueKeymapValue,
+  isSystemKeymapArg,
+  keymapReadError,
+  opaqueKeymapSlots,
+} from './keymap-guard.ts';
 import { BehaviorEditor } from './behavior-editor.ts';
 import {
   buildKeymapDiff,
@@ -125,6 +143,53 @@ function effectiveValue(arg: number, index: number): number {
   return edits.effective(arg, index);
 }
 
+// ── Edit locks (bead nw5) ─────────────────────────────────────────────
+
+/**
+ * Why `arg` must not be edited, or null when it may. Two independent
+ * locks:
+ * - system-bit args 4–7 are never trusted (`SYSTEM_KEYMAP_ARGS_TRUSTED`);
+ * - any arg whose *cached* read fails the keymap-base guard (empty,
+ *   short-vs-sibling, corrupt slot) is locked — the same check
+ *   `keymapBase` applies at write time, surfaced here so the UI can
+ *   refuse edits before a write is ever attempted.
+ * An arg with no cached read yet returns null (nothing to distrust;
+ * the read itself is still pending).
+ */
+function argEditLock(arg: number): string | null {
+  if (!SYSTEM_KEYMAP_ARGS_TRUSTED && isSystemKeymapArg(arg)) {
+    return `Key set arg ${arg}: ${SYSTEM_ARG_LOCK_REASON}`;
+  }
+  const snap = app.snapshot;
+  const entries = snap?.keymaps.get(arg);
+  if (!entries) return null;
+  const siblings = [...(snap?.keymaps ?? new Map())]
+    .filter(([a]) => a !== arg)
+    .map(([, e]) => e.length);
+  return keymapReadError(arg, entries.map((e) => e.value), siblings);
+}
+
+/** Committed slot value decodes to an unknown tag — opaque (§Safety 7). */
+function isSlotOpaque(arg: number, index: number): boolean {
+  return isOpaqueKeymapValue(committedValue(arg, index));
+}
+
+/** Count of opaque slots in `arg`'s committed read (0 when unread). */
+function argOpaqueCount(arg: number): number {
+  return opaqueKeymapSlots(
+    (app.snapshot?.keymaps.get(arg) ?? []).map((e) => e.value),
+  ).length;
+}
+
+/** Status-line explanation for a refused opaque-slot edit. */
+function opaqueRefusal(arg: number, index: number): string {
+  return (
+    `Key ${index} on ${argLabel(arg)} holds an opaque firmware value ` +
+    `(${hex8(committedValue(arg, index))}) — the configurator cannot name ` +
+    'or safely rebind it, so nothing was changed.'
+  );
+}
+
 // ── DOM helpers (same style as pages.ts) ───────────────────────────────
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -177,8 +242,26 @@ function blockNameFor(blocks: readonly KeyBlock[], index: number): string {
 function stageIndices(indices: Iterable<number>, value: number | null): void {
   if (busy) return;
   const arg = currentArg();
+  // Whole-arg lock: an untrusted read (or a system arg) is never a
+  // staging base — refuse before anything reaches StagedEdits.
+  const lock = argEditLock(arg);
+  if (lock) {
+    setStatus(`Cannot edit ${argLabel(arg)}: ${lock}`, true);
+    return;
+  }
+  const idx = [...indices];
+  if (value !== null) {
+    // Opaque slots (§Safety 7): a new value would destroy a firmware
+    // action the configurator cannot express or restore. Reverts
+    // (value === null) stay allowed — they only drop pending edits.
+    const opaque = idx.filter((i) => isSlotOpaque(arg, i));
+    if (opaque.length > 0) {
+      setStatus(opaqueRefusal(arg, opaque[0] ?? 0), true);
+      return;
+    }
+  }
   const changes = new Map<number, number | null>();
-  for (const i of indices) {
+  for (const i of idx) {
     if (Number.isInteger(i) && i >= 0 && i < 128) changes.set(i, value);
   }
   if (changes.size > 0) edits.stage(arg, changes);
@@ -233,6 +316,41 @@ function doRedo(): void {
  */
 async function copyLayer(src: number, dst: number): Promise<void> {
   if (busy || src === dst) return;
+  // Neither side may be locked, and neither may hold opaque slots: a
+  // whole-table copy would overwrite dst's firmware-resident values
+  // (or write src's into the wrong layer) — §Safety 7.
+  const srcLock = argEditLock(src);
+  const dstLock = argEditLock(dst);
+  if (srcLock || dstLock) {
+    setStatus(
+      `Cannot copy between key sets: ${srcLock ?? dstLock}`,
+      true,
+    );
+    return;
+  }
+  // Both tables must have been read — copying from an unread arg would
+  // stage zeros over the destination (§Safety 6).
+  const maps = app.snapshot?.keymaps;
+  if (!maps?.has(src) || !maps.has(dst)) {
+    setStatus(
+      `Cannot copy between key sets: ${argLabel(src)} or ${argLabel(dst)} ` +
+        'has not been read from the keyboard yet — switch to that key set first.',
+      true,
+    );
+    return;
+  }
+  const srcOpaque = argOpaqueCount(src);
+  const dstOpaque = argOpaqueCount(dst);
+  if (srcOpaque > 0 || dstOpaque > 0) {
+    const which = srcOpaque > 0 && dstOpaque > 0 ? 'either' : srcOpaque > 0 ? argLabel(src) : argLabel(dst);
+    setStatus(
+      `Cannot copy ${argLabel(src)} → ${argLabel(dst)}: ${which} holds ` +
+        `${Math.max(srcOpaque, dstOpaque)} opaque firmware value(s) a ` +
+        'whole-table copy cannot preserve safely.',
+      true,
+    );
+    return;
+  }
   const plan = edits.planCopy(src, dst);
   if (!plan) return;
   if (plan.size === 0) {
@@ -365,6 +483,14 @@ function renderDiffPanel(
 async function writeChanges(changes: ReadonlyMap<number, number>): Promise<void> {
   if (busy || changes.size === 0 || !app.connected || !app.snapshot) return;
   const arg = currentArg();
+  // Last-line defence (bead nw5): never build a whole-table write on an
+  // arg whose read is untrusted — `keymapBase` would throw anyway, but
+  // refuse here with the lock reason before touching the session.
+  const lock = argEditLock(arg);
+  if (lock) {
+    setStatus(`Cannot save ${argLabel(arg)}: ${lock}`, true);
+    return;
+  }
   const layer = arg & 3;
   const system = (arg >> 2) & 1;
   const session = app.connected.session;
@@ -517,13 +643,21 @@ export function renderKeysPage(root: HTMLElement): void {
   const toolbar = el('div', 'segment-bar remap-toolbar');
 
   // User / System mode toggle — the keymap arg's bit 2 (spec §6).
+  // DISABLED (bead nw5): the arg encoding `layer&3 | system<<2` is
+  // code-verified against the vendor JS, but on the K1 Pro the cmd-131
+  // read for args 4–7 returns a differently-framed payload (the `5A A5`
+  // write marker lands mid-table; u32s come back byte-rotated), so the
+  // contents cannot be trusted as an edit base. Re-enable only after
+  // the system-arg read shape is understood — see
+  // keymap-guard.ts `SYSTEM_KEYMAP_ARGS_TRUSTED`.
   const modeBar = el('div', 'segment-bar remap-mode-bar');
   const userModeBtn = el('button', `segment-item${systemMode ? '' : ' active'}`, 'User keys');
   const sysModeBtn = el('button', `segment-item${systemMode ? ' active' : ''}`, 'System keys');
   userModeBtn.type = 'button';
   sysModeBtn.type = 'button';
   userModeBtn.title = 'Edit the four user key sets (args 0–3)';
-  sysModeBtn.title = 'Edit the four system-variant key sets (args 4–7)';
+  sysModeBtn.title = `Edit the four system-variant key sets (args 4–7) — disabled: ${SYSTEM_ARG_LOCK_REASON}`;
+  sysModeBtn.disabled = true;
   userModeBtn.addEventListener('click', () => {
     if (systemMode) {
       systemMode = false;
@@ -531,8 +665,10 @@ export function renderKeysPage(root: HTMLElement): void {
       sync();
     }
   });
+  // The system button is disabled, but keep the handler honest: even if
+  // it were re-enabled, argEditLock() refuses edits on args 4–7.
   sysModeBtn.addEventListener('click', () => {
-    if (!systemMode) {
+    if (!systemMode && SYSTEM_KEYMAP_ARGS_TRUSTED) {
       systemMode = true;
       void ensureKeymap(currentArg()).catch(() => {});
       sync();
@@ -593,6 +729,12 @@ export function renderKeysPage(root: HTMLElement): void {
   toolbar.append(editBar.root);
   kbody.append(toolbar);
   if (note) kbody.append(el('p', 'hint warn', note));
+  // Whole-arg edit lock (bead nw5): shown when the current key set's
+  // cached read fails the keymap-base guard — the layer stays
+  // view-only until a trustworthy read replaces it.
+  const lockNote = el('p', 'hint warn', '');
+  lockNote.hidden = true;
+  kbody.append(lockNote);
 
   // ── Staged-edit tools: undo/redo + layer copy ──────────────────────
   const tools = el('div', 'remap-tools');
@@ -610,7 +752,10 @@ export function renderKeysPage(root: HTMLElement): void {
   const copyLabel = el('span', 'hint remap-copy-label', 'Copy key set:');
   const srcSel = el('select', 'remap-copy-select') as HTMLSelectElement;
   const dstSel = el('select', 'remap-copy-select') as HTMLSelectElement;
-  for (let arg = 0; arg < 8; arg++) {
+  // Copy pickers offer only the trusted user args 0–3 — system args
+  // 4–7 are locked (untrusted reads) and argEditLock() refuses them
+  // anyway (bead nw5).
+  for (let arg = 0; arg < 4; arg++) {
     const so = el('option', '', argLabel(arg));
     so.value = String(arg);
     srcSel.append(so);
@@ -619,7 +764,7 @@ export function renderKeysPage(root: HTMLElement): void {
     dstSel.append(dopt);
   }
   srcSel.value = String(currentArg());
-  dstSel.value = String((currentArg() + 1) % 8);
+  dstSel.value = String((currentArg() + 1) % 4);
   const arrow = el('span', 'hint', '→');
   const copyBtn = el('button', 'btn remap-copy', 'Stage copy');
   copyBtn.type = 'button';
@@ -634,6 +779,13 @@ export function renderKeysPage(root: HTMLElement): void {
   kbody.append(holder);
   keysView = new KeyboardView(holder, blocks, {
     onKeyClick: (n) => {
+      // Opaque slots (§Safety 7, bead nw5) are not selectable: their
+      // tag-0x08 firmware values cannot be named or safely rebound.
+      if (isSlotOpaque(currentArg(), n)) {
+        multiToggle = false;
+        setStatus(opaqueRefusal(currentArg(), n), true);
+        return;
+      }
       // Ctrl/Shift/Cmd+click was already handled by the capture listener
       // (multi-toggle); a plain click collapses the selection to one key.
       if (!multiToggle) {
@@ -658,6 +810,13 @@ export function renderKeysPage(root: HTMLElement): void {
       const m = /^Key (\d+)\b/.exec(keyEl?.getAttribute('title') ?? '');
       if (!m) return;
       const n = Number(m[1]);
+      // Opaque slots never enter the selection set (§Safety 7).
+      if (isSlotOpaque(currentArg(), n)) {
+        multiToggle = false;
+        setStatus(opaqueRefusal(currentArg(), n), true);
+        sync();
+        return;
+      }
       if (selSet.has(n)) selSet.delete(n);
       else selSet.add(n);
       multiToggle = true;
@@ -765,9 +924,12 @@ export function renderKeysPage(root: HTMLElement): void {
   const renderPoolItems = (): void => {
     grid.replaceChildren();
     const arg = currentArg();
+    // Locked arg (untrusted/system read): browse the pool but refuse picks.
+    const lock = argEditLock(arg);
     for (const entry of filteredPool()) {
       const item = el('button', 'pool-item', '');
       item.type = 'button';
+      item.disabled = lock !== null;
       const name = el('span', 'pool-item-name', entry.name);
       item.append(name);
       // Tooltip carries the raw value + HID usage code (bead c8y).
@@ -775,7 +937,8 @@ export function renderKeysPage(root: HTMLElement): void {
         `${entry.name} — ${hex8(entry.value)}` +
         (entry.usage !== null
           ? ` · HID usage 0x${entry.usage.toString(16).padStart(2, '0').toUpperCase()}`
-          : '');
+          : '') +
+        (lock !== null ? ` — cannot assign: ${lock}` : '');
       if (selected !== null && entry.value === effectiveValue(arg, selected)) {
         item.classList.add('pool-item--current');
       }
@@ -805,9 +968,26 @@ export function renderKeysPage(root: HTMLElement): void {
     const snap = app.snapshot;
     const arg = currentArg();
     const pending = edits.pendingView(arg);
+    // Whole-arg edit lock (bead nw5): untrusted/system reads are
+    // view-only — banner + disabled controls, staging refused upstream.
+    const lock = argEditLock(arg);
+    lockNote.hidden = lock === null;
+    lockNote.textContent = lock ?? '';
+
+    // Display copy of the keymap: opaque slots (unknown tag, §Safety 7)
+    // get an `· opaque` label suffix so the raw hex reads as locked
+    // firmware data, not an editable bind. The snapshot itself is
+    // untouched — other pages keep the plain decode.
+    const kmEntries = snap?.keymaps.get(arg);
+    const displayKm =
+      kmEntries?.map((e) =>
+        isOpaqueKeymapValue(e.value)
+          ? { ...e, label: `${e.label || hex8(e.value)} · opaque` }
+          : e,
+      ) ?? null;
 
     keysView?.setData({
-      keymap: snap?.keymaps.get(arg) ?? null,
+      keymap: displayKm,
       colors: snap?.colors ?? null,
       pending: pending.size > 0 ? pending : null,
       selected,
@@ -835,6 +1015,10 @@ export function renderKeysPage(root: HTMLElement): void {
       extra: reviewBtn,
       applyLabel: (n, b) => (b ? 'Saving…' : n > 0 ? `Save all (${n})` : 'Save'),
       applyTitle: 'Write this key set’s staged changes to the keyboard (checked on read-back)',
+      // Locked arg: Apply stays disabled (Discard still works — it only
+      // drops staged edits, never sends bytes).
+      applyDisabled: lock !== null,
+      note: lock !== null ? `Editing disabled — ${lock}` : '',
       discardLabel: 'Discard',
       discardTitle: 'Drop all unsaved changes on this key set (undoable)',
     });
@@ -874,7 +1058,7 @@ export function renderKeysPage(root: HTMLElement): void {
         (pend !== undefined
           ? `, will become ${labelOfValue(pend) || 'nothing'}`
           : '');
-      applyOneBtn.disabled = busy || pend === undefined;
+      applyOneBtn.disabled = busy || pend === undefined || lock !== null;
 
       // Duplicate-assignment warning (tester-contract spirit): the same
       // value on two keys is legal but almost always a mistake.
@@ -890,9 +1074,9 @@ export function renderKeysPage(root: HTMLElement): void {
         dupWarn.textContent = '';
       }
     }
-    unassignBtn.disabled = busy || selSet.size === 0;
-    resetKeyBtn.disabled = busy || selSet.size === 0;
-    configureBtn.disabled = busy || selSet.size !== 1 || selected === null;
+    unassignBtn.disabled = busy || selSet.size === 0 || lock !== null;
+    resetKeyBtn.disabled = busy || selSet.size === 0 || lock !== null;
+    configureBtn.disabled = busy || selSet.size !== 1 || selected === null || lock !== null;
     configureBtn.textContent = configureOpen ? 'Close configure' : 'Configure key…';
 
     // Configure-key panel (bead vzx): rebuilt every sync; the editor
