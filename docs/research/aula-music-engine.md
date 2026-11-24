@@ -72,3 +72,24 @@ Actor/message framework (`ea_mgr` = manager, `ea_actor` = actor base,
 - `docs/research/khub-webapp/Rhythm-vX7LyrFn.js` — vendor rhythm UI:
   6 modes (`169-173` named + `428` "dynamic spectrum"), color list,
   `bypc-MAxis://` plugin handshake.
+
+## F75 layer-mixer port (2026-11-25)
+
+The macOS reference (`raghavt20/aula-f75-macos`, MIT) was ported into
+`crates/music/src/f75.rs` as `VendorEngine` and exposed via
+`omg kb916 light music --engine f75` (`--effect` = comma-separated
+vendor layer list, `--palette`, `--speed`). Layers: solid, breathing,
+lave, starry, spectrum, ripple, pulse, rain — mixer sums per-layer
+renders scaled by vendor `defaultLevel`, beat rule = vendor bass
+threshold OR'd with our flux beat. Frames are interleaved LED×RGB
+(`led = col*6+row` on the F75 map); `--pixel-order planar` converts
+back for the K1 Pro slot order.
+
+Offline contrast sim (`cargo run -p omg-music --example f75_sim`,
+kick every 0.5 s): pulse-only floor 0.08 / peak 0.32, ripple-only
+0.03 / 0.04, spectrum-only flat 0.12 (bands held constant), default
+pulse+ripple floor 0.11 / peak 0.35 — versus the legacy BeatViz
+which bottomed at ~0.25 mean between beats. The pulse layer's
+`env > 0.02` hard gate means true silence still renders all-black
+(unit-tested). Live hardware verification pending — needs music
+playing through system loopback.
