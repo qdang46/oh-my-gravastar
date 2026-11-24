@@ -17,12 +17,13 @@
 //!
 //! # Safety (docs/plan.md §2 + docs/protocol-khub916.md §8)
 //!
-//! **Read-only by default.** Only query commands and three write commands
+//! **Read-only by default.** Only query commands and four write commands
 //! whose payload layout is documented in the spec are implemented:
 //!
 //! - reads: device info (130), keymap (131), profile (132), macro region
 //!   (133), custom light colours (134), power (135), light colour data (138)
-//! - writes: keymap (3), profile/config (4), custom light colours (6)
+//! - writes: keymap (3), profile/config (4), custom light colours (6),
+//!   macro region (5 — codec in [`macro916`])
 //!
 //! Write transport detail (vendor-verified): the JS driver only ever calls
 //! `sendFeatureReport` for these commands and **never reads a reply**, so
@@ -48,7 +49,6 @@
 //!
 //! - keyboard reset 17 (wired) and wireless cmd 6 factory reset
 //! - SOCD/MT/TGL history write 18 and config read 146 (wired)
-//! - macro region write 5 (wired; chunk semantics not fully proven)
 //! - GIF light frames 8 (keyboard backlight, unrelated to the screen)
 //! - no generic "send arbitrary command" API exists; [`Khub916::transact`]
 //!   is private so unknown opcodes cannot be emitted, and the wireless
@@ -66,6 +66,7 @@ use omg_hid::devices::{KHUB916_WIRED, KHUB916_WIRED_USAGE_PAGE_MIN};
 use omg_hid::Link;
 use serde::Serialize;
 
+pub mod macro916;
 pub mod wireless;
 
 // ── Wire constants (docs/protocol-khub916.md §2/§6) ─────────────────────
@@ -92,6 +93,7 @@ const WRITE_SETTLE: Duration = Duration::from_millis(150);
 // Command opcodes (decimal values from spec §6).
 const CMD_KEYMAP_WRITE: u8 = 3;
 const CMD_PROFILE_WRITE: u8 = 4;
+const CMD_MACRO_WRITE: u8 = 5;
 const CMD_CUSTOM_LIGHT_WRITE: u8 = 6;
 const CMD_SCREEN_CLOCK: u8 = 11;
 const CMD_SCREEN_FRAME: u8 = 12;
@@ -940,6 +942,48 @@ impl Khub916 {
         }
         Ok(WriteOutcome {
             command: CMD_CUSTOM_LIGHT_WRITE,
+            verified: true,
+        })
+    }
+
+    /// Write the macro region (cmd 5, tags `len&0xFF`/0 — vendor header
+    /// `[5,0,0,1,0,len,0]`). `data` is the assembled region (see
+    /// [`macro916::build_macro_region`]); it is zero-padded to the
+    /// vendor's fixed 512-byte payload exactly like
+    /// `setKeyBoardMacroIndependent`/`deleteKeyBoardMacroKey`.
+    ///
+    /// Verify: cmd 133 read-back, zero-padded/truncated to 512 bytes,
+    /// must equal the sent payload. A mismatch returns `Err` without
+    /// poisoning the session.
+    pub fn write_macro_region(&mut self, data: &[u8]) -> Result<WriteOutcome> {
+        if data.is_empty() || data.len() > macro916::MACRO_REGION_BYTES {
+            bail!(
+                "khub916 macro write needs 1..={} bytes, got {}",
+                macro916::MACRO_REGION_BYTES,
+                data.len()
+            );
+        }
+        let mut payload = data.to_vec();
+        payload.resize(macro916::MACRO_REGION_BYTES, 0);
+        // Vendor sends `[5,0,0,1,0,v.length,0,...]` with v.length = 512,
+        // which wraps to 0 in the Uint8Array — tagA is `len & 0xFF`.
+        let tag_a = (macro916::MACRO_REGION_BYTES & 0xFF) as u8;
+        let pkt = Self::packet(CMD_MACRO_WRITE, 0x00, tag_a, 0x00, &payload)?;
+        self.config_write(&pkt)?;
+        let back = self.macro_region()?;
+        // Compare zero-padded to the fixed 512-byte region: the read may
+        // return fewer bytes (trailing zeros trimmed) — pad it the same
+        // way before comparing.
+        let mut back_pad = back;
+        if back_pad.len() > macro916::MACRO_REGION_BYTES {
+            back_pad.truncate(macro916::MACRO_REGION_BYTES);
+        }
+        back_pad.resize(macro916::MACRO_REGION_BYTES, 0);
+        if back_pad != payload {
+            bail!("khub916 macro write not verified: read-back differs");
+        }
+        Ok(WriteOutcome {
+            command: CMD_MACRO_WRITE,
             verified: true,
         })
     }
