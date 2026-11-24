@@ -598,3 +598,65 @@ impl VendorEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Bands;
+
+    fn loud_bass() -> Bands {
+        let mut b = Bands::default();
+        b.bass = 0.9;
+        b.mid = 0.4;
+        b.treble = 0.3;
+        b.level = 0.6;
+        b.spectrum = [0.5; crate::SPECTRUM_BINS];
+        b
+    }
+
+    #[test]
+    fn silence_renders_black() {
+        let mut eng = VendorEngine::default();
+        let frame = eng.frame(&Bands::default(), 0.02, &[]);
+        assert!(frame.iter().all(|&b| b == 0), "silence must be all-black");
+    }
+
+    #[test]
+    fn loud_music_lights_keys() {
+        let mut eng = VendorEngine::default();
+        let mut lit = 0usize;
+        for i in 0..50 {
+            let mut b = loud_bass();
+            b.beat = i % 20 == 0;
+            let frame = eng.frame(&b, 0.02, &[]);
+            lit = frame.iter().filter(|&&v| v > 8).count();
+        }
+        assert!(lit > 0, "loud input must light some LED slots");
+    }
+
+    #[test]
+    fn beat_rings_spawn_and_expire() {
+        let mut eng = VendorEngine {
+            layers: vec![(VendorLayer::Ripple, None)],
+            ..Default::default()
+        };
+        let mut b = loud_bass();
+        // Kick-like bass: spike every 30 frames (~0.6 s), quiet between.
+        for i in 0..200 {
+            b.bass = if i % 30 == 0 { 0.9 } else { 0.1 };
+            eng.frame(&b, 0.02, &[]);
+            if i == 45 {
+                // ~0.3 s after a beat: ring should still be alive.
+                assert!(!eng.rings.is_empty(), "beat must spawn a ring");
+            }
+        }
+        // After 4 s of quiet the last ring (life = 520/380 ≈ 1.37 s)
+        // must have expired.
+        for _ in 0..200 {
+            b.bass = 0.0;
+            b.level = 0.0;
+            eng.frame(&b, 0.02, &[]);
+        }
+        assert!(eng.rings.is_empty(), "rings must expire");
+    }
+}
