@@ -96,7 +96,9 @@ export function mountShell(root: HTMLElement): void {
   const deviceChip = el('span', 'device-chip', '');
   const connectBtn = el('button', 'primary', 'Connect');
   connectBtn.type = 'button';
-  const disconnectBtn = el('button', '', 'Disconnect');
+  // `danger` styling keeps Disconnect visually prominent whenever a
+  // device is connected (R6: easy disconnect after auto-reconnect).
+  const disconnectBtn = el('button', 'danger', 'Disconnect');
   disconnectBtn.type = 'button';
   disconnectBtn.hidden = true;
   const refreshBtn = el('button', '', 'Refresh');
@@ -178,16 +180,20 @@ export function mountShell(root: HTMLElement): void {
     refreshBtn.disabled = app.busy;
 
     const snap = app.snapshot;
-    deviceName.textContent = snap?.info.catalogName ?? (connected ? 'Connected device' : 'No device');
+    // Always name the actual device (product + model), never just
+    // "connected" — critical after a silent auto-reconnect (R6).
+    const label =
+      app.deviceLabel || snap?.info.catalogName || (connected ? 'Connected device' : 'No device');
+    deviceName.textContent = label;
     deviceChip.replaceChildren();
     const dot = el('span', 'dot');
     deviceChip.append(
       dot,
       document.createTextNode(
         snap
-          ? `${snap.info.catalogName ?? 'Keyboard'} · Battery ${snap.power.percent}%`
+          ? `${app.deviceLabel || snap.info.catalogName || 'Keyboard'} · Battery ${snap.power.percent}%`
           : connected
-            ? 'Connected'
+            ? app.deviceLabel || 'Connected'
             : '',
       ),
     );

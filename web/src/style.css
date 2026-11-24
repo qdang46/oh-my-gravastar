@@ -1658,3 +1658,150 @@ input[type='color'] {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* Lighting apply: partial-failure summary line (SAFETY-SPEC R4). */
+.step-line.warn {
+  color: var(--warn);
+}
+
+/* ── Macro Studio (bead uol): timeline, validator, search, usage ────── */
+
+.macro-usage {
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.macro-usage-line {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.macro-search {
+  min-width: 220px;
+}
+
+/* Timeline: flex track, each block's flex-grow = step delay (ms). */
+.macro-timeline {
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.macro-tl-legend {
+  display: flex;
+  gap: var(--space-4);
+  margin-bottom: var(--space-1);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.macro-tl-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.macro-tl-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.macro-tl-swatch.down { background: var(--accent); }
+.macro-tl-swatch.up { background: var(--surface-3); }
+.macro-tl-swatch.mouse { background: #6ea8ff; }
+
+.macro-tl-track {
+  display: flex;
+  gap: 2px;
+  min-height: 30px;
+  padding: var(--space-1);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.macro-tl-block {
+  flex: 1 1 0;
+  min-width: 26px;
+  height: 28px;
+  padding: 0 var(--space-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--on-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.macro-tl-block.down {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.macro-tl-block.up {
+  background: var(--surface-3);
+  color: var(--fg);
+}
+
+.macro-tl-block.mouse {
+  background: #6ea8ff;
+  color: #0b1a33;
+}
+
+.macro-tl-block.selected {
+  border-color: var(--fg);
+  box-shadow: var(--focus-ring);
+}
+
+.macro-tl-block:hover {
+  filter: brightness(1.15);
+}
+
+/* Validator panel. */
+.macro-issues {
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.macro-issues-ok {
+  color: var(--success);
+}
+
+.macro-issue-list {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+  font-size: 13px;
+}
+
+.macro-issue {
+  margin: var(--space-1) 0;
+}
+
+.macro-issue.warn { color: var(--warn); }
+.macro-issue.error { color: var(--error); }
+
+.macro-issue.clickable {
+  cursor: pointer;
+}
+
+.macro-issue.clickable:hover {
+  text-decoration: underline;
+}
+
+/* Step list row states (search filter + timeline selection). */
+.macro-steps-table tr.step-selected td {
+  background: rgba(198, 245, 78, 0.14);
+}
+
+.macro-steps-table tr.step-match td {
+  background: rgba(198, 245, 78, 0.07);
+}
+
+.macro-steps-table tr.step-dim td {
+  opacity: 0.35;
+}
+
+.macro-steps-table tbody tr {
+  cursor: pointer;
+}

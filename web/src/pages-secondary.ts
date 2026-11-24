@@ -27,6 +27,20 @@
 import { app, refresh, setStatus, subscribe, type DeviceSnapshot } from './state.ts';
 import { profileWithSleepSeconds } from './proto/khub916.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS } from './k1pro-layout.ts';
+import { CUSTOM_LIGHT_SLOTS, LIGHT_DATA_MAX } from './proto/light.ts';
+import { MACRO_REGION_BYTES } from './proto/macro916.ts';
+import { confirmDialog } from './modal.ts';
+import { canApplyProfile } from './core/index.ts';
+import {
+  SnapshotStore,
+  hexToBytes,
+  runTransaction,
+  snapshotBeforeWrite,
+  validateKeymapSection,
+  validateProfileJson,
+  type OpType,
+  type PlannedOp,
+} from './safety/index.ts';
 
 // ── DOM helpers (mirror pages.ts) ──────────────────────────────────────
 
@@ -70,12 +84,12 @@ function bytesToHex(b: Uint8Array): string {
   return s;
 }
 
-function hexToBytes(hex: string): Uint8Array | null {
-  const h = hex.trim();
-  if (h.length === 0 || h.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(h)) return null;
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
+function isRec(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function msg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 /**
@@ -192,12 +206,22 @@ export async function buildProfileExport(): Promise<Record<string, unknown>> {
 
 // ── Config import (schema-v1 → device writes) ──────────────────────────
 
+/** Result of one applied import section (for the journal/report). */
+interface SectionOutcome {
+  /** Human-readable result line, e.g. `saved (set 1 ✓, set 2)`. */
+  text: string;
+  /** False when the write was sent but read-back did not confirm it. */
+  verified: boolean;
+}
+
 interface ImportSection {
   name: string;
   /** Human-readable summary shown in the preview. */
   summary: string;
-  /** Apply this section; returns a result line. */
-  apply: () => Promise<string>;
+  /** Policy op type for the transaction journal (safety/policy.ts). */
+  opType: OpType;
+  /** Apply this section; returns a result line + verify flag. */
+  apply: () => Promise<SectionOutcome>;
 }
 
 export interface ParsedImport {
@@ -205,9 +229,17 @@ export interface ParsedImport {
   model: string;
   sections: ImportSection[];
   skipped: string[];
+  /**
+   * Compatibility problems that forbid the import (e.g. the backup was
+   * made for a different protocol). When non-empty no apply UI is shown.
+   */
+  compatErrors: string[];
+  /**
+   * Compatibility warnings the user may override after an explicit
+   * confirm (e.g. the backup targets a different keyboard model).
+   */
+  compatWarnings: string[];
 }
-
-const HEX_U32 = /^0x[0-9a-fA-F]{8}$/;
 
 // ── Write-path capability detection ────────────────────────────────────
 //
@@ -277,88 +309,110 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
   const sections: ImportSection[] = [];
   const skipped: string[] = [];
 
+  // ── Compatibility gate (core/compatibility.ts — SAFETY-SPEC R1) ──
+  //
+  // Protocol mismatch blocks the import outright; a model mismatch is a
+  // warning the user may override with an explicit confirm at apply time.
+  // The connected side is described as a DeviceLike: HID ids from the
+  // picker plus the cmd-130 identity (uuid/catalog) from the snapshot.
+  const devLike = {
+    vendorId: c.device.vendorId,
+    productId: c.device.productId,
+    productName: c.device.productName ?? null,
+    usagePage: c.collection.usagePage,
+    usage: c.collection.usage,
+    uuid: snap.info.uuid,
+    catalogModel: snap.info.catalogModel,
+    catalogName: snap.info.catalogName,
+    screenSize: snap.info.screenSize,
+  };
+  const fileModel =
+    typeof dev.model === 'string' && dev.model !== 'unknown' ? dev.model : undefined;
+  const devInfo = isRec(state.device_info) ? state.device_info : undefined;
+  const fileCatalog =
+    devInfo && typeof devInfo.catalog_model === 'string' ? devInfo.catalog_model : undefined;
+  const compatErrors = canApplyProfile(devLike, { protocol: 'khub916' }).reasons;
+  const compatWarnings = canApplyProfile(devLike, {
+    ...(fileModel ? { model: fileModel } : {}),
+    ...(fileCatalog ? { catalogModel: fileCatalog } : {}),
+  }).reasons;
+
   // ── Keymap (cmd 3 writes, args 0–7 = layer | system<<2) ──
+  // Values are validated by safety/validation.ts::validateKeymapSection:
+  // u32 bounds ("0x........" hex or int 0..4294967295), ≤128 entries per
+  // set, args 0–7 only — the whole section is skipped on any problem.
   const km = state.keymap;
-  if (km && typeof km === 'object' && !Array.isArray(km)) {
-    const jobs: { arg: number; values: number[] }[] = [];
-    for (const [argStr, raw] of Object.entries(km as Record<string, unknown>)) {
-      const arg = Number(argStr);
-      if (!Number.isInteger(arg) || arg < 0 || arg > 7) continue;
-      if (!Array.isArray(raw)) {
-        skipped.push(`key assignments (set ${argStr}): unreadable data`);
-        continue;
-      }
-      const values: number[] = [];
-      let bad = false;
-      for (const v of raw) {
-        if (typeof v === 'string' && HEX_U32.test(v)) {
-          values.push(parseInt(v.slice(2), 16) >>> 0);
-        } else if (typeof v === 'number' && Number.isInteger(v)) {
-          values.push(v >>> 0);
+  if (km !== undefined && km !== null) {
+    const checked = validateKeymapSection(km);
+    if (!checked.ok || !checked.values) {
+      skipped.push(`key assignments: ${checked.errors[0] ?? 'unreadable data'}`);
+    } else {
+      const jobs = Object.keys(checked.values)
+        .map((k) => Number(k))
+        .sort((a, b) => a - b)
+        .map((arg) => ({ arg, values: checked.values![arg] ?? [] }));
+      if (jobs.length) {
+        if (!w.writeKeymap) {
+          skipped.push(`key assignments (${jobs.length} set(s)): ${PENDING}`);
         } else {
-          bad = true;
-          break;
+          const writeKeymap = w.writeKeymap.bind(c.session);
+          sections.push({
+            name: 'Key assignments',
+            summary: `${jobs.length} key set(s)`,
+            opType: 'keymap_write',
+            apply: async () => {
+              const done: string[] = [];
+              let verified = true;
+              for (const j of jobs) {
+                const out = await writeKeymap(j.arg & 3, (j.arg >> 2) & 1, j.values);
+                verified = verified && out.verified;
+                done.push(`set ${(j.arg & 3) + 1}${out.verified ? ' ✓' : ''}`);
+              }
+              return { text: `saved (${done.join(', ')})`, verified };
+            },
+          });
         }
-      }
-      if (bad || values.length === 0) {
-        skipped.push(`key assignments (set ${argStr}): unreadable values`);
-        continue;
-      }
-      jobs.push({ arg, values });
-    }
-    if (jobs.length) {
-      if (!w.writeKeymap) {
-        skipped.push(`key assignments (${jobs.length} set(s)): ${PENDING}`);
-      } else {
-        const writeKeymap = w.writeKeymap.bind(c.session);
-        sections.push({
-          name: 'Key assignments',
-          summary: `${jobs.length} key set(s)`,
-          apply: async () => {
-            const done: string[] = [];
-            for (const j of jobs) {
-              const out = await writeKeymap(j.arg & 3, (j.arg >> 2) & 1, j.values);
-              done.push(`set ${(j.arg & 3) + 1}${out.verified ? ' ✓' : ''}`);
-            }
-            return `saved (${done.join(', ')})`;
-          },
-        });
       }
     }
   }
 
   // ── Custom light colours (cmd 6, needs all 126 slots) ──
+  // Same bounds as validateProfileJson: index must be a unique int in
+  // 0..125, r/g/b ints 0..255, at most CUSTOM_LIGHT_SLOTS entries.
   const lc = state.light_colors;
   if (Array.isArray(lc) && lc.length > 0) {
     const byIndex = new Map<number, { r: number; g: number; b: number }>();
-    let bad = false;
-    for (const e of lc) {
-      const o = e as Record<string, unknown>;
-      const i = o.index;
-      const r = o.r;
-      const g = o.g;
-      const b = o.b;
-      if (
-        typeof i !== 'number' ||
-        typeof r !== 'number' ||
-        typeof g !== 'number' ||
-        typeof b !== 'number' ||
-        r < 0 ||
-        r > 255 ||
-        g < 0 ||
-        g > 255 ||
-        b < 0 ||
-        b > 255
-      ) {
-        bad = true;
-        break;
+    let bad = lc.length > CUSTOM_LIGHT_SLOTS;
+    if (!bad) {
+      for (const e of lc) {
+        const o = isRec(e) ? e : {};
+        const i = o.index;
+        const r = o.r;
+        const g = o.g;
+        const b = o.b;
+        const idxOk =
+          Number.isInteger(i) &&
+          (i as number) >= 0 &&
+          (i as number) < CUSTOM_LIGHT_SLOTS &&
+          !byIndex.has(i as number);
+        const rgbOk = [r, g, b].every(
+          (v) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 255,
+        );
+        if (!idxOk || !rgbOk) {
+          bad = true;
+          break;
+        }
+        byIndex.set(i as number, {
+          r: (r as number) & 0xff,
+          g: (g as number) & 0xff,
+          b: (b as number) & 0xff,
+        });
       }
-      byIndex.set(i, { r: r & 0xff, g: g & 0xff, b: b & 0xff });
     }
     // Fill gaps from the live snapshot so the 126-slot payload stays sane.
     const colors: { r: number; g: number; b: number }[] = [];
     let complete = !bad;
-    for (let i = 0; i < 126; i++) {
+    for (let i = 0; i < CUSTOM_LIGHT_SLOTS; i++) {
       const col = byIndex.get(i) ?? snap.colors[i];
       if (!col) {
         complete = false;
@@ -374,9 +428,13 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
         sections.push({
           name: 'Per-key colours',
           summary: `${byIndex.size} key colour(s) from the file`,
+          opType: 'light_write',
           apply: async () => {
             const out = await writeColors(colors);
-            return `saved${out.verified ? ' and checked' : ''}`;
+            return {
+              text: `saved${out.verified ? ' and checked' : ''}`,
+              verified: out.verified,
+            };
           },
         });
       }
@@ -390,16 +448,24 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
   if (typeof ld === 'string' && ld.length > 0) {
     const bytes = hexToBytes(ld);
     if (bytes && bytes.length > 0) {
-      if (!w.writeLightData) {
+      if (bytes.length > LIGHT_DATA_MAX) {
+        skipped.push(
+          `lighting effects: ${bytes.length} bytes in the file — the wire blob holds at most ${LIGHT_DATA_MAX}`,
+        );
+      } else if (!w.writeLightData) {
         skipped.push(`lighting effects (${bytes.length} bytes of data): ${PENDING}`);
       } else {
         const writeLightData = w.writeLightData.bind(c.session);
         sections.push({
           name: 'Lighting effects',
           summary: `${bytes.length} bytes of effect data`,
+          opType: 'light_write',
           apply: async () => {
             const out = await writeLightData(bytes);
-            return `saved${out.verified ? ' and checked' : ''}`;
+            return {
+              text: `saved${out.verified ? ' and checked' : ''}`,
+              verified: out.verified,
+            };
           },
         });
       }
@@ -412,7 +478,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
   const mx = state.macro_hex;
   if (typeof mx === 'string' && mx.length > 0) {
     const bytes = hexToBytes(mx);
-    if (bytes && bytes.length > 0 && bytes.length <= 512) {
+    if (bytes && bytes.length > 0 && bytes.length <= MACRO_REGION_BYTES) {
       if (!w.writeMacroRegion) {
         skipped.push(`macros (${bytes.length} bytes of data): ${PENDING}`);
       } else {
@@ -420,20 +486,23 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
         sections.push({
           name: 'Macros',
           summary: `${bytes.length} bytes of macro data`,
+          opType: 'macro_write',
           apply: async () => {
             const out = await writeMacro(bytes);
-            return `saved${out.verified ? ' and checked' : ''}`;
+            return {
+              text: `saved${out.verified ? ' and checked' : ''}`,
+              verified: out.verified,
+            };
           },
         });
       }
     } else {
-      skipped.push('macros: unreadable data in the file');
+      skipped.push('macros: unreadable or oversized data in the file');
     }
   }
 
   // ── Profile blob: export-only, same as `omg profile import` ──
   if (state.profile && typeof state.profile === 'object') {
-    const p = state.profile as Record<string, unknown>;
     skipped.push(
       'sleep time and lighting mode: not applied by import — change those ' +
         'on the Sleep timer and Lighting pages instead',
@@ -445,6 +514,8 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     model: String(dev.model ?? 'unknown'),
     sections,
     skipped,
+    compatErrors,
+    compatWarnings,
   };
 }
 
@@ -510,6 +581,11 @@ function renderBasic(root: HTMLElement): void {
 }
 
 // ── Page: Configuration management ─────────────────────────────────────
+
+/** Import files larger than this are rejected before parsing (SAFETY-SPEC R1). */
+const MAX_IMPORT_BYTES = 1024 * 1024;
+/** Cap on validation problems shown in the rejection modal. */
+const MAX_MODAL_DETAILS = 40;
 
 let importPreview: ParsedImport | null = null;
 let importConfirm = false;
@@ -597,18 +673,51 @@ function renderConfig(root: HTMLElement): void {
       renderConfig(root);
       return;
     }
+    // SAFETY-SPEC R1: reject oversized files before reading them —
+    // real backups are a few KB, anything near 1 MiB is not one.
+    if (f.size > MAX_IMPORT_BYTES) {
+      importLog = [
+        `That file is ${Math.ceil(f.size / 1024)} KB — the import limit is ` +
+          `${MAX_IMPORT_BYTES / 1024} KB and real backups are only a few KB. Nothing was imported.`,
+      ];
+      renderConfig(root);
+      return;
+    }
     void f.text().then(
       (text) => {
+        // SAFETY-SPEC R1: full schema-v1 validation before anything is
+        // parsed into write sections; every problem is listed and the
+        // import aborts.
+        const v = validateProfileJson(text);
+        if (!v.ok) {
+          importPreview = null;
+          importLog = [
+            `Backup file rejected — ${v.errors.length} problem(s); nothing was imported.`,
+          ];
+          const details = v.errors.slice(0, MAX_MODAL_DETAILS);
+          if (v.errors.length > details.length) {
+            details.push(`…and ${v.errors.length - details.length} more problem(s)`);
+          }
+          void confirmDialog({
+            title: 'Backup file rejected',
+            bodyText: 'The file failed validation, so nothing was imported.',
+            details,
+            confirmLabel: 'OK',
+            cancelLabel: 'Close',
+          });
+          renderConfig(root);
+          return;
+        }
         try {
           importPreview = parseProfileImport(text, f.name);
         } catch (e) {
           importPreview = null;
-          importLog = [`That file cannot be used: ${e instanceof Error ? e.message : String(e)}`];
+          importLog = [`That file cannot be used: ${msg(e)}`];
         }
         renderConfig(root);
       },
       (e) => {
-        importLog = [`Could not read that file: ${e instanceof Error ? e.message : String(e)}`];
+        importLog = [`Could not read that file: ${msg(e)}`];
         renderConfig(root);
       },
     );
@@ -624,7 +733,17 @@ function renderConfig(root: HTMLElement): void {
   if (importPreview) {
     const p = importPreview;
     im.body.append(el('p', 'hint', `File: ${p.fileName} — model "${p.model}"`));
-    if (p.sections.length === 0) {
+
+    // Compatibility problems (e.g. protocol mismatch) block the import:
+    // the section list is still shown for information, but no apply UI.
+    if (p.compatErrors.length) {
+      im.body.append(
+        el('p', 'hint warn', 'This backup cannot be applied to the connected keyboard:'),
+      );
+      const ul = el('ul', 'fact-list');
+      for (const r of p.compatErrors) ul.append(el('li', '', r));
+      im.body.append(ul);
+    } else if (p.sections.length === 0) {
       im.body.append(el('p', 'hint warn', 'No writable sections found in this file.'));
     } else {
       const ul = el('ul', 'fact-list');
@@ -643,21 +762,113 @@ function renderConfig(root: HTMLElement): void {
           renderConfig(root);
           return;
         }
-        const sections = p.sections;
-        importBusy = true;
-        importConfirm = false;
-        importLog = [];
-        renderConfig(root);
         void (async () => {
+          const c = app.connected;
+          const sections = p.sections;
+          if (!c) {
+            importBusy = false;
+            importConfirm = false;
+            importLog = ['The keyboard disconnected — nothing was written.'];
+            renderConfig(root);
+            return;
+          }
+          // Model-mismatch override: the backup targets a different
+          // keyboard model — require an explicit, informed confirm.
+          if (p.compatWarnings.length) {
+            const ok = await confirmDialog({
+              title: 'Backup targets a different keyboard model',
+              bodyText:
+                'This backup was made for a different keyboard model. ' +
+                'Applying it may produce unexpected results.',
+              details: p.compatWarnings,
+              confirmLabel: 'Apply anyway',
+              cancelLabel: 'Cancel',
+              danger: true,
+            });
+            if (!ok) {
+              importConfirm = false;
+              importLog = ['Import cancelled — the keyboard was not changed.'];
+              renderConfig(root);
+              return;
+            }
+          }
+          importBusy = true;
+          importConfirm = false;
+          importLog = [];
+          renderConfig(root);
           const results: string[] = [];
           try {
-            for (const s of sections) {
-              results.push(`${s.name}: ${await s.apply()}`);
+            // SAFETY-SPEC §5 / vision §4 layer 4: snapshot every writable
+            // section BEFORE the first write so the previous state can
+            // be restored. A snapshot failure aborts the import — never
+            // write without a restore point.
+            let backupNote = '';
+            try {
+              const snap = await snapshotBeforeWrite(
+                new SnapshotStore(),
+                c.session,
+                `profile-import ${p.fileName}`,
+              );
+              const missing = snap.errors ? Object.keys(snap.errors) : [];
+              backupNote = missing.length
+                ? ` Pre-write backup ${snap.id} is partial (no ${missing.join(', ')} captured).`
+                : ` Pre-write backup ${snap.id} saved.`;
+            } catch (e) {
+              results.push(
+                `ABORTED before any write — could not save a backup: ${msg(e)}. ` +
+                  'Nothing was sent to the keyboard.',
+              );
             }
-            results.push('All sections saved.');
-            await refresh();
+
+            if (backupNote) {
+              // Multi-section apply runs as a transaction (safety/
+              // transaction.ts): ops execute sequentially, policy classes
+              // are journaled, and the first failure stops the rest — the
+              // report below says exactly which parts landed.
+              const outcomes: (SectionOutcome | undefined)[] = sections.map(() => undefined);
+              const ops: PlannedOp[] = sections.map((s, i) => ({
+                type: s.opType,
+                section: s.name,
+                label: s.summary,
+                apply: async () => {
+                  const out = await s.apply();
+                  outcomes[i] = out;
+                  return { verified: out.verified };
+                },
+              }));
+              const tx = await runTransaction(ops, {
+                // The two-step button (plus the model-mismatch dialog when
+                // needed) is the human approval; every op is still journaled.
+                approve: () => true,
+              });
+              tx.journal.forEach((entry, i) => {
+                const s = sections[i];
+                const detail = outcomes[i]?.text;
+                if (entry.result === 'failed') {
+                  results.push(`${s.name}: FAILED — ${entry.error ?? 'unknown error'}`);
+                } else if (entry.result === 'unverified') {
+                  results.push(
+                    `${s.name}: ${detail ?? 'written'} — sent but NOT confirmed on the keyboard`,
+                  );
+                } else {
+                  results.push(`${s.name}: ${detail ?? 'done'}`);
+                }
+              });
+              if (tx.completed && tx.ok) {
+                results.push(`All sections saved.${backupNote}`);
+              } else {
+                const wrote = tx.counts.success + tx.counts.unverified;
+                results.push(
+                  `Stopped early — ${tx.counts.failed} part(s) failed; ${wrote} of ` +
+                    `${sections.length} part(s) reached the keyboard.${backupNote} ` +
+                    'The keyboard may be in a mixed state; the pre-write backup ' +
+                    'can restore the previous values.',
+                );
+              }
+              await refresh();
+            }
           } catch (e) {
-            results.push(`FAILED: ${e instanceof Error ? e.message : String(e)}`);
+            results.push(`FAILED: ${msg(e)}`);
           } finally {
             importBusy = false;
             importPreview = null;
@@ -668,8 +879,16 @@ function renderConfig(root: HTMLElement): void {
       });
       im.body.append(applyBtn);
       im.body.append(
-        el('p', 'hint warn', 'Only the parts listed above change — everything else stays the same. Each part is checked on the keyboard afterwards.'),
+        el('p', 'hint warn', 'Only the parts listed above change — everything else stays the same. A backup of the current state is saved before anything is written; each part is checked on the keyboard afterwards.'),
       );
+    }
+    if (p.compatWarnings.length) {
+      im.body.append(
+        el('p', 'hint warn', 'This backup targets a different keyboard model — applying it needs an extra confirmation:'),
+      );
+      const ul = el('ul', 'fact-list');
+      for (const r of p.compatWarnings) ul.append(el('li', '', r));
+      im.body.append(ul);
     }
     if (p.skipped.length) {
       const ul = el('ul', 'fact-list');

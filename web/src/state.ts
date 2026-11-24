@@ -60,6 +60,15 @@ export const app = {
    * previous lighting on stop (see music.ts).
    */
   musicActive: false,
+  /**
+   * True after a SILENT reconnect — auto-connect on page load or poison
+   * recovery inside `refresh()`. The session's writes are blocked until
+   * the user connects manually again, so nothing queued before the
+   * reconnect is ever applied without an explicit re-approval (R6).
+   */
+  reconnectedSilently: false,
+  /** "Product name — Model" label for the topbar/status (e.g. "Gaming Keyboard — K1 Pro"). */
+  deviceLabel: '',
 };
 
 type Listener = () => void;
@@ -106,6 +115,20 @@ export async function setLayer(layer: number): Promise<void> {
 
 // ── Connect / disconnect / refresh ─────────────────────────────────────
 
+/**
+ * Human-readable "Product — Model" for the connected device. The HID
+ * product name comes from the descriptor ("Gaming Keyboard"); the model
+ * comes from the cmd-130 catalog lookup once the snapshot is loaded.
+ */
+function labelFor(c: ConnectedKhub, snap: DeviceSnapshot | null): string {
+  const product =
+    c.device.productName?.trim() ||
+    c.device.manufacturerName?.trim() ||
+    'GravaStar keyboard';
+  const model = snap?.info.catalogName ?? snap?.info.catalogModel ?? null;
+  return model ? `${product} — ${model}` : product;
+}
+
 export async function connect(): Promise<void> {
   if (app.busy) return;
   app.busy = true;
@@ -119,10 +142,16 @@ export async function connect(): Promise<void> {
     }
     setStatus('Connecting…');
     app.connected = await openKhub916(device);
+    app.deviceLabel = labelFor(app.connected, null);
+    // A manual connect is the explicit re-approval that lifts the silent-
+    // reconnect write gate (R6); the fresh session starts unblocked.
+    app.reconnectedSilently = false;
     await refresh();
   } catch (e) {
     app.connected = null;
     app.snapshot = null;
+    app.deviceLabel = '';
+    app.reconnectedSilently = false;
     setStatus(`Could not connect: ${e instanceof Error ? e.message : String(e)}`, true);
   } finally {
     app.busy = false;
@@ -134,6 +163,8 @@ export async function disconnect(): Promise<void> {
   const c = app.connected;
   app.connected = null;
   app.snapshot = null;
+  app.deviceLabel = '';
+  app.reconnectedSilently = false;
   await c?.device.close().catch(() => {});
   setStatus('Disconnected.');
 }
@@ -167,11 +198,17 @@ export async function refresh(): Promise<void> {
       setStatus('Connection hiccup — reconnecting…');
       try {
         c = await reopenKhub916(c.device);
+        // This reopen happens without a user gesture: gate writes until
+        // the user re-approves (R6). Reads/refresh keep working.
+        c.session.writesBlocked = true;
+        app.reconnectedSilently = true;
         app.connected = c;
         app.snapshot = await loadSnapshot(c.session);
       } catch (e2) {
         app.connected = null;
         app.snapshot = null;
+        app.deviceLabel = '';
+        app.reconnectedSilently = false;
         const reason = c.session.poisonMessage || (e2 instanceof Error ? e2.message : String(e2));
         setStatus(`Lost the connection (${reason}) — please press Connect again.`, true);
         app.busy = false;
@@ -185,10 +222,14 @@ export async function refresh(): Promise<void> {
       return;
     }
   }
+  if (app.connected) {
+    app.deviceLabel = labelFor(app.connected, app.snapshot);
+  }
+  const label = app.deviceLabel || 'keyboard';
   setStatus(
-    app.snapshot.info.catalogName
-      ? `Ready — ${app.snapshot.info.catalogName} connected.`
-      : 'Ready — keyboard connected.',
+    app.reconnectedSilently
+      ? `Reconnected — ${label}. Nothing was changed; press Disconnect, then Connect, to make changes.`
+      : `Ready — ${label} connected.`,
   );
   // Warm the current layer so the visualizer has labels immediately.
   await ensureKeymap(app.layer).catch(() => {});
@@ -213,12 +254,18 @@ export async function autoConnect(): Promise<void> {
     for (const device of candidates) {
       try {
         app.connected = await openKhub916(device);
+        app.deviceLabel = labelFor(app.connected, null);
+        // Silent reconnect: gate all writes until the user explicitly
+        // re-approves (Disconnect → Connect). Reads/refresh still work.
+        app.connected.session.writesBlocked = true;
+        app.reconnectedSilently = true;
         await refresh();
         return;
       } catch {
         // try the next remembered device
       }
     }
+    app.reconnectedSilently = false;
     setStatus('Could not find the keyboard — press Connect to pick it.');
   } finally {
     app.busy = false;

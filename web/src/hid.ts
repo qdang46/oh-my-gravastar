@@ -160,6 +160,15 @@ const WRITE_SETTLE_MS = 150;
 export class Khub916Session {
   private poisoned = false;
   private poisonReason = '';
+  /**
+   * When true, every write path (`configWrite`, `writeGifFrame`) rejects
+   * before any bytes are sent. Set by the app after a SILENT reconnect —
+   * auto-connect on page load or poison recovery in `refresh()` — so
+   * nothing queued before the reconnect can be applied until the user
+   * re-approves by connecting manually (SAFETY-SPEC R6). Reads are
+   * unaffected.
+   */
+  writesBlocked = false;
 
   constructor(
     private readonly device: HIDDevice,
@@ -287,6 +296,11 @@ export class Khub916Session {
    * echo-checked `transact`. A transport error poisons the session.
    */
   private async configWrite(pkt: Uint8Array): Promise<void> {
+    if (this.writesBlocked) {
+      throw new Error(
+        'changes are paused after an automatic reconnect — press Disconnect, then Connect, to re-approve this device',
+      );
+    }
     if (this.poisoned) {
       throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);
     }
@@ -437,6 +451,11 @@ export class Khub916Session {
   async writeGifFrame(frame: Uint8Array): Promise<void> {
     if (frame.length > GIF_FRAME_BYTES) {
       throw new Error(`gif frame needs ≤ ${GIF_FRAME_BYTES} bytes, got ${frame.length}`);
+    }
+    if (this.writesBlocked) {
+      throw new Error(
+        'changes are paused after an automatic reconnect — press Disconnect, then Connect, to re-approve this device',
+      );
     }
     if (this.poisoned) {
       throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);

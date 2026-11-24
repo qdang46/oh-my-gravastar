@@ -15,6 +15,12 @@
  * `Khub916Session`. A confirm dialog shows the exact JSON first — the
  * web equivalent of the CLI's `--yes` gate.
  *
+ * SAFETY-SPEC §4/R4: before the first write byte a restore point is
+ * captured (`snapshotBeforeWrite`), the writes run in order and STOP on
+ * the first failure (remaining steps are logged as skipped, never
+ * attempted), and a partial apply is reported as such — never as full
+ * success.
+ *
  * The view instance survives state emits (subscribe re-renders call
  * `syncLive`, which only refreshes readouts and re-seeds drafts while
  * they are pristine).
@@ -46,6 +52,12 @@ import {
 } from './proto/light.ts';
 import type { LightColor } from './proto/khub916.ts';
 import { confirmDialog } from './modal.ts';
+import {
+  SnapshotStore,
+  snapshotBeforeWrite,
+  snapshotBytes,
+  type DeviceSnapshot,
+} from './safety/index.ts';
 
 // ── DOM helpers (same style as pages.ts) ───────────────────────────────
 
@@ -953,13 +965,50 @@ class LightingView {
       this.stepLog.append(el('div', `step-line ${cls}`, text));
     };
     try {
+      // SAFETY-SPEC §4 step 1 / §5 R4: capture a restore point BEFORE the
+      // first write byte so a partial apply can be rolled back from the
+      // Backup & restore page. The capture reads every writable section
+      // sequentially; when it succeeds we reuse its lighting/profile
+      // payloads as the fresh reads below (the profile is captured
+      // last, so it is the newest data). A failed/partial snapshot never
+      // blocks an approved write — it is logged and we fall back to
+      // direct reads.
+      log('Saving a restore point…');
+      let snap: DeviceSnapshot | null = null;
+      try {
+        snap = await snapshotBeforeWrite(new SnapshotStore(), c.session, 'Lighting apply');
+        log(
+          snap.errors
+            ? 'Restore point saved (partial — some device reads failed)'
+            : 'Restore point saved',
+          'dim',
+        );
+      } catch (e) {
+        log(`Restore point could not be saved: ${msg(e)} — continuing without one`, 'dim');
+      }
+
       // Fresh reads — SEQUENTIAL: concurrent feature reports poison the
       // session on this firmware (same rule as state.loadSnapshot).
       log('Reading current device state…');
-      const profile = await c.session.profile();
-      const lightData = await c.session.lightColorData();
-      const customNow = await c.session.customLightColors();
-      const st = decodeLightState(profile.raw);
+      const snapProfile = snap ? snapshotBytes(snap.sections.profile) : null;
+      const snapLightData =
+        snap?.sections.lighting?.lightData !== undefined
+          ? snapshotBytes(snap.sections.lighting.lightData)
+          : null;
+      const snapColors = snap?.sections.lighting?.colors;
+      let profileRaw: Uint8Array;
+      let lightData: Uint8Array;
+      let customNow: readonly Rgb[];
+      if (snapProfile && snapLightData && snapColors && snapColors.length === CUSTOM_LIGHT_SLOTS) {
+        profileRaw = snapProfile;
+        lightData = snapLightData;
+        customNow = snapColors;
+      } else {
+        profileRaw = (await c.session.profile()).raw;
+        lightData = await c.session.lightColorData();
+        customNow = await c.session.customLightColors();
+      }
+      const st = decodeLightState(profileRaw);
       if (!st) throw new Error('profile too short to decode light state');
 
       const info = this.modeInfo();
@@ -969,7 +1018,7 @@ class LightingView {
       if (speed > 20 || brightness > 20) throw new Error('speed/brightness must be ≤ 20');
 
       // Profile blob — built BEFORE any write so a bad mode fails early.
-      const profileBlob = withLightMode(profile.raw, this.mode, speed, brightness, colorModel);
+      const profileBlob = withLightMode(profileRaw, this.mode, speed, brightness, colorModel);
 
       // Group colour (cmd 10): monochrome single-colour modes only.
       let newLightBlob: Uint8Array | null = null;
@@ -992,46 +1041,59 @@ class LightingView {
         this.customColors.length === CUSTOM_LIGHT_SLOTS &&
         !colorsEqual(this.customColors, currentRgb);
 
+      // Write steps run in order and STOP on the first failure
+      // (SAFETY-SPEC §4 step 4 / §5 R4): remaining steps are logged as
+      // skipped and never attempted — a partially-applied lighting
+      // state is real device state and must be reported honestly.
+      const steps = [
+        {
+          name: 'Key colours',
+          needed: customChanged,
+          skipNote: 'skipped (unchanged)',
+          run: () => c.session.writeCustomLightColors(this.customColors),
+        },
+        {
+          name: 'Effect',
+          needed: !bytesEq(profileBlob, profileRaw),
+          skipNote: 'skipped (unchanged)',
+          run: () => c.session.writeProfile(profileBlob),
+        },
+        {
+          name: 'Effect colour',
+          needed: newLightBlob !== null,
+          skipNote: 'skipped',
+          run: () => c.session.writeLightData(newLightBlob as Uint8Array),
+        },
+      ];
       let failed = false;
-      // 1. Per-key colours.
-      if (customChanged) {
+      for (const s of steps) {
+        if (!s.needed) {
+          log(`${s.name}: ${s.skipNote}`, 'dim');
+          continue;
+        }
+        if (failed) {
+          log(`${s.name}: skipped — stopped after an earlier failure`, 'dim');
+          continue;
+        }
         try {
-          await c.session.writeCustomLightColors(this.customColors);
-          log('Key colours: saved and checked', 'ok');
+          await s.run();
+          log(`${s.name}: saved and checked`, 'ok');
         } catch (e) {
           failed = true;
-          log(`Key colours: FAILED — ${msg(e)}`, 'err');
+          log(`${s.name}: FAILED — ${msg(e)}`, 'err');
         }
-      } else {
-        log('Key colours: skipped (unchanged)', 'dim');
-      }
-      // 2. Effect settings (mode, speed, brightness).
-      if (bytesEq(profileBlob, profile.raw)) {
-        log('Effect: skipped (unchanged)', 'dim');
-      } else {
-        try {
-          await c.session.writeProfile(profileBlob);
-          log('Effect: saved and checked', 'ok');
-        } catch (e) {
-          failed = true;
-          log(`Effect: FAILED — ${msg(e)}`, 'err');
-        }
-      }
-      // 3. Accent colour for single-colour effects.
-      if (newLightBlob) {
-        try {
-          await c.session.writeLightData(newLightBlob);
-          log('Effect colour: saved and checked', 'ok');
-        } catch (e) {
-          failed = true;
-          log(`Effect colour: FAILED — ${msg(e)}`, 'err');
-        }
-      } else {
-        log('Effect colour: skipped', 'dim');
       }
 
       if (failed) {
-        setStatus('Some lighting changes failed — see the steps above.', true);
+        log(
+          'Stopped — the remaining steps were not sent. The keyboard may be in a mixed old/new state.',
+          'warn',
+        );
+        setStatus(
+          'Lighting only partially saved — the keyboard may be in a mixed state. ' +
+            'Re-apply to finish the remaining steps, or restore the earlier state from Backup & restore.',
+          true,
+        );
       } else {
         setStatus('Lighting saved to the keyboard.');
         this.dirty = false;
