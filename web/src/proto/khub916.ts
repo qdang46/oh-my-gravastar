@@ -323,6 +323,7 @@ const FIXED_LABELS: Record<number, string> = {
   0x28: 'Enter',
   0x29: 'Esc',
   0x2a: 'Backspace',
+  0x2b: 'Tab',
   0x39: 'Caps',
   0x46: 'PrtSc',
   0x47: 'ScrLk',
