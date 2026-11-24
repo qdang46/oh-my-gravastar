@@ -2,13 +2,14 @@
  * Page renderers for the khub916 configurator shell.
  *
  * Route map mirrors the vendor 1khub menu order subset we ship:
- *   home · lighting · keys · macro · advanced · device
+ *   dashboard · lighting · keys · macro · advanced · device
  * (vendor: lightingEffect, basicChangeKeyCode, macroConfiguration,
  *  advancedKey, basicFunctions, deviceOverview, … — see
  *  docs/web-ui-plan.md §2).
  */
 
 import { app, subscribe, type KeyEntry } from './state.ts';
+import { renderDashboard } from './dashboard.ts';
 import { renderLightingPage, destroyLightingPage } from './lighting.ts';
 import { MacroPage } from './macro.ts';
 import { AdvPage } from './advkeys.ts';
@@ -18,6 +19,7 @@ import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-se
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
+  | 'dashboard'
   | 'lighting'
   | 'keys'
   | 'macro'
@@ -35,6 +37,7 @@ export type PageId =
  * slim sidebar subset; secondary pages are reached from the Device page.
  */
 export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
+  { id: 'dashboard', path: '/dashboard', title: 'Dashboard' },
   { id: 'lighting', path: '/lighting', title: 'Lighting' },
   { id: 'keys', path: '/keys', title: 'Keys' },
   { id: 'macro', path: '/macro', title: 'Macro' },
@@ -48,6 +51,7 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
 
 /** Sidebar shows at most these five — plain labels, no jargon. */
 export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] = [
+  { id: 'dashboard', path: '/dashboard', title: 'Dashboard' },
   { id: 'lighting', path: '/lighting', title: 'Lighting' },
   { id: 'keys', path: '/keys', title: 'Keys' },
   { id: 'macro', path: '/macro', title: 'Macro' },
@@ -66,9 +70,9 @@ export function navIdFor(page: PageId): PageId {
 
 export function pageFromHash(hash: string): PageId {
   const p = hash.replace(/^#\/?/, '');
-  // The old `#/home` route (and anything unknown) lands on Lighting —
-  // the keyboard visualizer IS the home screen now.
-  return (PAGES.find((pg) => pg.path === `/${p}`)?.id ?? 'lighting') as PageId;
+  // The Dashboard is the landing page: empty, `#/home` and unknown
+  // hashes all land there.
+  return (PAGES.find((pg) => pg.path === `/${p}`)?.id ?? 'dashboard') as PageId;
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────────
@@ -279,6 +283,7 @@ function renderMusic(root: HTMLElement): void {
 // ── Router ─────────────────────────────────────────────────────────────
 
 const renderers: Record<PageId, (root: HTMLElement) => void> = {
+  dashboard: renderDashboard,
   lighting: renderLighting,
   keys: renderKeys,
   macro: renderMacro,
@@ -328,10 +333,10 @@ function updateNav(): void {
 
 function route(): void {
   const page = pageFromHash(location.hash);
-  // Canonical URL: the keyboard visualizer is the home screen, so empty,
-  // `#/home` and unknown hashes all land on `#/lighting`.
-  if (page === 'lighting' && location.hash !== '#/lighting') {
-    history.replaceState(null, '', '#/lighting');
+  // Canonical URL: the Dashboard is the home screen, so empty, `#/home`
+  // and unknown hashes all land on `#/dashboard`.
+  if (!PAGES.some((pg) => location.hash === `#${pg.path}`)) {
+    history.replaceState(null, '', '#/dashboard');
   }
   currentPage = page;
   // The macro/advanced views are stateful — tear them down when
