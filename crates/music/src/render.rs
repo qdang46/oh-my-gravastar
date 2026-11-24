@@ -282,10 +282,15 @@ struct Impact {
 /// ends up lit — the "all keys on" failure mode.
 fn impact_ttl(kind: BeatKind) -> u32 {
     match kind {
-        BeatKind::Kick => 20,
-        BeatKind::Snare => 18,
-        BeatKind::HiHat => 5,
-        BeatKind::Generic => 14,
+        // At 10 fps each frame ages impacts ~3 units, so a 20-unit TTL
+        // keeps a kick ring alive ~0.67 s — longer than a 140 BPM beat
+        // interval (0.43 s), so rings stack and the board never goes
+        // dark. 12 units ≈ 0.4 s: the ring dies just before the next
+        // kick arrives.
+        BeatKind::Kick => 12,
+        BeatKind::Snare => 10,
+        BeatKind::HiHat => 4,
+        BeatKind::Generic => 9,
     }
 }
 
@@ -311,7 +316,7 @@ impl BeatViz {
         // Keep the ambient spectrum very dim — the point of this
         // visualiser is that onsets/impacts are the bright signal.
         let ambient = FrameParams {
-            brightness: params.brightness * 0.025,
+            brightness: params.brightness * 0.012,
             ..params
         };
         Self {
@@ -423,7 +428,7 @@ impl BeatViz {
                         // Bright core at the impact point on the first
                         // ~0.2 s — the ring alone leaves the centre dark.
                         let core = (-d / 0.10).exp() * (-age * dcy / 6.0).exp();
-                        let env = (-age * dcy / 9.0).exp();
+                        let env = (-age * dcy / 6.0).exp();
                         // Rings dim as they spread (Hypercolor age_fade).
                         let spread_fade = (1.0 - radius * 0.7).clamp(0.0, 1.0);
                         let i = (s * (ring * spread_fade + core * 0.8) * env).min(1.0);
@@ -470,14 +475,14 @@ impl BeatViz {
                 // beat" layer. phase_x ∈ [0,1) per key.
                 let phase_x = (bands.beat_phase - x * 0.15).rem_euclid(1.0);
                 let crest = (-((phase_x - 0.2) / 0.13).powi(2)).exp();
-                let bounce = crest * gate * 0.20 * self.params.brightness * bi;
+                let bounce = crest * gate * 0.10 * self.params.brightness * bi;
                 add[0] += bounce;
                 add[1] += bounce * 0.72;
                 add[2] += bounce * 0.40;
             }
             // Bass wash: continuous warm presence so the whole field
             // breathes with the low end between onset impacts.
-            let wash = bands.bass * bands.agc.min(2.0) * 0.015 * self.params.brightness;
+            let wash = bands.bass * bands.agc.min(2.0) * 0.003 * self.params.brightness;
             add[0] += wash;
             add[1] += wash * 0.55;
             add[2] += wash * 0.25;
@@ -488,11 +493,15 @@ impl BeatViz {
             // after each beat (spec: "bass kicks = visible bursts").
             // Additive, not multiplicative — the ambient base is near
             // black between beats so a multiplier would do nothing.
-            let punch = bands.beat_pulse * 0.10 * bi * gate;
+            let punch = bands.beat_pulse * 0.08 * bi * gate;
             let punch_rgb = [punch, punch * 0.78, punch * 0.45];
             for c in 0..3 {
                 let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate;
                 let v = (base_v + add[c] + punch_rgb[c]).clamp(0.0, 1.0);
+                // Output gamma: dim residue (dying rings, wash, ambient)
+                // collapses toward black while beat peaks stay bright —
+                // the "keys off between beats" read the vendor video has.
+                let v = v.powf(1.5);
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
             }
         }
