@@ -321,12 +321,23 @@ pub fn cmd(
         if deadline.is_some_and(|d| Instant::now() >= d) {
             break;
         }
-        // Drain whatever the callback queued; analyse when a window is full.
+        // Drain whatever the callback queued; analyse every completed
+        // hop (analysis runs ahead of the LED frame rate). Events from
+        // all hops in this drain merge into the latest Bands so no
+        // transient is dropped between rendered frames.
         let samples = audio.drain();
-        if let Some(b) = analyzer.process(&samples) {
+        let analysed = analyzer.process(&samples);
+        analyses += analysed.len() as u64;
+        let mut events = Vec::new();
+        let mut latest = None;
+        for mut b in analysed {
+            events.append(&mut b.events);
+            latest = Some(b);
+        }
+        if let Some(mut b) = latest {
+            beats += events.len() as u64;
+            b.events = events;
             bands = b;
-            analyses += 1;
-            beats += bands.events.len() as u64;
         }
         let frame = viz.frame(&bands, started.elapsed().as_secs_f32());
         if let Err(e) = kb.write_gif_frame(&frame) {

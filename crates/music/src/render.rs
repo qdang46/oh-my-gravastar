@@ -389,6 +389,19 @@ impl BeatViz {
                 add[1] += g;
                 add[2] += b;
             }
+            // Tempo-locked bounce: once the tracker locks a BPM, a warm
+            // crest travels left→right once per beat interval — the
+            // "keys bounce on the beat" layer under the onset impacts.
+            // Per-key x-delay makes the crest sweep the board; gated by
+            // level so silence stays dark.
+            if bands.bpm > 1.0 {
+                let phase_x = (bands.beat_phase - x * 0.15).rem_euclid(1.0);
+                let env = (1.0 - phase_x) * (1.0 - phase_x);
+                let bounce = env * gate * 0.35 * self.params.brightness;
+                add[0] += bounce;
+                add[1] += bounce * 0.72;
+                add[2] += bounce * 0.40;
+            }
             // Bass wash: continuous warm presence so the whole field
             // breathes with the low end between onset impacts.
             let wash = bands.bass * bands.agc.min(2.0) * 0.20 * self.params.brightness;

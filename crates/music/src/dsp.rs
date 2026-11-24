@@ -17,27 +17,44 @@ const TREBLE_MAX_HZ: f32 = 20_000.0;
 /// Magnitude floor/ceiling for dB normalisation (roughly -80…0 dBFS).
 const FLOOR_DB: f32 = -80.0;
 const CEIL_DB: f32 = -20.0;
-/// EMA smoothing factor per analysed frame (~30 fps → ~80 ms time constant
-/// at alpha 0.35).
+/// EMA smoothing factor per analysed frame.
 const SMOOTH_ALPHA: f32 = 0.35;
-/// Beat: bass energy must exceed its trailing average by this ratio…
-const BEAT_RATIO: f32 = 1.35;
-/// …with at least this much absolute energy, and not more often than
-/// every `BEAT_COOLDOWN` analyses.
-const BEAT_MIN_ENERGY: f32 = 0.02;
-const BEAT_COOLDOWN: usize = 8;
-/// Onset detection: spectral flux must exceed the trailing mean by this
-/// factor, with at least `ONSET_MIN_FLUX` absolute flux, and events are
-/// refractory for `EVENT_REFRACTORY` analyses (~130 ms @ 23 analyses/s).
-const ONSET_FLUX_RATIO: f32 = 2.0;
+/// Analysis hop = half the FFT window (~21 ms @ 48 kHz/2048) — transients
+/// shorter than the window are still captured because analysis runs on
+/// audio arrival, not on the LED frame rate.
+const HOP_DIVISOR: usize = 2;
+/// Energy-onset detectors (port of Hypercolor `beat.rs`): per-band fast
+/// EMA vs slow EMA baseline.
+const ONSET_FAST_ALPHA: f32 = 0.4;
+const ONSET_SLOW_ALPHA: f32 = 0.02;
+/// Slow-EMA multiplier + absolute floor for the onset threshold; the
+/// per-band multipliers (bass/mid/treble) scale this base.
+const ONSET_ENERGY_BASE: f32 = 1.2;
+const ONSET_ENERGY_FLOOR: f32 = 0.02;
+/// Minimum seconds between energy onsets in one band (~400 BPM cap).
+const ONSET_MIN_INTERVAL_S: f32 = 0.15;
+/// Spectral-flux adaptive threshold: mean + k·stddev of recent flux
+/// (Hypercolor `SpectralFluxDetector`, threshold_multiplier = sensitivity).
+const ONSET_SIGMA: f32 = 1.5;
 const ONSET_MIN_FLUX: f32 = 0.02;
-const EVENT_REFRACTORY: usize = 3;
-const FLUX_HISTORY: usize = 32;
+/// Minimum audio level before onset events are emitted — keeps silence
+/// and dither noise from firing impacts.
+const EVENT_MIN_LEVEL: f32 = 0.02;
+/// Minimum seconds between emitted `BeatEvent`s.
+const EVENT_MIN_INTERVAL_S: f32 = 0.13;
+const FLUX_HISTORY: usize = 48;
 /// AGC: target normalised level, peak floor, gain clamp range.
 const AGC_TARGET: f32 = 0.65;
 const AGC_FLOOR: f32 = 0.05;
 const AGC_MIN: f32 = 0.3;
 const AGC_MAX: f32 = 6.0;
+/// Beat-pulse envelope decay (Hypercolor `PULSE_DECAY_RATE` = 5.0/s).
+const PULSE_DECAY: f32 = 5.0;
+/// Tempo tracker: BPM normalization range and minimum onset intervals.
+const BPM_MIN: f32 = 60.0;
+const BPM_MAX: f32 = 180.0;
+const MIN_INTERVALS_FOR_BPM: usize = 4;
+const ONSET_HISTORY_S: f64 = 10.0;
 /// Spectrum-bin split for onset classification (24 log bins, 30 Hz–24 kHz):
 /// bass ≈ bins 0–5, mid 6–15, treble 16–23.
 const BASS_BINS: usize = 6;
@@ -66,8 +83,16 @@ pub struct Bands {
     /// energies against a slow-decaying running peak of `level` so quiet
     /// and loud material render with similar brightness.
     pub agc: f32,
-    /// True on the frame a beat was detected.
+    /// True on the frame a beat was detected (bass onset, or flux onset
+    /// with real bass energy).
     pub beat: bool,
+    /// Estimated tempo in BPM (0 until the tracker locks on).
+    pub bpm: f32,
+    /// Beat phase: 0.0 = on the beat, →1.0 just before the next one.
+    /// Renderers use it for tempo-locked pulsing between onsets.
+    pub beat_phase: f32,
+    /// Beat pulse envelope: 1.0 on a beat, decaying ~200 ms.
+    pub beat_pulse: f32,
 }
 
 /// Transient classification from per-region spectral flux.
@@ -103,16 +128,139 @@ impl Default for Bands {
             level: 0.0,
             agc: 1.0,
             beat: false,
+            bpm: 0.0,
+            beat_phase: 0.0,
+            beat_pulse: 0.0,
         }
+    }
+}
+
+/// Per-band energy-onset detector: fast EMA vs slow EMA baseline with a
+/// refractory interval (port of Hypercolor `EnergyOnsetDetector`).
+struct BandOnset {
+    short: f32,
+    long: f32,
+    cooldown: f32,
+    /// Threshold multiplier on the slow EMA (higher bands need more).
+    gain: f32,
+}
+
+impl BandOnset {
+    fn new(gain: f32) -> Self {
+        Self {
+            short: 0.0,
+            long: 0.0,
+            cooldown: 0.0,
+            gain,
+        }
+    }
+
+    fn update(&mut self, energy: f32, dt: f32) -> bool {
+        self.short += ONSET_FAST_ALPHA * (energy - self.short);
+        self.long += ONSET_SLOW_ALPHA * (energy - self.long);
+        self.cooldown -= dt;
+        let thresh = self.long * ONSET_ENERGY_BASE * self.gain + ONSET_ENERGY_FLOOR;
+        if self.short > thresh && self.cooldown <= 0.0 {
+            self.cooldown = ONSET_MIN_INTERVAL_S;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Tempo tracker: inter-onset interval median → BPM (normalized to
+/// 60–180) + beat phase. Port of Hypercolor `TempoTracker`.
+struct TempoTracker {
+    onset_times: std::collections::VecDeque<f64>,
+    bpm: f32,
+    phase: f32,
+    last_beat_time: f64,
+    beat_interval: f64,
+}
+
+impl TempoTracker {
+    fn new() -> Self {
+        Self {
+            onset_times: std::collections::VecDeque::with_capacity(128),
+            bpm: 0.0,
+            phase: 0.0,
+            last_beat_time: 0.0,
+            beat_interval: 0.0,
+        }
+    }
+
+    fn record_onset(&mut self, time: f64) {
+        self.onset_times.push_back(time);
+        while let Some(&front) = self.onset_times.front() {
+            if time - front > ONSET_HISTORY_S {
+                self.onset_times.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.last_beat_time = time;
+        self.estimate();
+    }
+
+    fn update_phase(&mut self, time: f64) {
+        if self.beat_interval <= 0.0 {
+            self.phase = 0.0;
+            return;
+        }
+        self.phase = ((time - self.last_beat_time) / self.beat_interval).rem_euclid(1.0) as f32;
+    }
+
+    fn estimate(&mut self) {
+        if self.onset_times.len() < 2 {
+            self.bpm = 0.0;
+            self.beat_interval = 0.0;
+            return;
+        }
+        let mut intervals: Vec<f64> = self
+            .onset_times
+            .iter()
+            .zip(self.onset_times.iter().skip(1))
+            .map(|(&a, &b)| b - a)
+            .filter(|&i| i > 0.05 && i < 2.0)
+            .collect();
+        if intervals.len() < MIN_INTERVALS_FOR_BPM {
+            self.bpm = 0.0;
+            self.beat_interval = 0.0;
+            return;
+        }
+        intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = intervals[intervals.len() / 2];
+        if median <= f64::EPSILON {
+            self.bpm = 0.0;
+            self.beat_interval = 0.0;
+            return;
+        }
+        // Normalize octave errors into 60–180 BPM.
+        let mut bpm = 60.0 / median;
+        while bpm < f64::from(BPM_MIN) {
+            bpm *= 2.0;
+        }
+        while bpm > f64::from(BPM_MAX) {
+            bpm /= 2.0;
+        }
+        self.bpm = bpm as f32;
+        self.beat_interval = 60.0 / f64::from(self.bpm);
     }
 }
 
 /// Stateful analyser: owns the FFT plan, Hann window and smoothing state.
 /// Call [`Analyzer::process`] with any chunk of mono f32 samples; it
-/// analyses the newest complete `fft_size` window whenever enough samples
-/// have accumulated, otherwise returns `None`.
+/// analyses every complete hop (`fft_size/2`) whenever enough samples
+/// have accumulated and returns one [`Bands`] per analysed window.
 pub struct Analyzer {
     fft_size: usize,
+    /// Analysis hop in samples (fft_size / HOP_DIVISOR).
+    hop: usize,
+    /// Seconds per hop — the detector time base.
+    hop_dt: f32,
+    /// Absolute analysis time in seconds (tempo/onset bookkeeping).
+    time_s: f64,
     window: Vec<f32>,
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     /// Bin ranges for the SPECTRUM_BINS log bands.
@@ -127,16 +275,18 @@ pub struct Analyzer {
     mid_smooth: f32,
     treble_smooth: f32,
     level_smooth: f32,
-    bass_history: Vec<f32>,
-    analyses: usize,
-    since_beat: usize,
-    /// Raw (unsmoothed) spectrum of the previous analysis, for spectral
+    /// Per-band energy-onset detectors (bass/mid/treble).
+    band_onsets: [BandOnset; 3],
+    /// Raw (unsmoothed) spectrum of the previous hop, for spectral
     /// flux onset detection.
     prev_spectrum: [f32; SPECTRUM_BINS],
-    /// Recent total-flux samples for the adaptive onset threshold.
+    /// Recent total-flux samples for the mean+k·σ adaptive threshold.
     flux_history: Vec<f32>,
-    /// Analyses since the last emitted onset event (refractory period).
-    since_event: usize,
+    /// Seconds since the last emitted `BeatEvent` (refractory).
+    since_event_s: f32,
+    /// Tempo tracker + beat pulse envelope.
+    tempo: TempoTracker,
+    beat_pulse: f32,
     /// Slow-decaying peak of `level_smooth` for AGC.
     level_peak: f32,
 }
@@ -165,6 +315,9 @@ impl Analyzer {
         let mut planner = FftPlanner::<f32>::new();
         Ok(Self {
             fft_size,
+            hop: (fft_size / HOP_DIVISOR).max(256),
+            hop_dt: ((fft_size / HOP_DIVISOR).max(256)) as f32 / sample_rate as f32,
+            time_s: 0.0,
             window,
             fft: planner.plan_fft_forward(fft_size),
             spectrum_ranges,
@@ -178,40 +331,49 @@ impl Analyzer {
             mid_smooth: 0.0,
             treble_smooth: 0.0,
             level_smooth: 0.0,
-            bass_history: Vec::with_capacity(64),
-            analyses: 0,
-            since_beat: BEAT_COOLDOWN,
+            band_onsets: [
+                BandOnset::new(1.0),
+                BandOnset::new(1.2),
+                BandOnset::new(1.5),
+            ],
             prev_spectrum: [0.0; SPECTRUM_BINS],
-            flux_history: Vec::with_capacity(64),
-            since_event: EVENT_REFRACTORY,
+            flux_history: Vec::with_capacity(FLUX_HISTORY + 1),
+            since_event_s: EVENT_MIN_INTERVAL_S,
+            tempo: TempoTracker::new(),
+            beat_pulse: 0.0,
             level_peak: 0.0,
         })
     }
 
-    /// Samples needed for the next analysis (what `drain` should ideally
-    /// accumulate between frames).
+    /// Samples per analysis hop (~21 ms @ 48 kHz/2048) — analyses run on
+    /// audio arrival, independent of the LED frame rate.
     pub fn window_samples(&self) -> usize {
-        self.fft_size
+        self.hop
     }
 
-    /// Feed mono f32 samples; returns `Some(Bands)` each time a full
-    /// window is available (roughly every `fft_size/sample_rate` seconds).
-    pub fn process(&mut self, samples: &[f32]) -> Option<Bands> {
+    /// Feed mono f32 samples; returns one [`Bands`] per analysed hop
+    /// (roughly every `hop/sample_rate` seconds). Windows overlap by
+    /// `fft_size - hop` so transients are not skipped between analyses.
+    pub fn process(&mut self, samples: &[f32]) -> Vec<Bands> {
         self.buf.extend_from_slice(samples);
-        // Keep at most one window + a bit; drop oldest.
-        let keep = self.fft_size * 2;
-        if self.buf.len() > keep {
-            let drop = self.buf.len() - keep;
-            self.buf.drain(..drop);
+        let mut out = Vec::new();
+        while self.buf.len() >= self.fft_size {
+            let win: Vec<f32> = self
+                .buf[..self.fft_size]
+                .iter()
+                .zip(&self.window)
+                .map(|(s, w)| s * w)
+                .collect();
+            out.push(self.analyse(win));
+            self.buf.drain(..self.hop);
         }
-        if self.buf.len() < self.fft_size {
-            return None;
-        }
-        let win: Vec<f32> = self.buf[self.buf.len() - self.fft_size..]
-            .iter()
-            .zip(&self.window)
-            .map(|(s, w)| s * w)
-            .collect();
+        out
+    }
+
+    /// FFT + feature extraction + detection for one window.
+    fn analyse(&mut self, win: Vec<f32>) -> Bands {
+        let dt = self.hop_dt;
+        self.time_s += f64::from(dt);
         for (i, s) in self.scratch.iter_mut().enumerate() {
             *s = Complex::new(win[i], 0.0);
         }
@@ -254,13 +416,17 @@ impl Analyzer {
         self.level_smooth += SMOOTH_ALPHA * (level - self.level_smooth);
         // AGC: track a decaying peak of the smoothed level and derive a
         // gain that maps it toward AGC_TARGET. Rises instantly, decays
-        // slowly (~2000 analyses ≈ 90 s) so gain does not pump per beat.
+        // slowly so gain does not pump per beat.
         self.level_peak = self.level_peak.max(self.level_smooth);
         self.level_peak *= 0.9995;
 
-        // Spectral flux onset detection on the raw (unsmoothed) bands:
-        // only positive magnitude changes count, so sustained bass does
-        // not retrigger. Classify the dominant rising region.
+        // ── Detection (Hypercolor-style composite) ────────────────────
+        // 1. Per-band energy onsets: fast EMA vs slow EMA baseline.
+        let bass_hit = self.band_onsets[0].update(bass, dt);
+        let mid_hit = self.band_onsets[1].update(mid, dt);
+        let treble_hit = self.band_onsets[2].update(treble, dt);
+
+        // 2. Spectral flux with mean+k·σ adaptive threshold.
         let mut flux = [0.0f32; 3]; // bass, mid, treble regions
         let mut total_flux = 0.0f32;
         for i in 0..SPECTRUM_BINS {
@@ -283,15 +449,43 @@ impl Analyzer {
         if self.flux_history.len() > FLUX_HISTORY {
             self.flux_history.remove(0);
         }
-        self.since_event += 1;
-        let events = if self.flux_history.len() >= 8 && self.since_event >= EVENT_REFRACTORY {
-            let mean = self.flux_history[..self.flux_history.len() - 1]
-                .iter()
-                .sum::<f32>()
-                / (self.flux_history.len() - 1) as f32;
-            let thresh = (mean * ONSET_FLUX_RATIO).max(ONSET_MIN_FLUX);
-            if total_flux > thresh {
-                self.since_event = 0;
+        self.since_event_s -= dt;
+        let flux_onset = if self.flux_history.len() >= 8 {
+            let hist = &self.flux_history[..self.flux_history.len() - 1];
+            let n = hist.len() as f32;
+            let mean = hist.iter().sum::<f32>() / n;
+            let var = hist.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n;
+            let thresh = (mean + ONSET_SIGMA * var.sqrt()).max(ONSET_MIN_FLUX);
+            total_flux > thresh
+        } else {
+            false
+        };
+
+        let onset_detected = bass_hit || mid_hit || treble_hit || flux_onset;
+        // Beat = bass carrier: bass energy onset, or flux onset with real
+        // bass present (Hypercolor rule — keeps the tempo tracker fed by
+        // the kick, not by hats).
+        let beat = bass_hit || (flux_onset && bass > 0.1);
+        if beat {
+            self.tempo.record_onset(self.time_s);
+            self.beat_pulse = 1.0;
+        } else {
+            self.beat_pulse = (self.beat_pulse - PULSE_DECAY * dt).max(0.0);
+        }
+        self.tempo.update_phase(self.time_s);
+
+        // Emit at most one classified event per refractory interval.
+        let events = if onset_detected
+            && self.since_event_s <= 0.0
+            && self.level_smooth > EVENT_MIN_LEVEL
+        {
+            self.since_event_s = EVENT_MIN_INTERVAL_S;
+            let (kind, strength) = if flux_onset {
+                let hist = &self.flux_history[..self.flux_history.len().saturating_sub(1)];
+                let n = hist.len().max(1) as f32;
+                let mean = hist.iter().sum::<f32>() / n;
+                let var = hist.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n;
+                let thresh = (mean + ONSET_SIGMA * var.sqrt()).max(ONSET_MIN_FLUX);
                 let (bi, _) = flux
                     .iter()
                     .enumerate()
@@ -304,7 +498,8 @@ impl Analyzer {
                     .map(|(_, v)| *v)
                     .fold(0.0f32, f32::max);
                 let dominance = flux[bi] / (flux[bi] + runner_up + 1e-6);
-                let strength = ((total_flux - thresh) / thresh).min(2.0) / 2.0;
+                let strength =
+                    (((total_flux - thresh) / thresh).min(2.0) / 2.0).max(0.35);
                 let kind = if dominance < 0.6 {
                     BeatKind::Generic
                 } else {
@@ -314,37 +509,25 @@ impl Analyzer {
                         _ => BeatKind::HiHat,
                     }
                 };
-                vec![BeatEvent { kind, strength }]
+                (kind, strength)
             } else {
-                Vec::new()
-            }
+                // Energy-onset only: the band that fired decides the kind.
+                let kind = if bass_hit {
+                    BeatKind::Kick
+                } else if mid_hit {
+                    BeatKind::Snare
+                } else {
+                    BeatKind::HiHat
+                };
+                (kind, 0.8)
+            };
+            vec![BeatEvent { kind, strength }]
         } else {
             Vec::new()
         };
 
-        // Beat: bass flux vs trailing average.
-        self.bass_history.push(self.bass_smooth);
-        if self.bass_history.len() > 43 {
-            self.bass_history.remove(0);
-        }
-        self.analyses += 1;
-        self.since_beat += 1;
-        let beat = if self.bass_history.len() >= 12 && self.since_beat >= BEAT_COOLDOWN {
-            let avg: f32 =
-                self.bass_history[..self.bass_history.len() - 1].iter().sum::<f32>()
-                    / (self.bass_history.len() - 1) as f32;
-            self.bass_smooth > BEAT_MIN_ENERGY
-                && avg > 1e-4
-                && self.bass_smooth > avg * BEAT_RATIO
-        } else {
-            false
-        };
-        if beat {
-            self.since_beat = 0;
-        }
-
         let agc = (AGC_TARGET / self.level_peak.max(AGC_FLOOR)).clamp(AGC_MIN, AGC_MAX);
-        Some(Bands {
+        Bands {
             events,
             agc,
             spectrum: self.spectrum_smooth,
@@ -354,7 +537,10 @@ impl Analyzer {
             treble: self.treble_smooth,
             level: self.level_smooth,
             beat,
-        })
+            bpm: self.tempo.bpm,
+            beat_phase: self.tempo.phase,
+            beat_pulse: self.beat_pulse,
+        }
     }
 }
 
@@ -399,13 +585,29 @@ mod tests {
     #[test]
     fn analyzer_needs_full_window() {
         let mut a = Analyzer::new(48_000, 2048).unwrap();
-        assert!(a.process(&sine(440.0, 48_000, 1000)).is_none());
+        assert!(a.process(&sine(440.0, 48_000, 1000)).is_empty());
         // Feed enough for one window.
         let out = a.process(&sine(440.0, 48_000, 2048));
-        assert!(out.is_some());
-        let b = out.unwrap();
+        assert!(!out.is_empty());
+        let b = out.into_iter().next().unwrap();
         assert!(b.level > 0.0);
         assert!(b.spectrum.iter().any(|&e| e > 0.0));
+    }
+
+    #[test]
+    fn hop_analysis_covers_more_audio_than_one_window() {
+        // Regression: analysis must keep up with audio arrival. Feeding
+        // 4 windows' worth of samples in one call must yield multiple
+        // analyses, not one — otherwise transients are skipped.
+        let mut a = Analyzer::new(48_000, 2048).unwrap();
+        let chunk = sine(440.0, 48_000, 2048 * 4);
+        let out = a.process(&chunk);
+        assert!(
+            out.len() >= 4,
+            "expected ≥4 hop analyses for {} samples, got {}",
+            chunk.len(),
+            out.len()
+        );
     }
 
     #[test]
@@ -416,7 +618,9 @@ mod tests {
         let chunk = sine(100.0, 48_000, 4096);
         let mut last = None;
         for _ in 0..6 {
-            last = a.process(&chunk).or(last);
+            if let Some(b) = a.process(&chunk).into_iter().last() {
+                last = Some(b);
+            }
         }
         let b = last.unwrap();
         assert!(b.bass > b.treble, "bass {} treble {}", b.bass, b.treble);
@@ -429,11 +633,14 @@ mod tests {
         let mut a = Analyzer::new(48_000, 2048).unwrap();
         let mut last = None;
         for _ in 0..4 {
-            last = a.process(&vec![0.0f32; 2048]).or(last);
+            if let Some(b) = a.process(&vec![0.0f32; 2048]).into_iter().last() {
+                last = Some(b);
+            }
         }
         let b = last.unwrap();
         assert_eq!(b.level, 0.0);
         assert!(!b.beat);
+        assert!(b.events.is_empty());
     }
 
     #[test]
@@ -445,14 +652,49 @@ mod tests {
         let burst = sine(100.0, 48_000, 2048);
         let mut found = false;
         for _ in 0..4 {
-            if let Some(b) = a.process(&burst) {
+            for b in a.process(&burst) {
                 if !b.events.is_empty() {
                     found = true;
                     break;
                 }
             }
+            if found {
+                break;
+            }
         }
         assert!(found, "burst after silence should produce an onset event");
+    }
+
+    #[test]
+    fn tempo_tracker_locks_on_periodic_beats() {
+        // Feed a 120 BPM-ish impulse train: bass sine bursts every 0.5 s.
+        // With ~21 ms hops, synthesize directly at the hop level.
+        let mut a = Analyzer::new(48_000, 2048).unwrap();
+        let hop = a.window_samples();
+        let dt = hop as f32 / 48_000.0;
+        let period = 0.5f32; // 120 BPM
+        let mut t = 0.0f32;
+        let mut last_bpm = 0.0;
+        // ~12 s of audio.
+        for _ in 0..(12.0 / dt) as usize {
+            let chunk: Vec<f32> = (0..hop)
+                .map(|i| {
+                    let st = t + i as f32 / 48_000.0;
+                    let amp = if st % period < 0.05 { 0.6 } else { 0.0 };
+                    amp * (2.0 * std::f32::consts::PI * 100.0 * st).sin()
+                })
+                .collect();
+            for b in a.process(&chunk) {
+                if b.bpm > 0.0 {
+                    last_bpm = b.bpm;
+                }
+            }
+            t += dt;
+        }
+        assert!(
+            (last_bpm - 120.0).abs() < 15.0,
+            "expected ~120 BPM, got {last_bpm}"
+        );
     }
 
     #[test]
