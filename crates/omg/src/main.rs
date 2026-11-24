@@ -18,6 +18,7 @@ use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
+mod kb916_macro;
 mod profile;
 
 #[derive(Parser)]
@@ -26,17 +27,17 @@ mod profile;
     version,
     about = "Configure GravaStar keyboards and mice (offline, agent-first)"
 )]
-struct Cli {
+pub(crate) struct Cli {
     /// Emit machine-readable JSON instead of human text.
     #[arg(long, global = true)]
-    json: bool,
+    pub(crate) json: bool,
 
     /// Device selector: HID path, `VID:PID` (hex with `0x` prefix, or bare
     /// hex like `f54b`; all-digit values are decimal), or a unique
     /// case-insensitive substring of the product/manufacturer string.
     /// Auto-picks when exactly one GravaStar device is connected.
     #[arg(long, global = true, value_name = "SELECTOR")]
-    device: Option<String>,
+    pub(crate) device: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -134,10 +135,10 @@ enum MouseCommands {
 
 /// `--yes` acknowledgement required by every write (docs/plan.md §2).
 #[derive(Args)]
-struct Yes {
+pub(crate) struct Yes {
     /// Confirm the write. Without it nothing is sent.
     #[arg(long)]
-    yes: bool,
+    pub(crate) yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -644,7 +645,7 @@ fn mouse_absent(cli: &Cli) -> Result<ExitCode> {
     Ok(no_device())
 }
 
-fn print_json(v: &impl serde::Serialize) -> Result<()> {
+pub(crate) fn print_json(v: &impl serde::Serialize) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())
 }
@@ -3761,8 +3762,12 @@ enum Kb916Commands {
     },
     /// Per-mode light colour/effect blob (~480 B, cmd 138) as a hex dump.
     LightData,
-    /// Macro region (≤512 B, cmd 133) as a hex dump.
-    Macro,
+    /// Macro region (≤512 B, cmd 133): list/get/set named macros and
+    /// bind them to keymap slots (tag-3 values). Writes need `--yes`.
+    Macro {
+        #[command(subcommand)]
+        command: kb916_macro::Kb916Macro,
+    },
     /// Screen display: capability report and image-push planning
     /// (docs/protocol-khub916-screen.md). Actual image/time writes are
     /// refused — see `omg kb916 screen --help`.
@@ -3992,7 +3997,7 @@ fn kb916_wireless_pending() -> &'static str {
 
 /// Resolve the session for a read command, mapping the wireless selection
 /// to the unsupported exit.
-fn kb916_session(cli: &Cli) -> Result<Result<(DeviceInfo, khub::Khub916), ExitCode>> {
+pub(crate) fn kb916_session(cli: &Cli) -> Result<Result<(DeviceInfo, khub::Khub916), ExitCode>> {
     match open_khub916(cli)? {
         None => Ok(Err(kb916_absent(cli)?)),
         Some(Kb916Session::Wireless) => Ok(Err(kb916_unsupported(
@@ -4012,6 +4017,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
             return kb916_unsupported(cli, "916_wireLess transport", kb916_wireless_pending());
         }
         Kb916Commands::Set { command } => return cmd_kb916_set(cli, command),
+        Kb916Commands::Macro { command } => return kb916_macro::run(cli, command),
         _ => {}
     }
 
@@ -4177,25 +4183,10 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                 print_hex_dump(&data);
             }
         }
-        Kb916Commands::Macro => {
-            let data = kb.macro_region()?;
-            if cli.json {
-                print_json(&json!({
-                    "device": device,
-                    "bytes": data.len(),
-                    "hex": data.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                }))?;
-            } else {
-                println!(
-                    "macro region: {} bytes (raw — entry parsing not yet implemented)",
-                    data.len()
-                );
-                print_hex_dump(&data);
-            }
-        }
-        Kb916Commands::Screen { .. } | Kb916Commands::Wireless | Kb916Commands::Set { .. } => {
-            unreachable!("handled before the session is opened")
-        }
+        Kb916Commands::Screen { .. }
+        | Kb916Commands::Wireless
+        | Kb916Commands::Set { .. }
+        | Kb916Commands::Macro { .. } => unreachable!("handled before the session is opened")
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -4245,7 +4236,7 @@ fn parse_kb916_key_values(text: &str) -> Result<Vec<u32>> {
 }
 
 /// Shared tail of a `kb916 set` command: print the verified outcome.
-fn kb916_write_report(
+pub(crate) fn kb916_write_report(
     cli: &Cli,
     device: &DeviceInfo,
     change: &str,
