@@ -13,7 +13,9 @@
 
 use anyhow::{anyhow, bail, Result};
 use omg_music::capture::{open_source, SourceKind};
-use omg_music::{Analyzer, Bands, BeatViz, FrameParams, KeyPos, PulseViz, SpectrumViz};
+use omg_music::{
+    Analyzer, Bands, BeatViz, FrameParams, KeyPos, PulseMode, PulseViz, SpectrumViz,
+};
 use omg_proto_khub916::KeyValue;
 use serde_json::json;
 use std::process::ExitCode;
@@ -253,8 +255,8 @@ pub fn cmd(
     if !(0.25..=4.0).contains(&attack) || !(0.25..=4.0).contains(&decay) {
         bail!("--attack/--decay must be in 0.25..=4.0, got {attack}/{decay}");
     }
-    if !matches!(effect, "spectrum" | "beat" | "pulse") {
-        bail!("unknown --effect '{effect}' (want spectrum|beat|pulse)");
+    if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
+        bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -318,7 +320,14 @@ pub fn cmd(
             }
             Viz::Beat(v)
         }
-        "pulse" => Viz::Pulse(PulseViz::new(params)),
+        "pulse" | "bass" | "ambient" => {
+            let mode = match effect {
+                "bass" => PulseMode::Bass,
+                "ambient" => PulseMode::Ambient,
+                _ => PulseMode::Beat,
+            };
+            Viz::Pulse(PulseViz::new(params, mode))
+        }
         _ => {
             let mut v = SpectrumViz::new(params);
             if !positions.is_empty() {

@@ -482,42 +482,65 @@ impl BeatViz {
     }
 }
 
-// ── Beat Pulse mode ────────────────────────────────────────────────────
+// ── Whole-field drive modes ────────────────────────────────────────────
 //
-// Spec mode A: the *entire* keyboard flashes brighter on every detected
-// beat with smooth attack/decay, over a configurable dim background.
-// No per-key motion — pure brightness pumping driven by `bands.beat`
-// (instant attack) and `bands.beat_pulse` (dsp-time decay envelope).
+// Spec modes A (Beat Pulse), B (Bass Reactive) and D (Audio Ambient):
+// the *entire* keyboard's brightness tracks a single drive signal —
+// beats, bass energy or overall level — with attack/decay smoothing
+// over a configurable dim background. No per-key motion.
 
-/// Stateful beat-pulse renderer — call [`PulseViz::frame`] per LED frame.
+/// What drives the field brightness in [`PulseViz`].
+#[derive(Clone, Copy, Debug)]
+pub enum PulseMode {
+    /// Spec A — Beat Pulse: flash on detected beats.
+    Beat,
+    /// Spec B — Bass Reactive: brightness follows bass energy;
+    /// kick transients punch through naturally.
+    Bass,
+    /// Spec D — Audio Ambient: brightness follows overall level,
+    /// the gentlest mode.
+    Ambient,
+}
+
+/// Whole-field brightness renderer — call [`PulseViz::frame`] per LED
+/// frame. One uniform colour whose value tracks the drive signal with
+/// attack/decay smoothing; keys go dark between beats by default.
 pub struct PulseViz {
     params: FrameParams,
-    /// Smoothed flash envelope 0..1 — gives --attack/--decay real
-    /// control over the rise/fall shape on top of dsp's beat_pulse.
+    mode: PulseMode,
+    /// Smoothed brightness envelope 0..1 — gives --attack/--decay real
+    /// control over the rise/fall shape.
     env: f32,
 }
 
 impl PulseViz {
-    pub fn new(params: FrameParams) -> Self {
-        Self { params, env: 0.0 }
+    pub fn new(params: FrameParams, mode: PulseMode) -> Self {
+        Self {
+            params,
+            mode,
+            env: 0.0,
+        }
     }
 
     /// Render one frame. `t` = seconds (drives a slow warm hue drift).
     pub fn frame(&mut self, bands: &Bands, t: f32) -> [u8; FRAME_BYTES] {
-        // Target = dsp's decaying beat pulse, snapped to 1 on a fresh
-        // beat. The env lerps toward it: fast rise with --attack,
-        // decay rate scaled by --decay (independent of LED fps since
-        // beat_pulse itself decays in wall-clock time).
-        let target = bands.beat_pulse.max(if bands.beat { 1.0 } else { 0.0 });
+        let target = match self.mode {
+            // dsp's decaying beat pulse, snapped to 1 on a fresh beat.
+            PulseMode::Beat => bands.beat_pulse.max(if bands.beat { 1.0 } else { 0.0 }),
+            PulseMode::Bass => (bands.bass * bands.agc).clamp(0.0, 1.0),
+            PulseMode::Ambient => bands.level.clamp(0.0, 1.0),
+        };
+        // env lerps toward the drive: fast rise with --attack, decay
+        // rate scaled by --decay.
         let k = if target > self.env {
             (0.6 * self.params.attack).min(0.98)
         } else {
             (0.35 * self.params.decay).min(0.98)
         };
         self.env += k * (target - self.env);
-        let flash = self.env;
+        let drive = self.env;
         let gate = bands.level.clamp(0.0, 1.0);
-        let v = ((flash * self.params.beat_intensity
+        let v = ((drive * self.params.beat_intensity
             + self.params.background * gate)
             * self.params.brightness)
             .clamp(0.0, 1.0);
@@ -681,7 +704,7 @@ mod tests {
 
     #[test]
     fn pulse_flashes_on_beat_then_decays() {
-        let mut v = PulseViz::new(FrameParams::default());
+        let mut v = PulseViz::new(FrameParams::default(), PulseMode::Beat);
         let quiet = Bands::default();
         assert!(v.frame(&quiet, 0.0).iter().all(|&x| x == 0));
         let mut b = Bands::default();

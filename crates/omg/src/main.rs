@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use omg_hid::{find_devices, DeviceInfo, DeviceKind, NoAnswer};
 use omg_proto_he as he;
 use omg_proto_khub916 as khub;
@@ -18,11 +18,13 @@ use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
+mod device;
 mod kb916_adv;
 mod kb916_macro;
 mod kb916_light;
 mod kb916_music;
 mod profile;
+mod schema;
 
 #[derive(Parser)]
 #[command(
@@ -41,6 +43,12 @@ pub(crate) struct Cli {
     /// Auto-picks when exactly one GravaStar device is connected.
     #[arg(long, global = true, value_name = "SELECTOR")]
     pub(crate) device: Option<String>,
+
+    /// Preview the planned change without sending anything. Applies to
+    /// write commands only (commands that take `--yes`); `profile import`
+    /// keeps its own richer `--dry-run` diff.
+    #[arg(long, global = true)]
+    pub(crate) dry_run: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -87,6 +95,36 @@ enum Commands {
         #[command(subcommand)]
         command: ProfileCommands,
     },
+    /// Machine-readable command schema for agents. With no path, lists
+    /// every command; with a path (`omg schema kb916 set key`) emits the
+    /// JSON schema document for that command's arguments, write flag,
+    /// target device family and output shape. Always JSON.
+    Schema {
+        /// Command path segments, e.g. `kb916 set key`.
+        path: Vec<String>,
+    },
+    /// Machine-readable device discovery: the supported-device catalog,
+    /// per-device inspection, capability maps and connection status.
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum DeviceCommands {
+    /// Enumerate every supported GravaStar device family from the
+    /// omg-hid identity tables: protocol, transport, wired/wireless hint,
+    /// HID match rule and capability summary.
+    List,
+    /// Inspect connected device(s): transport identity, per-protocol
+    /// read-only probe and the capability map with verification levels.
+    /// Without `--device` every detected GravaStar device is inspected.
+    Inspect,
+    /// Capability map of the connected device(s) only (no probe reads).
+    Capabilities,
+    /// Connection state: how many GravaStar HID interfaces are present.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -101,15 +139,12 @@ enum ProfileCommands {
         #[arg(long)]
         full: bool,
     },
-    /// Import a profile file. `--dry-run` prints the planned changes
-    /// without writing; real writes require `--yes` (same contract as
-    /// every other write command, docs/plan.md §2).
+    /// Import a profile file. `--dry-run` (global flag) prints the planned
+    /// changes without writing; real writes require `--yes` (same contract
+    /// as every other write command, docs/plan.md §2).
     Import {
         /// Profile JSON file produced by `omg profile export`.
         file: String,
-        /// Print planned changes only; nothing is sent to any device.
-        #[arg(long, conflicts_with = "yes")]
-        dry_run: bool,
         /// Confirm the writes. Without it (and without --dry-run) the
         /// command refuses before any bytes are sent.
         #[arg(long)]
@@ -292,13 +327,67 @@ fn main() -> ExitCode {
     match run(&cli) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            if cli.json {
+                // Structured error object for agents: never interactive.
+                eprintln!(
+                    "{}",
+                    json!({ "error": { "code": "error", "message": format!("{e:#}") } })
+                );
+            } else {
+                eprintln!("error: {e:#}");
+            }
             ExitCode::from(1)
         }
     }
 }
 
+/// Re-parse argv to recover the matched subcommand path (needed by the
+/// global `--dry-run` interception, which runs before dispatch).
+fn argv_command_path() -> Option<Vec<String>> {
+    let matches = Cli::command()
+        .try_get_matches_from(std::env::args_os())
+        .ok()?;
+    let mut path = Vec::new();
+    let mut m = &matches;
+    while let Some((name, sub)) = m.subcommand() {
+        path.push(name.to_string());
+        m = sub;
+    }
+    Some(path)
+}
+
+/// Global `--dry-run` on a write command: print the planned invocation
+/// and send nothing. `profile import` is exempt — it has a richer native
+/// dry-run that diffs every field.
+fn cmd_dry_run(cli: &Cli, path: &[String]) -> Result<ExitCode> {
+    let argv: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if cli.json {
+        print_json(&json!({
+            "dry_run": true,
+            "command": path.join(" "),
+            "argv": argv,
+            "writes": true,
+            "note": "nothing was sent; re-run with --yes to apply",
+        }))?;
+    } else {
+        println!("dry-run: omg {}", path.join(" "));
+        println!("  argv: {}", argv.join(" "));
+        println!("  (no bytes sent — re-run with --yes to apply)");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run(cli: &Cli) -> Result<ExitCode> {
+    if cli.dry_run {
+        if let Some(path) = argv_command_path() {
+            if schema::is_write_path(&path) && !schema::has_native_dry_run(&path) {
+                return cmd_dry_run(cli, &path);
+            }
+        }
+    }
     match &cli.command {
         Commands::Devices => cmd_devices(cli),
         Commands::Probe { deep } => cmd_probe(cli, *deep),
@@ -306,6 +395,174 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Kb916 { command } => cmd_kb916(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
         Commands::Profile { command } => cmd_profile(cli, command),
+        Commands::Schema { path } => cmd_schema(cli, path),
+        Commands::Device { command } => cmd_device(cli, command),
+    }
+}
+
+// ── schema / device discovery ─────────────────────────────────────────
+
+fn cmd_schema(cli: &Cli, path: &[String]) -> Result<ExitCode> {
+    if path.is_empty() {
+        // The index is JSON either way — `omg schema` is the agent surface.
+        return print_json(&schema::schema_index()).map(|_| ExitCode::SUCCESS);
+    }
+    match schema::command_schema(path) {
+        Some(doc) => {
+            let _ = cli;
+            print_json(&doc)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        None => {
+            let msg = format!("unknown command path '{}'", path.join(" "));
+            if cli.json {
+                print_json(&json!({
+                    "error": {
+                        "code": "unknown_command",
+                        "message": msg,
+                        "suggestions": schema::path_suggestions(path),
+                    }
+                }))?;
+            } else {
+                eprintln!("error: {msg}");
+                eprintln!("run `omg schema` for the command index");
+            }
+            Ok(ExitCode::from(1))
+        }
+    }
+}
+
+/// Shared "no device" exit for `omg device *` (structured under --json).
+fn device_absent(cli: &Cli) -> Result<ExitCode> {
+    if cli.json {
+        print_json(&json!({
+            "error": { "code": "no_device", "message": "no GravaStar device connected" }
+        }))?;
+    } else {
+        println!("no GravaStar device connected");
+    }
+    Ok(no_device())
+}
+
+fn device_entry(d: &DeviceInfo) -> serde_json::Value {
+    json!({
+        "path": d.path,
+        "vid_pid": d.vid_pid(),
+        "kind": device::kind_id(d.kind),
+        "kind_label": d.kind.label(),
+        "protocol": device::protocol(d.kind),
+        "product": d.product,
+        "manufacturer": d.manufacturer,
+        "usage_page": format!("0x{:04x}", d.usage_page),
+        "usage": d.usage,
+    })
+}
+
+/// Resolve the inspect/capabilities target set: `--device` selects one,
+/// otherwise every detected device is reported (mirrors `omg probe`).
+fn device_targets(cli: &Cli) -> Result<Option<Vec<DeviceInfo>>> {
+    let devices = find_devices()?;
+    if let Some(sel) = cli.device.as_deref() {
+        return match select_device(&devices, Some(sel))? {
+            Some(d) => Ok(Some(vec![d.clone()])),
+            None => Ok(None),
+        };
+    }
+    Ok(if devices.is_empty() { None } else { Some(devices) })
+}
+
+fn cmd_device(cli: &Cli, command: &DeviceCommands) -> Result<ExitCode> {
+    match command {
+        DeviceCommands::List => {
+            if cli.json {
+                print_json(&device::catalog_doc())?;
+            } else {
+                let doc = device::catalog_doc();
+                for f in doc["families"].as_array().unwrap() {
+                    println!(
+                        "{:<18} {:<28} {:<10} {}",
+                        f["kind"].as_str().unwrap_or("?"),
+                        f["kind_label"].as_str().unwrap_or("?"),
+                        f["protocol"].as_str().unwrap_or("?"),
+                        f["transport"].as_str().unwrap_or("?")
+                    );
+                }
+                println!("(use --json for match rules and capability maps)");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        DeviceCommands::Status => {
+            let devices = find_devices()?;
+            let entries: Vec<serde_json::Value> =
+                devices.iter().map(device_entry).collect();
+            if cli.json {
+                print_json(&json!({
+                    "connected": !devices.is_empty(),
+                    "count": devices.len(),
+                    "devices": entries,
+                }))?;
+            } else if devices.is_empty() {
+                println!("no GravaStar device connected");
+            } else {
+                for d in &devices {
+                    println!(
+                        "{}  {:<34} {}",
+                        d.vid_pid(),
+                        d.kind.label(),
+                        d.product.as_deref().unwrap_or("")
+                    );
+                }
+            }
+            Ok(if devices.is_empty() {
+                no_device()
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        DeviceCommands::Capabilities | DeviceCommands::Inspect => {
+            let Some(targets) = device_targets(cli)? else {
+                return device_absent(cli);
+            };
+            let deep = false;
+            let reports: Vec<serde_json::Value> = targets
+                .iter()
+                .map(|d| {
+                    let mut entry = json!({
+                        "device": device_entry(d),
+                        "capabilities": device::capabilities(d.kind),
+                    });
+                    if matches!(command, DeviceCommands::Inspect) {
+                        entry["probe"] = probe_device(d, deep);
+                    }
+                    entry
+                })
+                .collect();
+            if cli.json {
+                print_json(&json!({ "devices": reports }))?;
+            } else {
+                for r in &reports {
+                    let d = &r["device"];
+                    println!(
+                        "{}  {}",
+                        d["vid_pid"].as_str().unwrap_or("?"),
+                        d["kind_label"].as_str().unwrap_or("?")
+                    );
+                    let caps = &r["capabilities"];
+                    if let Some(verification) = caps["verification"].as_str() {
+                        println!("    verification: {verification}");
+                    }
+                    if r.get("probe").is_some() {
+                        let proto = serde_json::to_string_pretty(&r["probe"]["protocol"])
+                            .unwrap_or_default();
+                        for line in proto.lines() {
+                            println!("      {line}");
+                        }
+                    }
+                }
+                println!("(use --json for the full capability map)");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -3931,8 +4188,10 @@ enum Kb916Light {
         #[arg(long, default_value_t = 1.0)]
         brightness: f32,
         /// Visualiser: `beat` (onset-driven kick/snare/hat motion over a
-        /// dim spectrum base — hybrid), `pulse` (whole-keyboard beat
-        /// flash), or `spectrum` (classic equaliser bars).
+        /// dim spectrum base — hybrid, default), `pulse` (whole-keyboard
+        /// beat flash), `bass` (brightness follows bass energy),
+        /// `ambient` (follows overall level), or `spectrum` (frequency
+        /// mapped across keys).
         #[arg(long, default_value = "beat")]
         effect: String,
         /// Dim uniform base brightness between beats, 0.0-1.0

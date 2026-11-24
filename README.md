@@ -160,6 +160,7 @@ omg kb916 light apply fx.json --yes  # apply a lighting JSON (see docs/lighting-
 omg kb916 light stream --pattern rainbow --yes   # live cmd-8 RGB frames (Ctrl-C restores)
 omg kb916 light music --yes                      # music-reactive: system audio → FFT → LEDs
 omg kb916 light music --source mic --yes         # or microphone input
+omg kb916 light music --effect pulse --yes       # beat flash | bass | ambient | spectrum | beat (hybrid)
 omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
 omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
 ```
