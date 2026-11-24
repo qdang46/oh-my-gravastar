@@ -20,5 +20,6 @@ omg-proto-he = { path = "../proto-he" }
 omg-proto-mouse = { path = "../proto-mouse" }
 omg-proto-khub916 = { path = "../proto-khub916" }
 omg-proto-sparkplayjoy = { path = "../proto-sparkplayjoy" }
+omg-music = { path = "../music" }
 serde.workspace = true
 serde_json.workspace = true

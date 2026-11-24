@@ -21,6 +21,7 @@ use serde_json::json;
 mod kb916_adv;
 mod kb916_macro;
 mod kb916_light;
+mod kb916_music;
 mod profile;
 
 #[derive(Parser)]
@@ -3892,6 +3893,27 @@ enum Kb916Light {
         /// Loop a finite --file stream instead of stopping at EOF.
         #[arg(long)]
         loop_stream: bool,
+        #[command(flatten)]
+        yes: Yes,
+    },
+    /// Music-reactive lighting: capture system audio (macOS
+    /// ScreenCaptureKit loopback, needs Screen Recording permission) or
+    /// the microphone, analyse with FFT and drive cmd-8 frames in real
+    /// time (omg-music crate). Requires `--yes`; snapshots and restores
+    /// the pre-run lighting on exit/Ctrl-C.
+    Music {
+        /// Audio source: `system` (output loopback, macOS only) or `mic`.
+        #[arg(long, default_value = "system")]
+        source: String,
+        /// Frames per second for LED updates (default 30).
+        #[arg(long, default_value_t = 30.0)]
+        fps: f64,
+        /// Input sensitivity multiplier (default 1.6).
+        #[arg(long, default_value_t = 1.6)]
+        sensitivity: f32,
+        /// Stop after this many seconds (default: until Ctrl-C).
+        #[arg(long)]
+        duration: Option<f64>,
         #[command(flatten)]
         yes: Yes,
     },
