@@ -25,18 +25,28 @@
 //! - writes: keymap (3), profile/config (4), custom light colours (6) —
 //!   each performs a read-back verify before reporting success.
 //!
+//! Screen commands (11 clock sync, 12 frame data, 13 begin/end — see
+//! `docs/protocol-khub916-screen.md`) are implemented as explicit named
+//! methods ([`Khub916::screen_begin`], [`Khub916::screen_frame`],
+//! [`Khub916::screen_push`], [`Khub916::screen_end`],
+//! [`Khub916::set_screen_clock`]). They are fire-and-forget feature-report
+//! writes, display-only, and **hardware-unverified** (no screen device was
+//! ever attached; the K98 Pro screen is normally a separate HID interface
+//! that uses the same packet layout).
+//!
+//! The `916_wireLess` 2.4 GHz dongle transport lives in [`wireless`]
+//! (`Khub916Wireless`): 19-byte output reports, 14-byte chunked writes,
+//! additive checksum, input-report reassembly — code-verified only.
+//!
 //! **Never implemented** (protocol blacklist / out of scope):
 //!
-//! - screen commands 11/12/13 and GIF light frames 8 (K98 Pro screen is a
-//!   separate HID interface anyway)
-//! - keyboard reset 17
-//! - SOCD/MT/TGL history write 18 and config read 146
-//! - macro region write 5 (chunk semantics not fully proven)
-//! - the entire `916_wireLess` transport (19-byte output reports, chunked
-//!   writes, additive checksum — separate bead; see
-//!   [`wireless_not_implemented`])
+//! - keyboard reset 17 (wired) and wireless cmd 6 factory reset
+//! - SOCD/MT/TGL history write 18 and config read 146 (wired)
+//! - macro region write 5 (wired; chunk semantics not fully proven)
+//! - GIF light frames 8 (keyboard backlight, unrelated to the screen)
 //! - no generic "send arbitrary command" API exists; [`Khub916::transact`]
-//!   is private so unknown opcodes cannot be emitted.
+//!   is private so unknown opcodes cannot be emitted, and the wireless
+//!   chunked writer is private likewise.
 //!
 //! Write commands are *inferred* from the vendor JS (spec §6 marks the
 //! payload layouts code-verified, not live-verified). Callers must gate
@@ -49,6 +59,8 @@ use anyhow::{anyhow, bail, Result};
 use omg_hid::devices::{KHUB916_WIRED, KHUB916_WIRED_USAGE_PAGE_MIN};
 use omg_hid::Link;
 use serde::Serialize;
+
+pub mod wireless;
 
 // ── Wire constants (docs/protocol-khub916.md §2/§6) ─────────────────────
 
@@ -70,6 +82,9 @@ const MAX_ATTEMPTS: usize = 3;
 const CMD_KEYMAP_WRITE: u8 = 3;
 const CMD_PROFILE_WRITE: u8 = 4;
 const CMD_CUSTOM_LIGHT_WRITE: u8 = 6;
+const CMD_SCREEN_CLOCK: u8 = 11;
+const CMD_SCREEN_FRAME: u8 = 12;
+const CMD_SCREEN_BEGIN_END: u8 = 13;
 const CMD_DEVICE_INFO: u8 = 130;
 const CMD_KEYMAP_READ: u8 = 131;
 const CMD_PROFILE_READ: u8 = 132;
@@ -500,14 +515,6 @@ pub struct Khub916 {
     poisoned: bool,
 }
 
-/// `916_wireLess` (2.4 GHz dongle) is a different transport — 19-byte output
-/// reports, 14-byte chunked writes, additive checksum, input-report stream.
-/// Not implemented yet; kept as an explicit error so callers cannot
-/// accidentally drive it through the wired path.
-pub fn wireless_not_implemented() -> Result<()> {
-    bail!("916_wireLess transport is not implemented yet (docs/protocol-khub916.md §3/§7)")
-}
-
 impl Khub916 {
     pub fn new(link: Box<dyn Link>, report_id: u8) -> Self {
         Self {
@@ -831,6 +838,316 @@ pub struct Rgb {
     pub b: u8,
 }
 
+// ── Screen commands (docs/protocol-khub916-screen.md) ────────────────────
+//
+// All screen commands are fire-and-forget feature-report writes: the JS
+// `nn` screen class never reads responses and `Ht` only parses replies for
+// query commands. **Hardware-unverified** — no screen device was attached;
+// the packet layout is code-verified only.
+
+/// Pixel bytes carried by one cmd-12 chunk packet (bytes 7..519).
+pub const SCREEN_CHUNK_BYTES: usize = 512;
+/// u8 limits on the wire format: ≤255 chunks per frame, ≤255 frames.
+pub const SCREEN_MAX_CHUNKS_PER_FRAME: usize = 255;
+pub const SCREEN_MAX_FRAMES: usize = 255;
+
+/// Inter-packet pacing for screen transfers. The vendor JS waits 30 ms per
+/// chunk on the keyboard interface (`Ht.setKeyBoardImg`) and 50 ms on the
+/// separate screen interface (`nn.setKeyBoardImg`), plus one equal delay
+/// after each frame finishes. Device tolerance for faster pacing is unknown.
+#[derive(Clone, Copy, Debug)]
+pub struct ScreenPacing {
+    /// Delay after every cmd-12 chunk packet.
+    pub chunk_delay: Duration,
+    /// Extra delay after each frame's last chunk.
+    pub frame_delay: Duration,
+}
+
+impl ScreenPacing {
+    /// Vendor pacing on the keyboard HID interface (`Ht`): 30 ms.
+    pub fn keyboard_interface() -> Self {
+        Self {
+            chunk_delay: Duration::from_millis(30),
+            frame_delay: Duration::from_millis(30),
+        }
+    }
+
+    /// Vendor pacing on the separate screen interface (`nn`): 50 ms.
+    pub fn screen_interface() -> Self {
+        Self {
+            chunk_delay: Duration::from_millis(50),
+            frame_delay: Duration::from_millis(50),
+        }
+    }
+
+    /// No pacing — only for tests/benchmarks; real devices should use the
+    /// vendor pacing above until faster rates are proven on hardware.
+    pub fn unpaced() -> Self {
+        Self {
+            chunk_delay: Duration::ZERO,
+            frame_delay: Duration::ZERO,
+        }
+    }
+}
+
+impl Default for ScreenPacing {
+    fn default() -> Self {
+        Self::keyboard_interface()
+    }
+}
+
+/// RTC value for the cmd-11 screen clock sync. `week` is the JS
+/// `Date.getDay()` convention: 0 = Sunday … 6 = Saturday.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ScreenClock {
+    /// Full year; sent little-endian (`year & 0xFF`, `year >> 8`).
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    /// 0 = Sunday … 6 = Saturday.
+    pub week: u8,
+}
+
+impl ScreenClock {
+    /// Validated constructor (the JS performs no validation, but sane RTC
+    /// ranges are enforced here before anything is sent).
+    pub fn new(
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        week: u8,
+    ) -> Result<Self> {
+        if !(1..=12).contains(&month) {
+            bail!("screen clock: month {month} out of range 1-12");
+        }
+        if !(1..=31).contains(&day) {
+            bail!("screen clock: day {day} out of range 1-31");
+        }
+        if hour > 23 || minute > 59 || second > 59 {
+            bail!("screen clock: time {hour:02}:{minute:02}:{second:02} out of range");
+        }
+        if week > 6 {
+            bail!("screen clock: week {week} out of range 0-6");
+        }
+        Ok(Self {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            week,
+        })
+    }
+}
+
+/// Result of [`Khub916::screen_push`].
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ScreenPushStats {
+    pub frames: usize,
+    pub chunks: usize,
+    pub frame_bytes: usize,
+}
+
+/// One RGB888 triple → the two RGB565 big-endian bytes used on the wire
+/// (screen spec §4: `((r>>3)&31)<<11 | ((g>>2)&63)<<5 | ((b>>3)&31)`,
+/// high byte first; alpha is dropped).
+pub fn rgb565_be(r: u8, g: u8, b: u8) -> [u8; 2] {
+    let v = (((r >> 3) & 31) as u16) << 11
+        | (((g >> 2) & 63) as u16) << 5
+        | ((b >> 3) & 31) as u16;
+    [(v >> 8) as u8, (v & 0xFF) as u8]
+}
+
+impl Khub916 {
+    /// Build a screen packet: 7-byte prefix + payload at offset 7,
+    /// zero-padded to 519. Works for all screen commands — cmd 12 simply
+    /// uses its frame/chunk indices as prefix bytes 2/3.
+    fn screen_packet(prefix: [u8; HEADER_LEN], payload: &[u8]) -> Result<[u8; FEATURE_PAYLOAD_BYTES]> {
+        if payload.len() > FEATURE_PAYLOAD_BYTES - HEADER_LEN {
+            bail!("khub916 screen packet too large: {} payload bytes", payload.len());
+        }
+        let mut pkt = [0u8; FEATURE_PAYLOAD_BYTES];
+        pkt[..HEADER_LEN].copy_from_slice(&prefix);
+        pkt[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
+        Ok(pkt)
+    }
+
+    /// Fire-and-forget feature-report write (no response is read — the JS
+    /// screen paths never call `receiveFeatureReport`).
+    fn screen_write(&mut self, pkt: &[u8; FEATURE_PAYLOAD_BYTES]) -> Result<()> {
+        self.guard(|s| {
+            s.link
+                .feature_write(s.report_id, pkt)
+                .map_err(|e| anyhow!("khub916 screen feature write failed: {e:#}"))
+        })
+    }
+
+    /// cmd 13 image-session begin. `frame_count` ≤ 255 and
+    /// `frame_interval_ms` is the per-frame interval in milliseconds
+    /// (`Math.round(1000/fps)` in the JS; the device-side unit is
+    /// unverified — screen spec §8).
+    ///
+    /// **Hardware-unverified.** There is no width/height/format
+    /// negotiation on the wire — geometry is fixed by the device model
+    /// (screen spec §4/§8); frames must be `width*height*2` bytes of
+    /// RGB565 big-endian data (160×80 → 25 600 B → 50 chunks is the common
+    /// case).
+    pub fn screen_begin(&mut self, frame_count: usize, frame_interval_ms: u16) -> Result<()> {
+        if frame_count > SCREEN_MAX_FRAMES {
+            bail!("khub916 screen: frame count {frame_count} exceeds {SCREEN_MAX_FRAMES}");
+        }
+        let payload = [
+            0x40, // begin marker (footer sends 0x00)
+            frame_count as u8,
+            0x00, // frameCount high byte — always 0 on the wire
+            frame_interval_ms as u8,
+            (frame_interval_ms >> 8) as u8,
+        ];
+        let pkt = Self::screen_packet(
+            [CMD_SCREEN_BEGIN_END, 0, 0, 0x01, 0, 0x05, 0x00],
+            &payload,
+        )?;
+        self.screen_write(&pkt)
+    }
+
+    /// cmd 13 image-session end (footer). The JS repeats the frame count
+    /// and interval from the begin packet with marker byte 0x00.
+    pub fn screen_end(&mut self, frame_count: usize, frame_interval_ms: u16) -> Result<()> {
+        if frame_count > SCREEN_MAX_FRAMES {
+            bail!("khub916 screen: frame count {frame_count} exceeds {SCREEN_MAX_FRAMES}");
+        }
+        let payload = [
+            0x00, // footer marker
+            frame_count as u8,
+            0x00,
+            frame_interval_ms as u8,
+            (frame_interval_ms >> 8) as u8,
+        ];
+        let pkt = Self::screen_packet(
+            [CMD_SCREEN_BEGIN_END, 0, 0, 0x01, 0, 0x05, 0x00],
+            &payload,
+        )?;
+        self.screen_write(&pkt)
+    }
+
+    /// cmd 12: send one frame of RGB565 big-endian pixel data as 512-byte
+    /// chunk packets `[12,0,frameIdx,chunkIdx,0,0,2] + data`, paced by
+    /// `pacing` (vendor: 30–50 ms per chunk plus a frame delay). Returns
+    /// the number of chunk packets sent.
+    ///
+    /// `frame` must be non-empty and at most
+    /// [`SCREEN_MAX_CHUNKS_PER_FRAME`] × [`SCREEN_CHUNK_BYTES`] bytes
+    /// (≤130 560 B); `frame_index` must be < 256. On error the session may
+    /// be left mid-animation — send [`Self::screen_end`] or reopen.
+    /// **Hardware-unverified.**
+    pub fn screen_frame(
+        &mut self,
+        frame_index: usize,
+        frame: &[u8],
+        pacing: ScreenPacing,
+    ) -> Result<usize> {
+        if frame_index >= 256 {
+            bail!("khub916 screen: frame index {frame_index} exceeds u8");
+        }
+        if frame.is_empty() {
+            bail!("khub916 screen: empty frame");
+        }
+        let chunks = frame.len().div_ceil(SCREEN_CHUNK_BYTES);
+        if chunks > SCREEN_MAX_CHUNKS_PER_FRAME {
+            bail!(
+                "khub916 screen: frame needs {chunks} chunks, max {SCREEN_MAX_CHUNKS_PER_FRAME}"
+            );
+        }
+        for chunk_index in 0..chunks {
+            let start = chunk_index * SCREEN_CHUNK_BYTES;
+            let end = (start + SCREEN_CHUNK_BYTES).min(frame.len());
+            let mut data = [0u8; SCREEN_CHUNK_BYTES];
+            data[..end - start].copy_from_slice(&frame[start..end]);
+            let pkt = Self::screen_packet(
+                [
+                    CMD_SCREEN_FRAME,
+                    0,
+                    frame_index as u8,
+                    chunk_index as u8,
+                    0,
+                    0,
+                    0x02,
+                ],
+                &data,
+            )?;
+            self.screen_write(&pkt)?;
+            if !pacing.chunk_delay.is_zero() {
+                std::thread::sleep(pacing.chunk_delay);
+            }
+        }
+        if !pacing.frame_delay.is_zero() {
+            std::thread::sleep(pacing.frame_delay);
+        }
+        Ok(chunks)
+    }
+
+    /// High-level animation push: cmd-13 begin → all frames (chunked,
+    /// paced) → cmd-13 end. `frames` are raw RGB565-BE pixel buffers
+    /// (`width*height*2` bytes each); `frame_interval_ms` is the per-frame
+    /// interval sent in the begin/end packets. Returns transfer stats.
+    ///
+    /// **Hardware-unverified** and slow at vendor pacing (~2.5 s per
+    /// 160×80 frame on `screen_interface`, ~1.5 s on `keyboard_interface`).
+    pub fn screen_push(
+        &mut self,
+        frames: &[&[u8]],
+        frame_interval_ms: u16,
+        pacing: ScreenPacing,
+    ) -> Result<ScreenPushStats> {
+        if frames.is_empty() || frames.len() > SCREEN_MAX_FRAMES {
+            bail!(
+                "khub916 screen: need 1..={SCREEN_MAX_FRAMES} frames, got {}",
+                frames.len()
+            );
+        }
+        self.screen_begin(frames.len(), frame_interval_ms)?;
+        let mut chunks = 0usize;
+        let mut bytes = 0usize;
+        for (i, frame) in frames.iter().enumerate() {
+            chunks += self.screen_frame(i, frame, pacing)?;
+            bytes += frame.len();
+        }
+        self.screen_end(frames.len(), frame_interval_ms)?;
+        Ok(ScreenPushStats {
+            frames: frames.len(),
+            chunks,
+            frame_bytes: bytes,
+        })
+    }
+
+    /// cmd 11 screen clock sync (wired keyboard interface only — the JS
+    /// explicitly no-ops this on wireless models). Fire-and-forget.
+    /// **Hardware-unverified**: whether the keyboard forwards this to a
+    /// separate screen interface is unknown (screen spec §8).
+    pub fn set_screen_clock(&mut self, clock: &ScreenClock) -> Result<()> {
+        let payload = [
+            0x00, 0x00, 0x00, // bytes 7-9 reserved
+            clock.year as u8,
+            (clock.year >> 8) as u8,
+            clock.month,
+            clock.day,
+            clock.hour,
+            clock.minute,
+            clock.second,
+            clock.week,
+        ];
+        let pkt = Self::screen_packet([CMD_SCREEN_CLOCK, 0, 0, 0x01, 0, 0x0E, 0x00], &payload)?;
+        self.screen_write(&pkt)
+    }
+}
+
 /// Probe a link for the khub916 feature-report id. The WebHID driver uses
 /// `featureReports[0].reportId` (6 on the K1 Pro); hidapi does not expose
 /// report descriptors, so this tries the known value first, then scans
@@ -867,18 +1184,35 @@ mod tests {
     use std::collections::VecDeque;
     use std::time::Duration;
 
+    /// Shared mock state so tests can inspect sent packets after the
+    /// session owns the link.
+    #[derive(Default)]
+    struct MockShared {
+        responses: VecDeque<Result<Vec<u8>, String>>,
+        /// feature_exchange captures.
+        sent: Vec<(u8, Vec<u8>)>,
+        /// feature_write captures (screen commands).
+        feature_writes: Vec<(u8, Vec<u8>)>,
+    }
+
     /// Scripted feature-report link: pops queued responses per exchange.
     struct MockLink {
-        responses: VecDeque<Result<Vec<u8>, String>>,
-        sent: Vec<(u8, Vec<u8>)>,
+        shared: std::rc::Rc<std::cell::RefCell<MockShared>>,
     }
 
     impl MockLink {
         fn new(responses: Vec<Result<Vec<u8>, String>>) -> Self {
             Self {
-                responses: responses.into(),
-                sent: Vec::new(),
+                shared: std::rc::Rc::new(std::cell::RefCell::new(MockShared {
+                    responses: responses.into(),
+                    ..Default::default()
+                })),
             }
+        }
+
+        /// Clone of the shared state — call before boxing the link.
+        fn shared(&self) -> std::rc::Rc<std::cell::RefCell<MockShared>> {
+            self.shared.clone()
         }
     }
 
@@ -895,12 +1229,20 @@ mod tests {
             payload: &[u8],
             _timeout: Duration,
         ) -> Result<Option<Vec<u8>>> {
-            self.sent.push((report_id, payload.to_vec()));
-            match self.responses.pop_front() {
+            let mut sh = self.shared.borrow_mut();
+            sh.sent.push((report_id, payload.to_vec()));
+            match sh.responses.pop_front() {
                 Some(Ok(r)) => Ok(Some(r)),
                 Some(Err(e)) => Err(anyhow!(e)),
                 None => Ok(None),
             }
+        }
+        fn feature_write(&mut self, report_id: u8, payload: &[u8]) -> Result<()> {
+            self.shared
+                .borrow_mut()
+                .feature_writes
+                .push((report_id, payload.to_vec()));
+            Ok(())
         }
     }
 
@@ -1109,5 +1451,125 @@ mod tests {
         let j = serde_json::to_value(&info).unwrap();
         assert_eq!(j["uuid"], "0x030000000197");
         assert_eq!(j["catalog_model"], "916_K1_PRO");
+    }
+
+    // ── Screen commands (docs/protocol-khub916-screen.md; unverified) ──
+
+    #[test]
+    fn screen_begin_packet_layout() {
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        kb.screen_begin(2, 33).unwrap();
+        let sh = shared.borrow();
+        assert_eq!(sh.feature_writes.len(), 1);
+        let (id, pkt) = &sh.feature_writes[0];
+        assert_eq!(*id, 6);
+        // [13,0,0,1,0,5,0] + [0x40,count,0,intLo,intHi] + zero pad.
+        assert_eq!(&pkt[..7], &[13, 0, 0, 1, 0, 5, 0]);
+        assert_eq!(&pkt[7..12], &[0x40, 2, 0, 33, 0]);
+        assert!(pkt[12..].iter().all(|&b| b == 0));
+        assert_eq!(pkt.len(), FEATURE_PAYLOAD_BYTES);
+        // No feature_exchange was used — screen writes are fire-and-forget.
+        assert!(sh.sent.is_empty());
+    }
+
+    #[test]
+    fn screen_end_packet_layout() {
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        kb.screen_end(2, 33).unwrap();
+        let sh = shared.borrow();
+        let (_, pkt) = &sh.feature_writes[0];
+        assert_eq!(&pkt[..7], &[13, 0, 0, 1, 0, 5, 0]);
+        assert_eq!(&pkt[7..12], &[0x00, 2, 0, 33, 0]); // marker 0x00 footer
+    }
+
+    #[test]
+    fn screen_frame_chunks_and_indices() {
+        // 600 bytes → 2 chunks (512 + 88 padded to 512).
+        let frame: Vec<u8> = (0..600).map(|i| (i % 256) as u8).collect();
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let chunks = kb.screen_frame(3, &frame, ScreenPacing::unpaced()).unwrap();
+        assert_eq!(chunks, 2);
+        let sh = shared.borrow();
+        assert_eq!(sh.feature_writes.len(), 2);
+        let (id, p0) = &sh.feature_writes[0];
+        assert_eq!(*id, 6);
+        // [12,0,frameIdx,chunkIdx,0,0,2] + 512 data bytes.
+        assert_eq!(&p0[..7], &[12, 0, 3, 0, 0, 0, 2]);
+        assert_eq!(&p0[7..12], &frame[..5]);
+        assert_eq!(p0[7 + 512 - 1], frame[511]);
+        let (_, p1) = &sh.feature_writes[1];
+        assert_eq!(&p1[..7], &[12, 0, 3, 1, 0, 0, 2]);
+        assert_eq!(&p1[7..7 + 88], &frame[512..]);
+        assert!(p1[7 + 88..].iter().all(|&b| b == 0)); // zero-padded tail
+    }
+
+    #[test]
+    fn screen_push_full_sequence() {
+        let f0 = vec![0x11u8; 600];
+        let f1 = vec![0x22u8; 100];
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let stats = kb
+            .screen_push(&[&f0, &f1], 40, ScreenPacing::unpaced())
+            .unwrap();
+        assert_eq!(stats.frames, 2);
+        assert_eq!(stats.chunks, 2 + 1);
+        assert_eq!(stats.frame_bytes, 700);
+        let sh = shared.borrow();
+        // begin + 3 chunks + end = 5 writes.
+        assert_eq!(sh.feature_writes.len(), 5);
+        assert_eq!(&sh.feature_writes[0].1[..12], &[13, 0, 0, 1, 0, 5, 0, 0x40, 2, 0, 40, 0]);
+        assert_eq!(&sh.feature_writes[4].1[..12], &[13, 0, 0, 1, 0, 5, 0, 0x00, 2, 0, 40, 0]);
+        // frame 1 chunk 0 carries frame_index=1.
+        assert_eq!(&sh.feature_writes[3].1[..7], &[12, 0, 1, 0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn screen_frame_rejects_bad_input() {
+        let link = MockLink::new(vec![]);
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb.screen_frame(256, &[1], ScreenPacing::unpaced()).is_err());
+        assert!(kb.screen_frame(0, &[], ScreenPacing::unpaced()).is_err());
+        assert!(kb.screen_frame(0, &[0u8; SCREEN_MAX_CHUNKS_PER_FRAME * SCREEN_CHUNK_BYTES + 1], ScreenPacing::unpaced()).is_err());
+        assert!(kb.screen_begin(SCREEN_MAX_FRAMES + 1, 33).is_err());
+        assert!(kb.screen_push(&[], 33, ScreenPacing::unpaced()).is_err());
+    }
+
+    #[test]
+    fn screen_clock_packet_layout() {
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        // 2026-11-24 13:45:07, Tuesday → week 2.
+        let clock = ScreenClock::new(2026, 11, 24, 13, 45, 7, 2).unwrap();
+        kb.set_screen_clock(&clock).unwrap();
+        let sh = shared.borrow();
+        let (_, pkt) = &sh.feature_writes[0];
+        assert_eq!(&pkt[..7], &[11, 0, 0, 1, 0, 14, 0]);
+        // bytes 7-9 zero, then year LE, month, day, h, m, s, week.
+        assert_eq!(
+            &pkt[7..18],
+            &[0, 0, 0, 0xEA, 0x07, 11, 24, 13, 45, 7, 2]
+        );
+        assert!(ScreenClock::new(2026, 13, 1, 0, 0, 0, 0).is_err());
+        assert!(ScreenClock::new(2026, 1, 1, 24, 0, 0, 0).is_err());
+        assert!(ScreenClock::new(2026, 1, 1, 0, 0, 0, 7).is_err());
+    }
+
+    #[test]
+    fn rgb565_be_encoding() {
+        // Pure red → 0xF800; green → 0x07E0; blue → 0x001F; white → 0xFFFF.
+        assert_eq!(rgb565_be(255, 0, 0), [0xF8, 0x00]);
+        assert_eq!(rgb565_be(0, 255, 0), [0x07, 0xE0]);
+        assert_eq!(rgb565_be(0, 0, 255), [0x00, 0x1F]);
+        assert_eq!(rgb565_be(255, 255, 255), [0xFF, 0xFF]);
+        assert_eq!(rgb565_be(0, 0, 0), [0x00, 0x00]);
     }
 }

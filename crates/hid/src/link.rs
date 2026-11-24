@@ -30,6 +30,16 @@ pub trait Link {
             "this HID link does not support feature reports"
         ))
     }
+    /// Send a numbered HID **feature** report without reading a response
+    /// (fire-and-forget). Used by the khub916 screen commands (cmd 11/12/13),
+    /// which the vendor driver never reads replies for — blocking on
+    /// `get_feature_report` there could hang on write-only interfaces.
+    /// The default implementation reports the transport as unsupported.
+    fn feature_write(&mut self, _report_id: u8, _payload: &[u8]) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "this HID link does not support feature-report writes"
+        ))
+    }
 }
 
 pub struct HidLink {
@@ -91,6 +101,18 @@ impl Link for HidLink {
         } else {
             Vec::new()
         }))
+    }
+
+    fn feature_write(&mut self, report_id: u8, payload: &[u8]) -> Result<()> {
+        // Same wire format as `feature_exchange`'s send half: hidapi wants
+        // the report id as buffer byte 0. No `get_feature_report` follows.
+        let mut buf = Vec::with_capacity(payload.len() + 1);
+        buf.push(report_id);
+        buf.extend_from_slice(payload);
+        self.dev
+            .send_feature_report(&buf)
+            .context("feature report send failed")?;
+        Ok(())
     }
 }
 
