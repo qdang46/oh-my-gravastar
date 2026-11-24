@@ -8,6 +8,7 @@
 
 import {
   getRememberedDevices,
+  kindOf,
   openKhub916,
   reopenKhub916,
   requestKhubDevice,
@@ -49,7 +50,7 @@ export const app = {
   snapshot: null as DeviceSnapshot | null,
   /** Currently selected keymap layer arg (0–3; system bit stays 0). */
   layer: 0,
-  status: 'Checking WebHID support…',
+  status: 'Getting ready…',
   statusError: false,
   /** True while a connect/refresh is in flight. */
   busy: false,
@@ -93,7 +94,7 @@ export async function setLayer(layer: number): Promise<void> {
   try {
     await ensureKeymap(app.layer);
   } catch (e) {
-    setStatus(`Keymap read failed: ${e instanceof Error ? e.message : String(e)}`, true);
+    setStatus(`Could not read the keymap: ${e instanceof Error ? e.message : String(e)}`, true);
   }
 }
 
@@ -104,19 +105,19 @@ export async function connect(): Promise<void> {
   app.busy = true;
   emit();
   try {
-    setStatus('Select your GravaStar keyboard…');
+    setStatus('Choose your keyboard in the browser popup…');
     const device = await requestKhubDevice();
     if (!device) {
-      setStatus('No device selected.');
+      setStatus('No keyboard selected.');
       return;
     }
-    setStatus('Opening device and probing report id…');
+    setStatus('Connecting…');
     app.connected = await openKhub916(device);
     await refresh();
   } catch (e) {
     app.connected = null;
     app.snapshot = null;
-    setStatus(`Connect failed: ${e instanceof Error ? e.message : String(e)}`, true);
+    setStatus(`Could not connect: ${e instanceof Error ? e.message : String(e)}`, true);
   } finally {
     app.busy = false;
     emit();
@@ -149,7 +150,7 @@ export async function refresh(): Promise<void> {
   let c = app.connected;
   if (!c) return;
   app.busy = true;
-  setStatus('Reading device…');
+  setStatus('Reading your keyboard…');
   emit();
   try {
     app.snapshot = await loadSnapshot(c.session);
@@ -157,7 +158,7 @@ export async function refresh(): Promise<void> {
     // A poisoned session is recoverable: reopen the same (already
     // authorised) HIDDevice and retry once before bothering the user.
     if (c.session.isPoisoned) {
-      setStatus('Device session dropped — reopening…');
+      setStatus('Connection hiccup — reconnecting…');
       try {
         c = await reopenKhub916(c.device);
         app.connected = c;
@@ -166,35 +167,67 @@ export async function refresh(): Promise<void> {
         app.connected = null;
         app.snapshot = null;
         const reason = c.session.poisonMessage || (e2 instanceof Error ? e2.message : String(e2));
-        setStatus(`Session lost (${reason}) — please reconnect.`, true);
+        setStatus(`Lost the connection (${reason}) — please press Connect again.`, true);
         app.busy = false;
         emit();
         return;
       }
     } else {
-      setStatus(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not read the keyboard: ${e instanceof Error ? e.message : String(e)}`, true);
       app.busy = false;
       emit();
       return;
     }
   }
-  setStatus(`Connected — ${app.snapshot.info.catalogName ?? app.snapshot.info.uuid}`);
+  setStatus(
+    `Ready — ${app.snapshot.info.catalogName ?? 'keyboard'} connected. Pick an option on the left.`,
+  );
   // Warm the current layer so the visualizer has labels immediately.
   await ensureKeymap(app.layer).catch(() => {});
   app.busy = false;
   emit();
 }
 
+/**
+ * Auto-reconnect on page load: WebHID permissions persist per origin, so a
+ * previously authorised khub916 device can be re-opened without any user
+ * gesture. Tries each remembered wired device until one opens.
+ */
+export async function autoConnect(): Promise<void> {
+  if (app.busy || app.connected || !('hid' in navigator)) return;
+  const remembered = await getRememberedDevices().catch(() => [] as HIDDevice[]);
+  const candidates = remembered.filter((d) => kindOf(d.vendorId, d.productId) === 'wired');
+  if (candidates.length === 0) return;
+  app.busy = true;
+  setStatus('Reconnecting keyboard…');
+  emit();
+  try {
+    for (const device of candidates) {
+      try {
+        app.connected = await openKhub916(device);
+        await refresh();
+        return;
+      } catch {
+        // try the next remembered device
+      }
+    }
+    setStatus('Previously authorised device not found — use Connect.');
+  } finally {
+    app.busy = false;
+    emit();
+  }
+}
+
 /** Boot check: WebHID presence + previously granted devices. */
 export async function bootStatus(): Promise<void> {
   if (!('hid' in navigator)) {
-    setStatus('WebHID is not available in this browser. Use Chrome or Edge (desktop).', true);
+    setStatus('This browser cannot talk to keyboards. Please use Chrome or Edge on a computer.', true);
     return;
   }
   const remembered = await getRememberedDevices().catch(() => [] as HIDDevice[]);
   setStatus(
     remembered.length > 0
-      ? `${remembered.length} previously authorised device(s) found — use Connect to pick one.`
-      : 'WebHID ready. Connect a khub916 keyboard (K1 / K98 series, USB cable).',
+      ? 'Welcome back! Press Connect to pick your keyboard.'
+      : 'Ready. Plug in your GravaStar keyboard with a USB cable, then press Connect.',
   );
 }

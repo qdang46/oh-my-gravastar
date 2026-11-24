@@ -12,7 +12,7 @@
  * are omitted — this build is English-only and has no config profiles yet.
  */
 
-import { app, bootStatus, connect, disconnect, refresh, subscribe } from './state.ts';
+import { app, autoConnect, bootStatus, connect, disconnect, refresh, subscribe } from './state.ts';
 import { PAGES, initPages, type PageId } from './pages.ts';
 
 // ── Inline SVG icons (stroke, 24 px viewBox — vendor uses an icon font) ──
@@ -43,6 +43,15 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 export function mountShell(root: HTMLElement): void {
   root.replaceChildren();
+
+  // Vendor MainLayout paints a fixed product background (allbg png).
+  const bg = document.createElement('img');
+  bg.className = 'app-bg';
+  bg.src = './allbg.png';
+  bg.alt = '';
+  bg.setAttribute('aria-hidden', 'true');
+  bg.addEventListener('error', () => bg.remove());
+  root.append(bg);
 
   // ── Sidebar (vendor `aside.sidebar`) ──────────────────────────────
   const sidebar = el('aside', 'sidebar');
@@ -75,14 +84,17 @@ export function mountShell(root: HTMLElement): void {
 
   const topbar = el('header', 'topbar');
   const brand = el('div', 'brand');
+  const mark = el('span', 'brand-mark');
+  mark.innerHTML =
+    '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg>';
   brand.append(
-    el('span', 'brand-mark', '◎'),
+    mark,
     el('span', 'brand-name', 'oh-my-gravastar'),
-    el('span', 'brand-sub', 'khub916 configurator'),
+    el('span', 'brand-sub', 'GravaStar keyboard setup'),
   );
   const actions = el('div', 'topbar-actions');
   const deviceChip = el('span', 'device-chip', '');
-  const connectBtn = el('button', '', 'Connect');
+  const connectBtn = el('button', 'primary', 'Connect');
   connectBtn.type = 'button';
   const disconnectBtn = el('button', '', 'Disconnect');
   disconnectBtn.type = 'button';
@@ -157,14 +169,25 @@ export function mountShell(root: HTMLElement): void {
 
     const snap = app.snapshot;
     deviceName.textContent = snap?.info.catalogName ?? (connected ? 'Connected device' : 'No device');
-    deviceChip.textContent = snap
-      ? `${snap.info.catalogName ?? 'device'} · ${snap.power.percent}%`
-      : connected
-        ? 'connected'
-        : '';
+    deviceChip.replaceChildren();
+    const dot = el('span', 'dot');
+    deviceChip.append(
+      dot,
+      document.createTextNode(
+        snap
+          ? `${snap.info.catalogName ?? 'Keyboard'} · Battery ${snap.power.percent}%`
+          : connected
+            ? 'Connected'
+            : '',
+      ),
+    );
     deviceChip.hidden = !connected;
   });
 
   initPages(page, nav);
-  void bootStatus();
+  void bootStatus().then(() => {
+    // Silent reconnect when the browser still holds permission for the
+    // keyboard — non-tech users shouldn't have to click Connect every load.
+    if (!app.connected) void autoConnect();
+  });
 }

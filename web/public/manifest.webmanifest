@@ -1,12 +1,12 @@
 {
   "name": "oh-my-gravastar",
   "short_name": "omg",
-  "description": "GravaStar keyboard configurator via WebHID (khub916 wired, read-only MVP)",
+  "description": "Set up your GravaStar keyboard \u2014 colours, effects, key remapping and macros, right in the browser.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#0f1115",
-  "theme_color": "#0f1115",
+  "background_color": "#181a1b",
+  "theme_color": "#181a1b",
   "icons": [
     {
       "src": "./icon.svg",

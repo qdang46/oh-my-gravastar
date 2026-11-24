@@ -1,4 +1,6 @@
 /* ── Keys remap page (bead 28d — vendor BasicChangeKeyCode) ───────────── */
+/* Shared control/modal styles live in style.css; this file only holds
+   page-specific layout + the dirty/selected key states. */
 
 .remap-toolbar {
   display: flex;
@@ -8,7 +10,7 @@
 }
 
 .remap-toolbar .segment-bar {
-  margin-bottom: 0;
+  height: 40px;
 }
 
 .remap-pending {
@@ -16,40 +18,8 @@
   border-color: rgba(255, 243, 77, 0.35);
 }
 
-.btn {
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--fg);
-  font-weight: 600;
-  transition:
-    background var(--motion-fast) var(--ease),
-    border-color var(--motion-fast) var(--ease);
-}
-
-.btn:hover:not(:disabled) {
-  background: var(--surface-3);
-  border-color: var(--accent);
-}
-
-.btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-
-/* Dirty / selected key states on the visualizer. */
+/* Dirty / selected key states on the visualizer (vendor: warn outline
+   for unsaved edits, lime outline for the picked key). */
 .kb-key--dirty {
   outline: 2px solid var(--warn);
   outline-offset: -2px;
@@ -69,7 +39,6 @@
   height: 7px;
   border-radius: 50%;
   background: var(--warn);
-  box-shadow: 0 0 4px rgba(255, 243, 77, 0.8);
 }
 
 /* Vendor-style bottom pool: tabs + search + scrollable keycap grid. */
@@ -83,7 +52,7 @@
 }
 
 .pool-toolbar .segment-bar {
-  margin-bottom: 0;
+  height: 40px;
 }
 
 .pool-toolbar-right {
@@ -98,23 +67,11 @@
 .pool-search-input {
   width: 100%;
   max-width: 420px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--fg);
-  font: inherit;
-}
-
-.pool-search-input:focus {
-  outline: none;
-  box-shadow: var(--focus-ring);
 }
 
 .pool-selected {
   margin-bottom: var(--space-2);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--fg-2);
   min-height: 18px;
 }
@@ -143,27 +100,27 @@
   gap: 2px;
   min-height: 52px;
   padding: var(--space-2) var(--space-1);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
   color: var(--fg);
+  font-size: 14px;
   transition:
     background var(--motion-fast) var(--ease),
     border-color var(--motion-fast) var(--ease);
 }
 
 .pool-item:hover {
-  background: var(--surface-3);
-  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
 }
 
 .pool-item--current {
   border-color: var(--accent);
-  background: var(--accent-soft);
 }
 
 .pool-item-name {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-align: center;
   overflow: hidden;
@@ -173,30 +130,5 @@
 }
 
 .pool-item-hex {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--muted);
-}
-
-/* Confirm-write modal additions (shared .modal-overlay/.modal). */
-.modal-title {
-  margin: 0 0 var(--space-2);
-  font-size: 16px;
-}
-
-.modal-list {
-  margin: 0 0 var(--space-3);
-  padding-left: var(--space-5);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.6;
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
+  display: none;
 }

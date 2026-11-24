@@ -181,10 +181,10 @@ export class Khub916Session {
    */
   private async transact(pkt: Uint8Array): Promise<Uint8Array> {
     if (this.poisoned) {
-      throw new Error(`khub916 session poisoned: ${this.poisonReason || 'earlier transport/framing error'}; reconnect the device`);
+      throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);
     }
     if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
-      throw new Error(`khub916 packet must be ${FEATURE_PAYLOAD_BYTES} bytes, got ${pkt.length}`);
+      throw new Error(`unexpected reply size from the keyboard (${pkt.length} bytes)`);
     }
     let lastErr = new Error('khub916: no attempt made');
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -213,7 +213,7 @@ export class Khub916Session {
     }
     this.poisoned = true;
     this.poisonReason = `command failed after ${MAX_ATTEMPTS} attempts: ${lastErr.message}`;
-    throw new Error(`khub916 ${this.poisonReason}`);
+    throw new Error(`the keyboard connection was interrupted (${this.poisonReason})`);
   }
 
   /** receiveFeatureReport raced against our own timeout (spec support varies). */
@@ -287,10 +287,10 @@ export class Khub916Session {
    */
   private async configWrite(pkt: Uint8Array): Promise<void> {
     if (this.poisoned) {
-      throw new Error(`khub916 session poisoned: ${this.poisonReason || 'earlier transport/framing error'}; reconnect the device`);
+      throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);
     }
     if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
-      throw new Error(`khub916 packet must be ${FEATURE_PAYLOAD_BYTES} bytes, got ${pkt.length}`);
+      throw new Error(`unexpected reply size from the keyboard (${pkt.length} bytes)`);
     }
     try {
       await this.device.sendFeatureReport(this.reportId, pkt);
@@ -300,7 +300,7 @@ export class Khub916Session {
     } catch (e) {
       this.poisoned = true;
       this.poisonReason = `config write failed: ${e instanceof Error ? e.message : String(e)}`;
-      throw new Error(`khub916 ${this.poisonReason}`);
+      throw new Error(`the keyboard connection was interrupted (${this.poisonReason})`);
     }
   }
 
@@ -319,7 +319,7 @@ export class Khub916Session {
     await this.configWrite(keymapWritePacket(layer, system, values));
     const back = await this.keyValues(arg);
     if (back.length > KEYMAP_ENTRIES) {
-      throw new Error(`khub916 keymap read-back has ${back.length} entries (> ${KEYMAP_ENTRIES})`);
+      throw new Error('the keyboard returned an unexpected keymap size');
     }
     // Compare zero-padded to the full 128-slot table: devices report
     // only their populated slot count (K1 Pro: 126).
@@ -327,7 +327,7 @@ export class Khub916Session {
       (values[i] ?? 0) === (back[i] ?? 0),
     ).every(Boolean);
     if (!matches) {
-      throw new Error('khub916 keymap write not verified: read-back differs');
+      throw new Error('key change was not confirmed by the keyboard');
     }
     return { command: CMD.keymapWrite, verified: true };
   }
@@ -344,7 +344,7 @@ export class Khub916Session {
    */
   async writeMacroRegion(data: Uint8Array): Promise<WriteOutcome> {
     if (data.length === 0 || data.length > 512) {
-      throw new Error(`khub916 macro write needs 1..=512 bytes, got ${data.length}`);
+      throw new Error(`macro data has an invalid size (${data.length} bytes)`);
     }
     const payload = new Uint8Array(512);
     payload.set(data);
@@ -355,7 +355,7 @@ export class Khub916Session {
     const backPad = new Uint8Array(512);
     backPad.set(back.subarray(0, 512));
     if (!bytesEqual(backPad, payload)) {
-      throw new Error('khub916 macro write not verified: read-back differs');
+      throw new Error('macro save was not confirmed by the keyboard');
     }
     return { command: CMD.macroWrite, verified: true };
   }
@@ -369,12 +369,12 @@ export class Khub916Session {
    */
   async writeProfile(profile: Uint8Array): Promise<WriteOutcome> {
     if (profile.length === 0 || profile.length > FEATURE_PAYLOAD_BYTES - HEADER_LEN) {
-      throw new Error(`khub916 profile write: bad length ${profile.length}`);
+      throw new Error(`device profile has an invalid size (${profile.length} bytes)`);
     }
     await this.configWrite(buildPacket(CMD.profileWrite, 0x00, 0x80, 0x00, profile));
     const back = await this.profile();
     if (!bytesEqual(back.raw, profile)) {
-      throw new Error('khub916 profile write not verified: read-back differs');
+      throw new Error('settings save was not confirmed by the keyboard');
     }
     return { command: CMD.profileWrite, verified: true };
   }
@@ -387,7 +387,7 @@ export class Khub916Session {
   async writeCustomLightColors(colors: readonly Rgb[]): Promise<WriteOutcome> {
     if (colors.length !== CUSTOM_LIGHT_SLOTS) {
       throw new Error(
-        `khub916 custom light write needs exactly ${CUSTOM_LIGHT_SLOTS} colours, got ${colors.length}`,
+        `per-key colour save needs exactly ${CUSTOM_LIGHT_SLOTS} colours, got ${colors.length}`,
       );
     }
     const payload = new Uint8Array(CUSTOM_LIGHT_SLOTS * 3);
@@ -402,7 +402,7 @@ export class Khub916Session {
       back.length === colors.length &&
       back.every((b, i) => b.r === colors[i]?.r && b.g === colors[i]?.g && b.b === colors[i]?.b);
     if (!matches) {
-      throw new Error('khub916 custom light write not verified: read-back differs');
+      throw new Error('per-key colours were not confirmed by the keyboard');
     }
     return { command: CMD.customLightWrite, verified: true };
   }
@@ -417,7 +417,7 @@ export class Khub916Session {
     await this.configWrite(buildLightDataPacket(data));
     const back = await this.lightColorData();
     if (back.length < data.length || !bytesEqual(back.slice(0, data.length), data)) {
-      throw new Error('khub916 light data write not verified: read-back differs');
+      throw new Error('lighting settings were not confirmed by the keyboard');
     }
     return { command: CMD.lightDataWrite, verified: true };
   }
@@ -460,7 +460,7 @@ export class Khub916Session {
    */
   async writeAdvKeyConfig(blob: Uint8Array): Promise<WriteOutcome> {
     if (blob.length !== ADV_BLOB_BYTES) {
-      throw new Error(`khub916 adv-key write needs exactly ${ADV_BLOB_BYTES} bytes, got ${blob.length}`);
+      throw new Error(`advanced-key data has an invalid size (${blob.length} bytes)`);
     }
     await this.configWrite(advKeyWritePacket(blob));
     const want = normalizeBlob(blob);
@@ -491,7 +491,7 @@ export class Khub916Session {
   async writeKeyConfiguration(values: readonly number[]): Promise<WriteOutcome> {
     if (values.length === 0 || values.length > KEYMAP_ENTRIES) {
       throw new Error(
-        `khub916 key configuration write needs 1..=${KEYMAP_ENTRIES} values, got ${values.length}`,
+        `advanced-key save needs 1..=${KEYMAP_ENTRIES} values, got ${values.length}`,
       );
     }
     await this.configWrite(keyConfigurationWritePacket(values));
@@ -507,7 +507,7 @@ export class Khub916Session {
       const back = await this.keyConfiguration();
       if (back.length > KEYMAP_ENTRIES) {
         throw new Error(
-          `khub916 key configuration read-back has ${back.length} entries (> ${KEYMAP_ENTRIES})`,
+          `advanced-key read-back has an unexpected size (${back.length})`,
         );
       }
       const matches = want.every((w, i) => w === (back[i] ?? 0));
@@ -517,7 +517,7 @@ export class Khub916Session {
       if (attempt === 10) break;
       await sleep(50);
     }
-    throw new Error('khub916 key configuration write not verified: read-back differs');
+    throw new Error('advanced-key save was not confirmed by the keyboard');
   }
 }
 
@@ -570,7 +570,7 @@ export async function probeReportId(
       lastErr = `report id ${id}: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
-  throw new Error(`khub916 report id probe failed: ${lastErr}`);
+  throw new Error(`could not identify the keyboard's data channel (${lastErr})`);
 }
 
 function range(from: number, to: number): number[] {
@@ -610,10 +610,10 @@ export interface ConnectedKhub {
 export async function openKhub916(device: HIDDevice): Promise<ConnectedKhub> {
   const match = pickCollection(device);
   if (!match) {
-    throw new Error('No khub916 vendor collection found on this device');
+    throw new Error('this does not look like a supported GravaStar keyboard');
   }
   if (match.kind === 'wireless') {
-    throw new Error('916_wireLess (2.4 GHz dongle) transport is not implemented yet');
+    throw new Error('wireless dongle connections are not supported yet — plug in with USB');
   }
   await device.open();
   try {

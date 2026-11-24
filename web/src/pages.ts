@@ -8,7 +8,7 @@
  *  docs/web-ui-plan.md §2).
  */
 
-import { app, subscribe, type KeyEntry } from './state.ts';
+import { app, connect, subscribe, type KeyEntry } from './state.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, type KeyBlock } from './k1pro-layout.ts';
 import { renderLightingPage, destroyLightingPage } from './lighting.ts';
 import { MacroPage } from './macro.ts';
@@ -90,35 +90,49 @@ function comingSoon(title: string, blurb: string, facts: string[] = []): HTMLEle
 function renderHome(root: HTMLElement): void {
   root.replaceChildren();
   if (!app.connected || !app.snapshot) {
-    const { card: c, body } = card('Connect your keyboard');
-    body.append(
+    const hero = el('div', 'home-hero');
+    hero.append(el('h1', 'home-title', 'Set up your GravaStar keyboard'));
+    hero.append(
       el(
         'p',
-        'hint',
-        'oh-my-gravastar configures GravaStar keyboards over WebHID using the ' +
-          'khub916 wired protocol — the same transport as the vendor 1khub web app. ' +
-          'This build is read-only: it never writes to the keyboard.',
+        'home-note',
+        'Change key colours and effects, remap keys, record macros — all from ' +
+          'your browser. Nothing is installed and nothing leaves your computer.',
       ),
     );
-    const ul = el('ul', 'fact-list');
-    for (const t of [
-      'Chrome or Edge (desktop) — WebHID is not in Firefox/Safari',
-      'USB cable required; the 2.4 GHz dongle (916_wireLess) is not supported yet',
-      'Supported family: GravaStar Mercury K1 / K1 Pro / K1 Lite / K98 Pro / NP',
-    ]) {
-      ul.append(el('li', '', t));
+    const btn = el('button', 'home-connect', 'Connect keyboard');
+    btn.type = 'button';
+    btn.disabled = app.busy;
+    btn.addEventListener('click', () => void connect());
+    hero.append(btn);
+
+    const steps = el('ol', 'home-steps');
+    for (const [n, t] of [
+      ['1', 'Plug the keyboard into your computer with a USB cable.'],
+      ['2', 'Press "Connect keyboard" and pick it in the browser popup.'],
+      ['3', 'Pick what to change on the left — colours, keys, macros.'],
+    ] as const) {
+      const li = el('li');
+      li.append(el('span', 'num', n), el('span', '', t));
+      steps.append(li);
     }
-    body.append(ul);
-    root.append(c);
+    hero.append(steps);
+
+    const needs = el('p', 'hint');
+    needs.textContent =
+      'Works in Chrome or Edge on a computer (not phones or Firefox). ' +
+      'Supported: GravaStar K1 / K1 Pro / K98 series over USB cable.';
+    hero.append(needs);
+    root.append(hero);
     return;
   }
 
   const snap = app.snapshot;
-  const { card: c, body } = card(`Welcome, ${snap.info.catalogName ?? 'GravaStar keyboard'}`);
+  const { card: c, body } = card(`Welcome back, ${snap.info.catalogName ?? 'GravaStar keyboard'}`);
   const chips = el('div', 'chip-row');
   chips.append(
     el('span', 'chip', snap.info.catalogName ?? 'Unknown model'),
-    el('span', 'chip', `FW ${snap.info.versionHex}`),
+    el('span', 'chip', `Firmware ${snap.info.versionHex}`),
     el('span', 'chip', `Battery ${snap.power.percent}%`),
   );
   body.append(chips);
@@ -126,10 +140,21 @@ function renderHome(root: HTMLElement): void {
     el(
       'p',
       'hint',
-      'Use the sidebar to open the keyboard visualizer, lighting, keys, macro and ' +
-        'device pages. Writes arrive in later releases — everything here is a live read.',
+      'Everything you change is saved to the keyboard itself — it keeps ' +
+        'working the same when you unplug it.',
     ),
   );
+  const links = el('div', 'home-links');
+  for (const [path, label] of [
+    ['/lighting', 'Colours & effects'],
+    ['/keys', 'Remap keys'],
+    ['/macro', 'Macros'],
+  ] as const) {
+    const a = el('a', '', label);
+    a.href = `#${path}`;
+    links.append(a);
+  }
+  body.append(links);
   root.append(c);
 }
 
@@ -161,77 +186,93 @@ function renderDevice(root: HTMLElement): void {
     root.append(
       comingSoon(
         'Device',
-        'Connect a keyboard to read its identity, firmware, battery, profile ' +
-          'blob, macro region and custom light colours.',
+        'Connect your keyboard to see its model, firmware version and battery level.',
       ),
     );
     return;
   }
   const snap = app.snapshot;
-  const c = app.connected;
 
-  const infoCard = card('Device info');
+  const infoCard = card('About your keyboard');
   const dl = el('dl', 'kv');
-  kv(dl, 'Model', snap.info.catalogName ?? 'Unknown (UUID not in catalog)');
-  kv(dl, 'Model id', snap.info.catalogModel ?? '—');
-  kv(dl, 'UUID', snap.info.uuid);
+  kv(dl, 'Model', snap.info.catalogName ?? 'Unknown model');
   kv(dl, 'Firmware', snap.info.versionHex);
+  kv(dl, 'Battery', `${snap.power.percent}%`);
   kv(
     dl,
     'Screen',
-    snap.info.screen
-      ? `${snap.info.screen[0]}×${snap.info.screen[1]} (code ${snap.info.screenSize})`
-      : 'none',
+    snap.info.screen ? `${snap.info.screen[0]}×${snap.info.screen[1]}` : 'None',
   );
-  kv(dl, 'Battery', `${snap.power.percent}% (flags 0x${snap.power.flags.toString(16).padStart(2, '0').toUpperCase()})`);
-  kv(dl, 'Transport', `${c.kind} · reportId ${c.reportId} · usagePage 0x${c.collection.usagePage.toString(16).toUpperCase()}`);
-  kv(dl, 'HID', `${formatVidPid(c.device)} · ${c.device.productName ?? c.device.manufacturerName ?? ''}`);
   infoCard.body.append(dl);
   root.append(infoCard.card);
 
-  const rawCard = card('Profile / raw regions');
-  const rawDl = el('dl', 'kv');
-  kv(rawDl, 'Profile blob', `${snap.profile.raw.length} bytes`);
-  kv(rawDl, 'Light mode', snap.profile.lightMode !== null ? `0x${snap.profile.lightMode.toString(16).padStart(4, '0')}` : '—');
-  kv(rawDl, 'Sleep time', snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—');
-  kv(rawDl, 'Light data (138)', `${snap.lightData.length} bytes (raw — per-mode RGB groups not decoded yet)`);
-  kv(rawDl, 'Macro region (133)', `${snap.macro.length} bytes — decoded on the Macro page`);
-  rawCard.body.append(rawDl);
-  root.append(rawCard.card);
+  // Everything below is diagnostic detail — collapsed by default.
+  const adv = el('details', 'advanced');
+  adv.append(el('summary', '', 'Technical details'));
+  const body = el('div', 'advanced-body');
 
-  const lightCard = card('Custom light colours (cmd 134)');
+  const rawCard = el('section', 'card');
+  rawCard.style.marginBottom = '0';
+  rawCard.append(el('h2', '', 'Raw device data'));
+  const rawDl = el('dl', 'kv');
+  kv(rawDl, 'Model id', snap.info.catalogModel ?? '—');
+  kv(rawDl, 'Device UUID', snap.info.uuid);
+  kv(rawDl, 'Profile data', `${snap.profile.raw.length} bytes`);
+  kv(
+    rawDl,
+    'Light mode',
+    snap.profile.lightMode !== null ? `0x${snap.profile.lightMode.toString(16).padStart(4, '0')}` : '—',
+  );
+  kv(
+    rawDl,
+    'Sleep time',
+    snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—',
+  );
+  kv(rawDl, 'Light data', `${snap.lightData.length} bytes`);
+  kv(rawDl, 'Macro data', `${snap.macro.length} bytes`);
+  kv(dl, 'HID', `${formatVidPid(app.connected!.device)} · ${app.connected!.device.productName ?? app.connected!.device.manufacturerName ?? ''}`);
+  rawCard.append(rawDl);
+  body.append(rawCard);
+
+  const lightCard = el('section', 'card');
+  lightCard.style.marginBottom = '0';
+  lightCard.append(el('h2', '', 'Custom light colours'));
   const grid = el('div', 'lightgrid');
   for (const col of snap.colors) {
     const sw = el('div', 'swatch');
     sw.style.background = `rgb(${col.r},${col.g},${col.b})`;
-    sw.title = `#${col.index} pos=${col.pos} rgb(${col.r},${col.g},${col.b})`;
+    sw.title = `Slot ${col.index} — rgb(${col.r},${col.g},${col.b})`;
     grid.append(sw);
   }
-  lightCard.body.append(grid);
-  root.append(lightCard.card);
+  lightCard.append(grid);
+  body.append(lightCard);
 
-  const kmCard = card(`Keymap — layer ${app.layer} (raw)`);
-  kmCard.body.append(el('p', 'hint', '128 u32 slots; index n ↔ pos 8+4n. Labels are the live decode.'));
+  const kmCard = el('section', 'card');
+  kmCard.style.marginBottom = '0';
+  kmCard.append(el('h2', '', `Key assignments — layer ${app.layer} (raw)`));
+  kmCard.append(el('p', 'hint', 'All 128 key slots, in order.'));
   const kgrid = el('div', 'keygrid');
   const entries = snap.keymaps.get(app.layer) ?? [];
   entries.forEach((k: KeyEntry, i: number) => {
     const cell = el('div', 'key');
-    cell.title = `#${i} = 0x${k.value.toString(16).toUpperCase().padStart(8, '0')}`;
+    cell.title = `Slot ${i} — 0x${k.value.toString(16).toUpperCase().padStart(8, '0')}`;
     cell.append(el('span', 'key-label', k.label || '·'), el('span', 'key-idx', String(i)));
     kgrid.append(cell);
   });
-  kmCard.body.append(kgrid);
-  root.append(kmCard.card);
+  kmCard.append(kgrid);
+  body.append(kmCard);
 
-  // JSON view of everything the snapshot holds (bead jwb — deviceOverview).
-  const jsonCard = card('Snapshot JSON');
-  jsonCard.body.append(
-    el('p', 'hint', 'Everything readable today, as one JSON document.'),
-  );
+  const jsonCard = el('section', 'card');
+  jsonCard.style.marginBottom = '0';
+  jsonCard.append(el('h2', '', 'Snapshot JSON'));
+  jsonCard.append(el('p', 'hint', 'Everything readable today, as one JSON document.'));
   const pre = el('pre', 'sec-log sec-json');
   pre.textContent = snapshotToJson(snap);
-  jsonCard.body.append(pre);
-  root.append(jsonCard.card);
+  jsonCard.append(pre);
+  body.append(jsonCard);
+
+  adv.append(body);
+  root.append(adv);
 }
 
 // ── Placeholder pages ──────────────────────────────────────────────────

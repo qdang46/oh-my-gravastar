@@ -195,7 +195,7 @@ function confirmWrite(title: string, lines: string[], confirmLabel: string): Pro
     for (const line of lines) ul.append(el('li', '', line));
     modal.append(ul);
     modal.append(
-      el('p', 'hint warn', 'This writes to the keyboard over WebHID and is verified by read-back.'),
+      el('p', 'hint warn', 'This sends the change to the keyboard and checks it was saved.'),
     );
     const row = el('div', 'modal-actions');
     const cancel = el('button', 'btn', 'Cancel');
@@ -239,7 +239,7 @@ async function writeChanges(changes: ReadonlyMap<number, number>): Promise<void>
       while (values.length <= index) values.push(0);
       values[index] = v >>> 0;
     }
-    const outcome = await session.writeKeymap(layer, 0, values);
+    await session.writeKeymap(layer, 0, values);
     const decoded: KeyEntry[] = values.map((v) => {
       const kv = decodeKeyValue(v);
       return { value: v, kv, label: keyValueLabel(kv) };
@@ -251,10 +251,10 @@ async function writeChanges(changes: ReadonlyMap<number, number>): Promise<void>
       if (m.size === 0) pendingByLayer.delete(layer);
     }
     setStatus(
-      `Keymap layer ${layer}: ${changes.size} key(s) written — cmd ${outcome.command} verified by read-back.`,
+      `Saved ${changes.size} key change(s) on layer ${layer} — checked on the keyboard.`,
     );
   } catch (e) {
-    setStatus(`Keymap write failed: ${e instanceof Error ? e.message : String(e)}`, true);
+    setStatus(`Could not save the key changes: ${e instanceof Error ? e.message : String(e)}`, true);
   } finally {
     busy = false;
     sync();
@@ -272,9 +272,9 @@ async function applyAll(): Promise<void> {
     newValue,
   }));
   const ok = await confirmWrite(
-    `Write ${changes.length} key remap(s) to layer ${layer}?`,
+    `Save ${changes.length} key change(s) to layer ${layer}?`,
     changes.map((c) => describeChange(c, blocks)),
-    'Write & verify',
+    'Save & check',
   );
   if (ok) await writeChanges(m);
 }
@@ -286,9 +286,9 @@ async function applyOne(index: number): Promise<void> {
   const { blocks } = blocksForModel();
   const c: PendingChange = { index, oldValue: committedValue(layer, index), newValue };
   const ok = await confirmWrite(
-    `Write key #${index} (${blockNameFor(blocks, index)}) on layer ${layer}?`,
+    `Change ${blockNameFor(blocks, index)} (#${index}) on layer ${layer}?`,
     [describeChange(c, blocks)],
-    'Write & verify',
+    'Save & check',
   );
   if (ok) await writeChanges(new Map([[index, newValue]]));
 }
@@ -324,9 +324,8 @@ export function renderKeysPage(root: HTMLElement): void {
       el(
         'p',
         'hint',
-        'The keyboard visualizer and key remap need a connected device — ' +
-          'it renders the live keymap read over WebHID and writes go through ' +
-          'the verified cmd-3 keymap path.',
+        'The keyboard visualizer and key remapping need a connected keyboard. ' +
+          'Click a key, pick what it should do, then save.',
       ),
     );
     root.append(c);
@@ -389,11 +388,11 @@ export function renderKeysPage(root: HTMLElement): void {
   const right = el('div', 'pool-toolbar-right');
   const unassignBtn = el('button', 'btn remap-unassign', 'Unassign');
   unassignBtn.type = 'button';
-  unassignBtn.title = 'Bind the selected key to nothing (value 0)';
+  unassignBtn.title = 'Make the selected key do nothing';
   unassignBtn.addEventListener('click', () => {
     if (selected !== null) assignValue(selected, POOL_UNASSIGN.value);
   });
-  const applyOneBtn = el('button', 'btn remap-apply-one', 'Apply this key');
+  const applyOneBtn = el('button', 'btn remap-apply-one', 'Save this key');
   applyOneBtn.type = 'button';
   applyOneBtn.addEventListener('click', () => {
     if (selected !== null) void applyOne(selected);
@@ -440,8 +439,8 @@ export function renderKeysPage(root: HTMLElement): void {
       const item = el('button', 'pool-item', '');
       item.type = 'button';
       const name = el('span', 'pool-item-name', entry.name);
-      const hex = el('span', 'pool-item-hex', hex8(entry.value));
-      item.append(name, hex);
+      item.append(name);
+      item.title = hex8(entry.value);
       if (selected !== null && entry.value === effectiveValue(layer, selected)) {
         item.classList.add('pool-item--current');
       }
@@ -491,8 +490,10 @@ export function renderKeysPage(root: HTMLElement): void {
       selInfo.className = 'pool-selected';
       selInfo.textContent =
         `#${selected} ${block?.name || '(unnamed)'} — ` +
-        `${labelOfValue(committed) || '(empty)'} (${hex8(committed)})` +
-        (pend !== undefined ? ` → pending ${labelOfValue(pend) || '(none)'} (${hex8(pend)})` : '');
+        `currently ${labelOfValue(committed) || 'nothing'}` +
+        (pend !== undefined
+          ? `, will become ${labelOfValue(pend) || 'nothing'}`
+          : '');
       applyOneBtn.disabled = busy || pend === undefined;
 
       // Duplicate-assignment warning (tester-contract spirit): the same
@@ -501,7 +502,9 @@ export function renderKeysPage(root: HTMLElement): void {
         const dup = duplicateSlots(layer, selected, pend);
         dupWarn.textContent =
           dup.length > 0
-            ? `Warning: ${hex8(pend)} is also bound to ${dup.map((i) => `#${i}`).join(', ')}.`
+            ? `Note: ${labelOfValue(pend) || 'that key'} is also assigned to ${dup
+                .map((i) => `#${i}`)
+                .join(', ')}.`
             : '';
       } else {
         dupWarn.textContent = '';

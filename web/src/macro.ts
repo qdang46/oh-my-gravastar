@@ -119,7 +119,7 @@ export class MacroPage {
       c.append(el('h2', '', 'Macro'));
       const body = el('div', 'card-body');
       body.append(
-        el('p', 'hint', 'Connect a keyboard to manage its stored macros (cmd 133 region).'),
+        el('p', 'hint', 'Connect a keyboard to manage its saved macros.'),
       );
       c.append(body);
       this.el.append(c);
@@ -139,8 +139,8 @@ export class MacroPage {
       el(
         'p',
         'hint',
-        `Stored in the device macro region — ~${this.freeBytes()} B free of ${MACRO_REGION_BYTES} B. ` +
-          'Names and steps are written together as one region (cmd 5) and verified by read-back.',
+        `About ${this.freeBytes()} of ${MACRO_REGION_BYTES} bytes of macro storage is free. ` +
+          'Saving writes the whole list to the keyboard and checks it was stored correctly.',
       ),
     );
 
@@ -203,11 +203,10 @@ export class MacroPage {
       el(
         'p',
         'hint',
-        `${isNew ? `New macro (slot ${this.selected})` : `Editing macro [${this.selected}]`} — ` +
-          'a step is a key press (down) or release (up); delay_ms is the 20-bit stored ' +
-          'interval in milliseconds (max ' +
-          MAX_STEP_DURATION.toLocaleString() +
-          '). Edits are staged locally until you save.',
+        `${isNew ? `New macro #${this.selected}` : `Editing macro #${this.selected}`} — ` +
+          'each step is a key press or release with a delay in milliseconds ' +
+          `(up to ${MAX_STEP_DURATION.toLocaleString()}). ` +
+          'Changes are only sent to the keyboard when you save.',
       ),
     );
 
@@ -256,16 +255,16 @@ export class MacroPage {
         nameInput.value = this.draft.name;
         this.dirty = true;
         this.renderSteps(stepsWrap);
-        setStatus(`Imported ${parsed.steps.length} step(s) into the draft — save to write.`);
+        setStatus(`Imported ${parsed.steps.length} step(s) — press Save to send them to the keyboard.`);
       } catch (e) {
-        setStatus(`Steps JSON rejected: ${e instanceof Error ? e.message : String(e)}`, true);
+        setStatus(`That JSON was not understood: ${e instanceof Error ? e.message : String(e)}`, true);
       }
     });
     body.append(importBtn);
 
     // Save row.
     const saveRow = el('div', 'macro-save-row');
-    const save = btn(this.dirty ? 'Save macro (write to device)' : 'Save macro (unchanged)', 'cmd 5 region write + read-back verify');
+    const save = btn(this.dirty ? 'Save macro to keyboard' : 'Save macro (no changes)', 'Saves all macros to the keyboard');
     save.classList.add('primary');
     save.disabled = this.busy || this.draft.steps.length === 0;
     save.addEventListener('click', () => void this.saveMacro());
@@ -310,8 +309,8 @@ export class MacroPage {
       // Action: down/up (the vendor recorder's press/release).
       const action = el('select', 'macro-select') as HTMLSelectElement;
       for (const [v, label] of [
-        ['0', 'down'],
-        ['1', 'up'],
+        ['0', 'Press'],
+        ['1', 'Release'],
       ] as const) {
         const o = el('option', '', label);
         o.value = v;
@@ -332,7 +331,7 @@ export class MacroPage {
       const keySel = el('select', 'macro-select macro-key-select') as HTMLSelectElement;
       const named = macroStepName(step);
       if (named === null) {
-        const o = el('option', '', `usage ${step.usage} (raw)`);
+        const o = el('option', '', `Unknown key (code ${step.usage})`);
         o.value = `u${step.usage}`;
         keySel.append(o);
       }
@@ -395,7 +394,7 @@ export class MacroPage {
           this.dirty = true;
         } else {
           delay.value = String(step.delayMs);
-          setStatus(`delay_ms must be an integer 0..${MAX_STEP_DURATION}`, true);
+          setStatus(`Delay must be a whole number of milliseconds between 0 and ${MAX_STEP_DURATION}`, true);
         }
       });
       const tdDelay = el('td');
@@ -436,12 +435,12 @@ export class MacroPage {
   private fillKindSelect(sel: HTMLSelectElement, step: MacroStep): void {
     sel.replaceChildren();
     const opts: [string, string][] = [
-      ['key', 'key'],
-      ['modifier', 'modifier'],
-      ['mouse', 'mouse'],
+      ['key', 'Key'],
+      ['modifier', 'Modifier'],
+      ['mouse', 'Mouse'],
     ];
     if (typeof step.kind === 'number') {
-      opts.push(['other', `raw nibble ${step.kind}`]);
+      opts.push(['other', 'Other (advanced)']);
     }
     for (const [v, label] of opts) {
       const o = el('option', '', label);
@@ -466,9 +465,8 @@ export class MacroPage {
       el(
         'p',
         'hint',
-        'Writes a tag-3 keymap value 0x03 TT NN II (macro type / loop count / ' +
-          'macro index) into one keymap slot — cmd 3 keymap write, read-back verified. ' +
-          'The macro must already be saved on the device.',
+        'Assigns a saved macro to one key on a chosen layer. ' +
+          'The macro must be saved on the keyboard first.',
       ),
     );
     if (entries.length === 0) {
@@ -525,17 +523,17 @@ export class MacroPage {
     body.append(row);
 
     const btnRow = el('div', 'macro-save-row');
-    const bind = btn('Bind key → macro');
+    const bind = btn('Assign macro to key');
     bind.classList.add('primary');
     bind.disabled = this.busy;
     bind.addEventListener('click', () => void this.bind(macroSel, slotInput, layerSel, typeInput, loopInput, false));
-    const unbind = btn('Unbind key (write 0)');
+    const unbind = btn('Clear this key');
     unbind.disabled = this.busy;
     unbind.addEventListener('click', () => void this.bind(macroSel, slotInput, layerSel, typeInput, loopInput, true));
     btnRow.append(bind, unbind);
     body.append(btnRow);
     body.append(
-      el('p', 'hint', `Keymap has ${KEYMAP_ENTRIES} slots per layer/system arg; slot n ↔ keymap pos 8+4n.`),
+      el('p', 'hint', 'Key slots are numbered 0–127; pick the slot for the key you want to change.'),
     );
 
     c.append(body);
@@ -570,7 +568,7 @@ export class MacroPage {
     if (this.busy || !app.connected || !app.snapshot || this.selected === null || !this.draft) return;
     const draft = this.draft;
     if (draft.steps.length === 0) {
-      setStatus('A macro needs at least one step — use Delete to remove a macro.', true);
+      setStatus('A macro needs at least one step. To remove a macro, use Delete instead.', true);
       return;
     }
     const entries = this.entries();
@@ -583,7 +581,7 @@ export class MacroPage {
       const free = this.freeBytes();
       if (needed > free) {
         setStatus(
-          `Macro space insufficient: '${draft.name}' needs ~${needed} B, ~${free} B free — delete unused macros first.`,
+          `Not enough macro storage: '${draft.name}' needs about ${needed} bytes but only about ${free} are free — delete unused macros first.`,
           true,
         );
         return;
@@ -599,14 +597,14 @@ export class MacroPage {
     try {
       region = buildMacroRegion(next);
     } catch (e) {
-      setStatus(`Cannot build macro region: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not prepare the macro data: ${e instanceof Error ? e.message : String(e)}`, true);
       return;
     }
 
     const desc = isNew
-      ? `Create macro[${slot}] "${entry.name}" with ${entry.steps.length} step(s)`
-      : `Replace macro[${slot}] "${entries[slot]?.name ?? ''}" → "${entry.name}" (${entry.steps.length} step(s))`;
-    if (!window.confirm(`${desc}\n\nWrite the ${region.length}-byte macro region to the device (cmd 5, verified by read-back)?`)) {
+      ? `Create new macro "${entry.name}" with ${entry.steps.length} step(s)`
+      : `Replace macro "${entries[slot]?.name ?? ''}" with "${entry.name}" (${entry.steps.length} step(s))`;
+    if (!window.confirm(`${desc}\n\nSave all macros to the keyboard?`)) {
       return;
     }
 
@@ -618,10 +616,10 @@ export class MacroPage {
       app.snapshot.macro = padMacroRegion(region);
       this.dirty = false;
       this.selected = slot;
-      setStatus(`${desc} — verified.`);
+      setStatus(`${desc} — saved and checked on the keyboard.`);
       emit();
     } catch (e) {
-      setStatus(`Macro write failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not save the macro: ${e instanceof Error ? e.message : String(e)}`, true);
       // Re-read in case the write partially landed.
       try {
         app.snapshot.macro = await app.connected.session.macroRegion();
@@ -649,14 +647,13 @@ export class MacroPage {
     try {
       region = next.length === 0 ? new Uint8Array(4) : buildMacroRegion(next);
     } catch (err) {
-      setStatus(`Cannot build macro region: ${err instanceof Error ? err.message : String(err)}`, true);
+      setStatus(`Could not prepare the macro data: ${err instanceof Error ? err.message : String(err)}`, true);
       return;
     }
     if (
       !window.confirm(
-        `Delete macro[${i}] "${e.name}" (${e.steps.length} step(s))?\n\n` +
-          `Rebuilds and writes the ${region.length}-byte macro region (cmd 5, verified by read-back). ` +
-          'Keys already bound to it keep their tag-3 value but point at a missing index.',
+        `Delete macro "${e.name}" (${e.steps.length} step(s))?\n\n` +
+          'This removes it from the keyboard. Keys already assigned to it will stop working.',
       )
     ) {
       return;
@@ -673,10 +670,10 @@ export class MacroPage {
       } else if (this.selected !== null && this.selected > i) {
         this.selected -= 1;
       }
-      setStatus(`Deleted macro[${i}] "${e.name}" — verified.`);
+      setStatus(`Deleted macro "${e.name}" — saved and checked on the keyboard.`);
       emit();
     } catch (err) {
-      setStatus(`Macro delete failed: ${err instanceof Error ? err.message : String(err)}`, true);
+      setStatus(`Could not delete the macro: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       this.busy = false;
       this.render();
@@ -723,19 +720,17 @@ export class MacroPage {
 
     const before = await oldLabel().catch(() => 'unknown');
     const desc = unbind
-      ? `Clear keymap slot ${slot} (layer ${layer}): ${before} → empty`
-      : `Bind keymap slot ${slot} (layer ${layer}) → macro[${index}] ` +
-        `(tag-3 0x${value.toString(16).toUpperCase().padStart(8, '0')})`;
-    if (!window.confirm(`${desc}\n\nWrite keymap (cmd 3, read-back verified)?`)) return;
+      ? `Clear key slot ${slot} on layer ${layer} (currently ${before})`
+      : `Assign macro[${index}] to key slot ${slot} on layer ${layer} (currently ${before})`;
+    if (!window.confirm(`${desc}\n\nSave this change to the keyboard?`)) return;
 
     this.busy = true;
     this.render();
     try {
       const values = await app.connected.session.keyValues(arg);
       if (slot >= values.length) {
-        throw new Error(`key slot ${slot} out of range: keymap has ${values.length} entries (arg 0x${arg.toString(16).padStart(2, '0').toUpperCase()})`);
+        throw new Error(`key slot ${slot} is out of range — the keymap only has ${values.length} entries`);
       }
-      const old = values[slot] ?? 0;
       const nextVals = values.slice();
       while (nextVals.length < KEYMAP_ENTRIES) nextVals.push(0);
       nextVals[slot] = value;
@@ -743,12 +738,15 @@ export class MacroPage {
       // Refresh the cached decode for this arg.
       app.snapshot.keymaps.delete(arg);
       void ensureKeymap(arg).catch(() => {});
+      const macroName = unbind ? '' : (this.entries()[index]?.name ?? `#${index}`);
       setStatus(
-        `${unbind ? 'Unbound' : 'Bound'} slot ${slot}: 0x${old.toString(16).toUpperCase().padStart(8, '0')} → 0x${value.toString(16).toUpperCase().padStart(8, '0')} — verified.`,
+        unbind
+          ? `Key slot ${slot} cleared — checked on the keyboard.`
+          : `Key slot ${slot} now runs macro "${macroName}" — checked on the keyboard.`,
       );
       emit();
     } catch (e) {
-      setStatus(`Keymap write failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not save the key change: ${e instanceof Error ? e.message : String(e)}`, true);
     } finally {
       this.busy = false;
       this.render();

@@ -78,7 +78,7 @@ function hex8(v: number): string {
 
 function valueText(v: number): string {
   const label = valueLabel(v);
-  return label ? `${hex8(v)} (${label})` : hex8(v);
+  return label ? `${label} (${hex8(v)})` : hex8(v);
 }
 
 /** Human-readable detail for one binding's low bits. */
@@ -86,17 +86,17 @@ function detailText(b: AdvBinding): string {
   const d = b.detail;
   if (d.kind === 'socd') {
     const dirs = ['last-input priority', 'key A priority', 'key B priority', 'all-cancel'];
-    return `dir ${d.direction} (${dirs[d.direction] ?? '?'})${d.keyB ? ' · key B' : ' · key A'}`;
+    return `${dirs[d.direction] ?? `mode ${d.direction}`}${d.keyB ? ' · involves key B' : ' · involves key A'}`;
   }
-  if (d.kind === 'mt') return `hold ${d.time * 10} ms (${d.time} ×10 ms)`;
+  if (d.kind === 'mt') return `hold after ${d.time * 10} ms`
   return 'toggle';
 }
 
 const SOCD_DIRECTIONS: readonly { id: number; label: string }[] = [
-  { id: 0, label: '0 — last input wins' },
-  { id: 1, label: '1 — key A priority' },
-  { id: 2, label: '2 — key B priority' },
-  { id: 3, label: '3 — all cancel' },
+  { id: 0, label: 'Last input wins' },
+  { id: 1, label: 'Key A priority' },
+  { id: 2, label: 'Key B priority' },
+  { id: 3, label: 'All cancel' },
 ];
 
 // ── Page ───────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ export class AdvPage {
       this.keymap = km.map((v) => v >>> 0);
       this.blobUnconfirmed = false;
     } catch (e) {
-      setStatus(`Adv-key read failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not read advanced-key settings: ${e instanceof Error ? e.message : String(e)}`, true);
     } finally {
       this.loading = false;
       this.render();
@@ -167,7 +167,7 @@ export class AdvPage {
       c.append(el('h2', '', 'Advanced keys'));
       const body = el('div', 'card-body');
       body.append(
-        el('p', 'hint', 'Connect a keyboard to manage SOCD / MT / TGL advanced keys (cmd 146 blob + cmd-3 keymap bindings).'),
+        el('p', 'hint', 'Connect a keyboard to manage advanced keys — SOCD, mod-tap and toggle functions.'),
       );
       c.append(body);
       this.el.append(c);
@@ -211,24 +211,38 @@ export class AdvPage {
       el(
         'p',
         'hint',
-        `History blob: ${ADV_BLOB_BYTES} B (cmd 146) — SOCD/MT slots are 8 B, TGL slots 4 B. ` +
-          'Bindings live in the layer-0 keymap as 0x20/0x21/0x22 values. ' +
-          'There is no delete on the wire: "Unbind" clears the keymap slot (cmd 3, verified); ' +
-          'the history entry stays allocated, exactly like the vendor UI.',
+        'SOCD makes two opposing keys share one output, mod-tap (MT) gives a key ' +
+          'two actions depending on how long you hold it, and toggle (TGL) makes ' +
+          'a key switch another key on or off with each press. There is no delete ' +
+          'on the device — "Unbind" clears the key\'s assignment but keeps its ' +
+          'stored settings.',
       ),
     );
+    const tech = el('details', 'advanced');
+    tech.append(el('summary', '', 'Technical details'));
+    const techBody = el('div', 'advanced-body');
+    techBody.append(
+      el(
+        'p',
+        'hint',
+        `History blob: ${ADV_BLOB_BYTES} B — SOCD/MT slots are 8 B, TGL slots 4 B. ` +
+          'Bindings live in the layer-0 keymap as 0x20/0x21/0x22 values.',
+      ),
+    );
+    tech.append(techBody);
+    body.append(tech);
     if (this.blobUnconfirmed) {
       body.append(
         el(
           'p',
           'hint warn',
-          'Last history-blob write was sent but NOT confirmed by read-back — on K1 Pro ' +
-            'firmware cmd 18 does not persist and cmd 146 returns unrelated pages for ~60 s. ' +
-            'The displayed blob is the intended content, not a device read.',
+          'The last settings write was sent but the keyboard did not confirm it. ' +
+            'On K1 Pro firmware this particular save does not always stick — ' +
+            'press Refresh in a minute to check, or try again.',
         ),
       );
     }
-    const r = btn('Re-read device');
+    const r = btn('Refresh');
     r.disabled = this.busy;
     r.addEventListener('click', () => void this.refresh());
     body.append(r);
@@ -247,11 +261,11 @@ export class AdvPage {
 
     // Bindings table.
     if (bindings.length === 0) {
-      body.append(el('p', 'hint', 'No keymap bindings of this kind.'));
+      body.append(el('p', 'hint', 'No keys use this kind of advanced function yet.'));
     } else {
       const table = el('table', 'macro-table');
       const head = el('tr');
-      for (const h of ['Key slot', 'Pos', 'Value', 'Detail', 'History payload', '']) {
+      for (const h of ['Key slot', 'Position', 'Setting', 'Detail', 'Saved values', '']) {
         head.append(el('th', '', h));
       }
       const thead = el('thead');
@@ -263,7 +277,7 @@ export class AdvPage {
         const payload = this.blob ? bindingPayload(this.blob, b) : null;
         const payloadText = payload
           ? payload.map((v) => valueText(v)).join(', ')
-          : '(empty history slot — stale binding)';
+          : '(no saved settings — stale assignment)';
         tr.append(
           el('td', 'mono', `#${b.index}`),
           el('td', 'mono', String(b.pos)),
@@ -272,7 +286,7 @@ export class AdvPage {
           el('td', 'mono adv-payload', payloadText),
         );
         const actions = el('td', 'macro-row-actions');
-        const un = btn('Unbind', 'Write 0 to this keymap slot (cmd 3, verified). History entry is kept.');
+        const un = btn('Unbind', 'Remove this key\'s advanced function. The saved settings stay stored on the keyboard.');
         un.disabled = this.busy;
         un.addEventListener('click', () => void this.unbind(b));
         actions.append(un);
@@ -285,7 +299,7 @@ export class AdvPage {
 
     // History table.
     if (entries.length > 0) {
-      body.append(el('p', 'hint', 'History slots (cmd 146 blob):'));
+      body.append(el('p', 'hint', 'Saved settings on the keyboard:'));
       const htable = el('table', 'macro-table');
       const hhead = el('tr');
       for (const h of ['Slot', 'Stored values']) hhead.append(el('th', '', h));
@@ -318,7 +332,8 @@ export class AdvPage {
     const km = this.keymap ?? [];
     km.forEach((v, i) => {
       if (exclude.includes(i)) return;
-      const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'} · ${hex8(v)}`);
+      const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
+      o.title = hex8(v);
       o.value = String(i);
       sel.append(o);
     });
@@ -332,7 +347,8 @@ export class AdvPage {
     none.value = String(POOL_UNASSIGN.value);
     sel.append(none);
     for (const e of KEY_POOL as readonly PoolEntry[]) {
-      const o = el('option', '', `${e.name} · ${hex8(e.value)}`);
+      const o = el('option', '', e.name);
+      o.title = hex8(e.value);
       o.value = String(e.value >>> 0);
       sel.append(o);
     }
@@ -346,7 +362,7 @@ export class AdvPage {
     if (kind === 'mt') {
       const bind = this.slotSelect();
       bind.value = String(this.firstBindableSlot());
-      row.append(field('Bind key (slot)', bind));
+      row.append(field('Key to change', bind));
       const tap = this.valueSelect();
       tap.value = '4'; // 'A' (HID usage 0x04)
       row.append(field('Tap (short press)', tap));
@@ -359,12 +375,13 @@ export class AdvPage {
       time.max = '100';
       time.step = '1';
       time.value = '50';
-      time.title = 'Hold threshold in 10 ms units (vendor slider 0–100; 50 = 500 ms)';
+      time.title = 'How long you must hold the key before the Hold action fires';
       row.append(field('Hold time (×10 ms)', time));
       body.append(row);
       const go = btn(`Add MT key`, 'Plan + write: keymap binding (cmd 3, verified) then history blob (cmd 18, best-effort)');
       go.classList.add('primary');
       go.disabled = this.busy;
+      go.title = 'Saves the key binding and its settings to the keyboard';
       go.addEventListener('click', () => void this.addMt(bind, tap, hold, time));
       body.append(go);
     } else if (kind === 'socd') {
@@ -394,7 +411,7 @@ export class AdvPage {
       }
       row.append(field('Direction', dir));
       body.append(row);
-      const go = btn('Add SOCD pair', 'Plan + write: keymap bindings (cmd 3, verified) then history blob (cmd 18, best-effort)');
+      const go = btn('Add SOCD pair', 'Saves the key bindings and settings to the keyboard');
       go.classList.add('primary');
       go.disabled = this.busy;
       go.addEventListener('click', () => void this.addSocd(keyA, keyB, dir));
@@ -402,7 +419,7 @@ export class AdvPage {
     } else {
       const bind = this.slotSelect();
       bind.value = String(this.firstBindableSlot());
-      row.append(field('Bind key (slot)', bind));
+      row.append(field('Key to change', bind));
       const toggle = this.slotSelect([Number(bind.value)]);
       row.append(field('Toggle target (slot)', toggle));
       bind.addEventListener('change', () => {
@@ -411,7 +428,7 @@ export class AdvPage {
         if (cur !== Number(bind.value) && km[cur] !== undefined) toggle.value = String(cur);
       });
       body.append(row);
-      const go = btn('Add TGL key', 'Plan + write: keymap binding (cmd 3, verified) then history blob (cmd 18, best-effort)');
+      const go = btn('Add TGL key', 'Saves the key binding and settings to the keyboard');
       go.classList.add('primary');
       go.disabled = this.busy;
       go.addEventListener('click', () => void this.addTgl(bind, toggle));
@@ -455,10 +472,9 @@ export class AdvPage {
     if (
       !window.confirm(
         `${desc}\n\n` +
-          'Writes to the keyboard over WebHID: (1) keymap binding via cmd 3 ' +
-          '(sendKeyConfiguration channel, read-back verified); (2) the 512-byte ' +
-          'adv-key history blob via cmd 18 (best-effort verify — on K1 Pro this ' +
-          'write is known NOT to persist). Continue?',
+          'This saves the change to the keyboard. Note: on some firmware the ' +
+          'saved settings may not stick — the page will tell you honestly if ' +
+          'that happens. Continue?',
       )
     ) {
       return;
@@ -467,7 +483,7 @@ export class AdvPage {
     this.render();
     const s = app.connected.session;
     try {
-      const ko = await s.writeKeyConfiguration(plan.keymap);
+      await s.writeKeyConfiguration(plan.keymap);
       const ho = await s.writeAdvKeyConfig(plan.blob);
 
       // Refresh what we can trust: the arg-0 keymap (248/1 read shows
@@ -484,12 +500,12 @@ export class AdvPage {
       void ensureKeymap(0).catch(() => {});
 
       const hist = ho.verified
-        ? 'history blob verified by read-back'
-        : 'history blob SENT but read-back did not confirm (K1 Pro: cmd 18 does not persist — re-check later or on other hardware)';
-      setStatus(`${desc} — keymap cmd ${ko.command} verified; ${hist}.`);
+        ? 'settings saved and checked'
+        : 'settings sent but NOT confirmed (this firmware may not keep them — press Refresh in a minute to check)';
+      setStatus(`${desc} — key binding saved; ${hist}.`);
       emit();
     } catch (e) {
-      setStatus(`Adv-key write failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not save the advanced-key change: ${e instanceof Error ? e.message : String(e)}`, true);
       // The keymap half may have landed; refresh both reads.
       void this.refresh();
     } finally {
@@ -503,7 +519,7 @@ export class AdvPage {
     const key = Number(bind.value);
     const t = Number(time.value);
     if (!Number.isInteger(t) || t < 0 || t > 100) {
-      setStatus('Hold time must be an integer 0..100 (×10 ms units)', true);
+      setStatus('Hold time must be a whole number between 0 and 100', true);
       return;
     }
     const tapV = Number(tap.value) >>> 0;
@@ -512,7 +528,7 @@ export class AdvPage {
     try {
       plan = planMt(this.blob, this.keymap, key, tapV, holdV, t);
     } catch (e) {
-      setStatus(`Cannot bind MT key: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not set up that mod-tap key: ${e instanceof Error ? e.message : String(e)}`, true);
       return;
     }
     const tapName = valueLabel(tapV) || hex8(tapV);
@@ -533,7 +549,7 @@ export class AdvPage {
     try {
       plan = planSocd(this.blob, this.keymap, a, b, d);
     } catch (e) {
-      setStatus(`Cannot bind SOCD pair: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not set up that SOCD pair: ${e instanceof Error ? e.message : String(e)}`, true);
       return;
     }
     const dirLabel = SOCD_DIRECTIONS.find((x) => x.id === d)?.label ?? String(d);
@@ -551,7 +567,7 @@ export class AdvPage {
     try {
       plan = planTgl(this.blob, this.keymap, key, t);
     } catch (e) {
-      setStatus(`Cannot bind TGL key: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not set up that toggle key: ${e instanceof Error ? e.message : String(e)}`, true);
       return;
     }
     const tgt = this.keymap[t] ?? 0;
@@ -569,10 +585,9 @@ export class AdvPage {
     const oldLabel = keyValueLabel(decodeKeyValue(b.value)) || hex8(b.value);
     if (
       !window.confirm(
-        `Unbind ${KIND_LABEL[b.kind]} at key slot #${b.index} (pos ${b.pos})?\n\n` +
-          `Keymap value ${hex8(b.value)} (${oldLabel}) → 0 via cmd 3 keymap write ` +
-          '(read-back verified). The history-blob entry is NOT removed — the device ' +
-          'has no delete command; the slot stays allocated.',
+        `Remove the ${KIND_LABEL[b.kind]} function from key slot #${b.index}?\n\n` +
+          `The key currently runs ${oldLabel}. Its saved settings stay stored on ` +
+          'the keyboard (the device has no delete), but the key goes back to normal.',
       )
     ) {
       return;
@@ -587,10 +602,10 @@ export class AdvPage {
       this.keymap = values.map((v) => v >>> 0);
       app.snapshot.keymaps.delete(0);
       void ensureKeymap(0).catch(() => {});
-      setStatus(`Unbound ${KIND_LABEL[b.kind]} at slot #${b.index} — verified. History entry kept.`);
+      setStatus(`Removed the ${KIND_LABEL[b.kind]} function from key slot #${b.index} — checked on the keyboard.`);
       emit();
     } catch (e) {
-      setStatus(`Unbind failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not remove that function: ${e instanceof Error ? e.message : String(e)}`, true);
       void this.refresh();
     } finally {
       this.busy = false;

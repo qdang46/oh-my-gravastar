@@ -297,7 +297,8 @@ class LightingView {
   private applying = false;
 
   // Widgets.
-  private modeSelect!: HTMLSelectElement;
+  private modeGrid!: HTMLElement;
+  private readonly modeCards = new Map<number, HTMLButtonElement>();
   private speedRange!: HTMLInputElement;
   private speedVal!: HTMLElement;
   private brightRange!: HTMLInputElement;
@@ -306,7 +307,8 @@ class LightingView {
   private picker!: ColorPicker;
   private targetBtns!: HTMLButtonElement[];
   private target: PickerTarget = { kind: 'effect' };
-  private presetSelect!: HTMLSelectElement;
+  private presetKind: KeysPreset | '' = '';
+  private presetBtns: HTMLButtonElement[] = [];
   private presetColor!: HTMLInputElement;
   private presetTo!: HTMLInputElement;
   private slotGrid!: HTMLElement;
@@ -331,34 +333,55 @@ class LightingView {
 
   // ── Build ──────────────────────────────────────────────────────────
 
+  /** Decorative gradient hint for a mode card (purpose: quick visual
+   *  scan of which effects are multi-colour vs single/off). */
+  private modeThumbStyle(id: number): string {
+    if (id === 0) return 'linear-gradient(135deg,#26282b,#101314)';
+    if (id === 277 || lightModeInfo(id)?.colorSupport === COLOR_SUPPORT.MULTI) {
+      return 'linear-gradient(90deg,#ff5f6d,#ffc371,#7bed9f,#70a1ff,#a55eea,#ff5f6d)';
+    }
+    return 'linear-gradient(135deg,#3a4146,#22262a)';
+  }
+
+  private modeLabel(id: number): string {
+    const name = lightModeInfo(id)?.name ?? `mode ${id}`;
+    return name.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+  }
+
   private build(): void {
     this.root.replaceChildren();
 
-    // Card 1 — live device state.
-    const live = card('Current lighting state');
+    // Hero — the keyboard itself, vendor LightingEffect puts it on top.
+    const hero = el('div', 'kb-hero');
+    this.kbHolder = el('div', 'kb-holder');
+    hero.append(this.kbHolder);
+    this.root.append(hero);
+
+    // Card 1 — live device state (compact readout).
+    const live = card('Current effect');
     this.liveDl = el('dl', 'kv');
     live.body.append(this.liveDl);
     this.root.append(live.card);
 
-    // Card 2 — effect controls.
-    const fx = card('Effect');
-    const modeRow = el('div', 'light-row');
-    modeRow.append(el('label', 'cp-label', 'Mode'));
-    this.modeSelect = document.createElement('select');
-    this.modeSelect.className = 'light-select';
+    // Card 2 — pick an effect.
+    const fx = card('Choose an effect');
+    fx.body.append(el('p', 'hint', 'Tap an effect to preview it on the keyboard above.'));
+    this.modeGrid = el('div', 'mode-grid');
     for (const m of LIGHT_MODES) {
-      const o = document.createElement('option');
-      o.value = String(m.id);
-      o.textContent = `${m.name} (${m.id})`;
-      this.modeSelect.append(o);
+      const b = el('button', 'mode-card');
+      b.type = 'button';
+      const thumb = el('span', 'mode-thumb');
+      thumb.style.background = this.modeThumbStyle(m.id);
+      b.append(thumb, el('span', 'mode-name', this.modeLabel(m.id)));
+      b.addEventListener('click', () => {
+        this.mode = m.id;
+        this.onModeChange();
+        this.markDirty();
+      });
+      this.modeCards.set(m.id, b);
+      this.modeGrid.append(b);
     }
-    this.modeSelect.addEventListener('change', () => {
-      this.mode = Number(this.modeSelect.value);
-      this.onModeChange();
-      this.markDirty();
-    });
-    modeRow.append(this.modeSelect);
-    fx.body.append(modeRow);
+    fx.body.append(this.modeGrid);
 
     const sliders = el('div', 'light-sliders');
     sliders.append(
@@ -383,11 +406,11 @@ class LightingView {
 
     // Colour model radios (single-colour modes only).
     const modelRow = el('div', 'light-row');
-    modelRow.append(el('label', 'cp-label', 'Colour model'));
+    modelRow.append(el('label', 'cp-label', 'Colour'));
     this.modelRadios = [];
     for (const [label, val] of [
-      ['Monochrome', COLOR_MODEL.MONOCHROME],
-      ['Mixing', COLOR_MODEL.MIXING],
+      ['One colour', COLOR_MODEL.MONOCHROME],
+      ['Mixed colours', COLOR_MODEL.MIXING],
     ] as const) {
       const lab = el('label', 'cp-radio');
       const inp = document.createElement('input');
@@ -406,8 +429,75 @@ class LightingView {
       this.modelRadios.push(inp);
     }
     fx.body.append(modelRow);
+    this.root.append(fx.card);
 
-    // Picker + target segmented control.
+    // Card 3 — colours: presets first, picker second, per-key last.
+    const custom = card('Colours');
+    custom.body.append(
+      el('p', 'hint', 'Quick fills for the "custom" effect, or pick any colour by hand.'),
+    );
+
+    // Preset cards — visual first.
+    const presetGrid = el('div', 'preset-grid');
+    const presetDefs: { kind: KeysPreset; label: string; hint: string; thumb: string }[] = [
+      {
+        kind: 'solid',
+        label: 'Solid',
+        hint: 'One colour everywhere',
+        thumb: 'linear-gradient(135deg,#ff5f6d,#ff5f6d)',
+      },
+      {
+        kind: 'gradient',
+        label: 'Gradient',
+        hint: 'Blend between two colours',
+        thumb: 'linear-gradient(90deg,#ff5f6d,#ffc371,#70a1ff)',
+      },
+      {
+        kind: 'rainbow',
+        label: 'Rainbow',
+        hint: 'Every colour of the wheel',
+        thumb: 'linear-gradient(90deg,#ff5f6d,#ffc371,#7bed9f,#70a1ff,#a55eea,#ff5f6d)',
+      },
+    ];
+    this.presetBtns = [];
+    presetDefs.forEach((p, pi) => {
+      const b = el('button', 'preset-card');
+      b.type = 'button';
+      const thumb = el('span', 'preset-thumb');
+      thumb.style.background = p.thumb;
+      b.append(thumb, el('span', '', p.label), el('span', 'preset-hint', p.hint));
+      b.addEventListener('click', () => {
+        this.presetKind = this.presetKind === p.kind ? '' : p.kind;
+        this.presetBtns.forEach((pb, i) =>
+          pb.classList.toggle('active', i === pi && this.presetKind === p.kind),
+        );
+      });
+      this.presetBtns.push(b);
+      presetGrid.append(b);
+    });
+    custom.body.append(presetGrid);
+
+    const presetRow = el('div', 'light-row');
+    presetRow.append(el('label', 'cp-label', 'From'));
+    this.presetColor = document.createElement('input');
+    this.presetColor.type = 'color';
+    this.presetColor.value = '#ff0000';
+    presetRow.append(this.presetColor);
+    presetRow.append(el('label', 'cp-label', 'To'));
+    this.presetTo = document.createElement('input');
+    this.presetTo.type = 'color';
+    this.presetTo.value = '#0000ff';
+    presetRow.append(this.presetTo);
+    const genBtn = el('button', 'btn', 'Apply fill');
+    genBtn.type = 'button';
+    genBtn.addEventListener('click', () => this.applyPreset());
+    const revertBtn = el('button', 'btn', 'Reset to keyboard');
+    revertBtn.type = 'button';
+    revertBtn.addEventListener('click', () => this.revertCustom());
+    presetRow.append(genBtn, revertBtn);
+    custom.body.append(presetRow);
+
+    // Custom colour picker (secondary to presets).
     const pickRow = el('div', 'light-pickrow');
     this.picker = new ColorPicker();
     this.picker.onChange = (c) => this.onPickerColor(c);
@@ -430,72 +520,33 @@ class LightingView {
     mkTarget('Effect colour', { kind: 'effect' });
     mkTarget(`Key #0`, { kind: 'key', index: 0 });
     pickRow.append(targetCol);
-    fx.body.append(pickRow);
-    this.root.append(fx.card);
+    custom.body.append(pickRow);
 
-    // Card 3 — custom per-key colours.
-    const custom = card('Custom per-key colours (126 slots)');
-    custom.body.append(
+    // Per-key colour grid — advanced, collapsed.
+    const adv = el('details', 'advanced');
+    adv.append(el('summary', '', `Individual key colours (${CUSTOM_LIGHT_SLOTS} keys)`));
+    const advBody = el('div', 'advanced-body');
+    advBody.append(
       el(
         'p',
         'hint',
-        'Used by the "custom" effect (mode 277). Click a key on the visualizer ' +
-          'or a cell below to pick which slot the colour picker edits.',
+        'Fine-tune the colour of each key. Click a key on the keyboard or a ' +
+          'cell below to choose which one the colour picker edits.',
       ),
     );
-
-    const presetRow = el('div', 'light-row');
-    presetRow.append(el('label', 'cp-label', 'Preset'));
-    this.presetSelect = document.createElement('select');
-    this.presetSelect.className = 'light-select';
-    for (const [v, label] of [
-      ['', '— choose —'],
-      ['solid', 'Solid'],
-      ['gradient', 'Gradient'],
-      ['rainbow', 'Rainbow'],
-    ] as const) {
-      const o = document.createElement('option');
-      o.value = v;
-      o.textContent = label;
-      this.presetSelect.append(o);
-    }
-    presetRow.append(this.presetSelect);
-
-    const presetColors = el('div', 'light-row light-preset-colors');
-    presetColors.append(el('label', 'cp-label', 'From'));
-    this.presetColor = document.createElement('input');
-    this.presetColor.type = 'color';
-    this.presetColor.value = '#ff0000';
-    presetColors.append(this.presetColor);
-    presetColors.append(el('label', 'cp-label', 'To'));
-    this.presetTo = document.createElement('input');
-    this.presetTo.type = 'color';
-    this.presetTo.value = '#0000ff';
-    presetColors.append(this.presetTo);
-    const genBtn = el('button', 'segment-item', 'Generate');
-    genBtn.type = 'button';
-    genBtn.addEventListener('click', () => this.applyPreset());
-    presetColors.append(genBtn);
-    const revertBtn = el('button', 'segment-item', 'Revert to device');
-    revertBtn.type = 'button';
-    revertBtn.addEventListener('click', () => this.revertCustom());
-    presetColors.append(revertBtn);
-    custom.body.append(presetRow, presetColors);
-
-    this.kbHolder = el('div', 'kb-holder');
-    custom.body.append(this.kbHolder);
-
     this.slotGrid = el('div', 'slotgrid');
-    custom.body.append(this.slotGrid);
+    advBody.append(this.slotGrid);
+    adv.append(advBody);
+    custom.body.append(adv);
     this.root.append(custom.card);
 
-    // Card 4 — JSON + apply.
-    const apply = card('Apply');
+    // Card 4 — save.
+    const apply = card('Save to keyboard');
     const btnRow = el('div', 'light-row');
-    this.applyBtn = el('button', 'apply-btn', 'Apply to keyboard…');
+    this.applyBtn = el('button', 'apply-btn', 'Save changes');
     this.applyBtn.type = 'button';
     this.applyBtn.addEventListener('click', () => void this.confirmAndApply());
-    const resetBtn = el('button', 'segment-item', 'Reset draft');
+    const resetBtn = el('button', 'btn', 'Undo changes');
     resetBtn.type = 'button';
     resetBtn.addEventListener('click', () => {
       this.dirty = false;
@@ -505,22 +556,27 @@ class LightingView {
     apply.body.append(btnRow);
     this.stepLog = el('div', 'step-log');
     apply.body.append(this.stepLog);
+    this.root.append(apply.card);
 
-    const jsonCard = card('Config JSON (omg kb916 light apply schema)');
+    // Config JSON — advanced, collapsed (used by the omg CLI).
+    const jsonDetails = el('details', 'advanced');
+    jsonDetails.append(el('summary', '', 'Advanced: config JSON'));
+    const jsonBody = el('div', 'advanced-body');
     const jsonRow = el('div', 'light-row');
-    const copyBtn = el('button', 'segment-item', 'Copy');
+    const copyBtn = el('button', 'btn', 'Copy');
     copyBtn.type = 'button';
     copyBtn.addEventListener('click', () => {
       void navigator.clipboard?.writeText(this.configJson()).then(() => setStatus('Config JSON copied.'));
     });
-    const dlBtn = el('button', 'segment-item', 'Download .json');
+    const dlBtn = el('button', 'btn', 'Download .json');
     dlBtn.type = 'button';
     dlBtn.addEventListener('click', () => this.downloadJson());
     jsonRow.append(copyBtn, dlBtn);
-    jsonCard.body.append(jsonRow);
+    jsonBody.append(jsonRow);
     this.jsonPre = el('pre', 'json-view mono');
-    jsonCard.body.append(this.jsonPre);
-    this.root.append(apply.card, jsonCard.card);
+    jsonBody.append(this.jsonPre);
+    jsonDetails.append(jsonBody);
+    this.root.append(jsonDetails);
 
     this.renderSlotGrid();
     this.renderKeyboard();
@@ -571,17 +627,21 @@ class LightingView {
       this.liveDl.append(dt, el('dd', '', v));
     };
     if (st) {
-      kv('Mode', `${st.mode} — ${info?.name ?? '(not in vendor table)'}`);
+      const name = info ? this.modeLabel(st.mode) : `Effect ${st.mode} (unknown)`;
+      kv('Effect', name);
       kv('Speed', String(st.speed));
       kv('Brightness', String(st.brightness));
-      kv('Colour model', `${st.colorModel} (${st.colorModel === 1 ? 'monochrome' : 'mixing'})`);
+      kv(
+        'Colour style',
+        st.colorModel === COLOR_MODEL.MONOCHROME ? 'One colour' : 'Mixed colours',
+      );
       const gc = groupColor(snap.lightData, st.mode);
-      kv('Group colour', gc ? rgbToHex(gc) : '— (mode has no colour group)');
+      kv('Accent colour', gc ? rgbToHex(gc) : '—');
     } else {
-      kv('Mode', '— (profile too short to decode)');
+      kv('Effect', '— (could not read from keyboard)');
     }
     const nonBlack = snap.colors.filter((c) => c.r || c.g || c.b).length;
-    kv('Custom colours', `${nonBlack}/${snap.colors.length} non-black`);
+    kv('Per-key colours set', `${nonBlack} of ${snap.colors.length}`);
 
     if ((!this.dirty || force) && !this.applying) {
       this.seedFromSnapshot(snap);
@@ -633,18 +693,20 @@ class LightingView {
   }
 
   private updateControls(): void {
-    // Mode select — add an "unknown" option when the live mode is off-table.
+    // Mode cards — mark the active one; surface off-table live modes.
     const st = app.snapshot ? decodeLightState(app.snapshot.profile.raw) : null;
-    const cur = this.modeSelect.querySelector<HTMLOptionElement>('option[data-current]');
-    cur?.remove();
-    if (st && !lightModeInfo(st.mode) && st.mode === this.mode) {
-      const o = document.createElement('option');
-      o.value = String(st.mode);
-      o.textContent = `${st.mode} (current, not in table)`;
-      o.dataset.current = '1';
-      this.modeSelect.append(o);
+    let known = false;
+    for (const [id, card] of this.modeCards) {
+      const active = id === this.mode;
+      card.classList.toggle('active', active);
+      if (active) known = true;
     }
-    this.modeSelect.value = String(this.mode);
+    this.modeGrid.querySelector('.mode-card-unknown')?.remove();
+    if (!known && st && st.mode === this.mode) {
+      this.modeGrid.append(
+        el('div', 'mode-card mode-card-unknown', `Current effect ${st.mode} (not in table)`),
+      );
+    }
 
     const info = this.modeInfo();
     const special = LIGHT_SPECIAL_MODES.includes(this.mode);
@@ -712,7 +774,7 @@ class LightingView {
   // ── Custom colours ─────────────────────────────────────────────────
 
   private applyPreset(): void {
-    const p = this.presetSelect.value as KeysPreset | '';
+    const p = this.presetKind;
     if (!p) return;
     try {
       this.customColors = buildPresetColors({
@@ -725,7 +787,7 @@ class LightingView {
       this.renderSlotGrid();
       this.renderKeyboard();
     } catch (e) {
-      setStatus(`Preset failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      setStatus(`Could not apply that fill: ${e instanceof Error ? e.message : String(e)}`, true);
     }
   }
 
@@ -860,15 +922,17 @@ class LightingView {
     const json = this.configJson();
     const overlay = el('div', 'modal-overlay');
     const modal = el('div', 'modal');
-    modal.append(el('h3', '', 'Apply lighting config?'));
+    modal.append(el('h3', '', 'Save these lighting changes?'));
     modal.append(
       el(
         'p',
         'hint',
-        'Writes go to the keyboard in order: custom colours (cmd 6) → ' +
-          'profile (cmd 4) → group colour (cmd 10), each read-back verified.',
+        'This writes the new effect, colours and speed to the keyboard and ' +
+          'checks each step was saved correctly. The keyboard may blink while ' +
+          'it updates.',
       ),
     );
+    modal.append(el('p', 'hint', 'Exact settings that will be sent:'));
     const pre = el('pre', 'json-view mono', json);
     modal.append(pre);
     const row = el('div', 'light-row');
@@ -928,7 +992,7 @@ class LightingView {
         const blob = withGroupColor(lightData, this.mode, this.effectColor);
         if (!blob) {
           throw new Error(
-            `mode ${this.mode} has no colour group in the ${lightData.length}-byte light blob`,
+            `This effect (${this.modeLabel(this.mode)}) does not use a single accent colour.`,
           );
         }
         if (!bytesEq(blob, lightData)) newLightBlob = blob;
@@ -941,52 +1005,52 @@ class LightingView {
         !colorsEqual(this.customColors, currentRgb);
 
       let failed = false;
-      // 1. cmd 6 custom colours.
+      // 1. Per-key colours.
       if (customChanged) {
         try {
-          const o = await c.session.writeCustomLightColors(this.customColors);
-          log(`custom colours: verified (cmd ${o.command})`, 'ok');
+          await c.session.writeCustomLightColors(this.customColors);
+          log('Per-key colours: saved and checked', 'ok');
         } catch (e) {
           failed = true;
-          log(`custom colours: FAILED — ${msg(e)}`, 'err');
+          log(`Per-key colours: FAILED — ${msg(e)}`, 'err');
         }
       } else {
-        log('custom colours: skipped (unchanged)', 'dim');
+        log('Per-key colours: skipped (unchanged)', 'dim');
       }
-      // 2. cmd 4 profile.
+      // 2. Effect settings (mode, speed, brightness).
       if (bytesEq(profileBlob, profile.raw)) {
-        log('profile: skipped (unchanged)', 'dim');
+        log('Effect settings: skipped (unchanged)', 'dim');
       } else {
         try {
-          const o = await c.session.writeProfile(profileBlob);
-          log(`profile: verified (cmd ${o.command})`, 'ok');
+          await c.session.writeProfile(profileBlob);
+          log('Effect settings: saved and checked', 'ok');
         } catch (e) {
           failed = true;
-          log(`profile: FAILED — ${msg(e)}`, 'err');
+          log(`Effect settings: FAILED — ${msg(e)}`, 'err');
         }
       }
-      // 3. cmd 10 group colour.
+      // 3. Accent colour for single-colour effects.
       if (newLightBlob) {
         try {
-          const o = await c.session.writeLightData(newLightBlob);
-          log(`group colour: verified (cmd ${o.command})`, 'ok');
+          await c.session.writeLightData(newLightBlob);
+          log('Accent colour: saved and checked', 'ok');
         } catch (e) {
           failed = true;
-          log(`group colour: FAILED — ${msg(e)}`, 'err');
+          log(`Accent colour: FAILED — ${msg(e)}`, 'err');
         }
       } else {
-        log('group colour: skipped', 'dim');
+        log('Accent colour: skipped', 'dim');
       }
 
       if (failed) {
-        setStatus('Lighting apply finished with errors — see steps.', true);
+        setStatus('Some lighting changes failed — see the steps above.', true);
       } else {
-        setStatus('Lighting applied and verified.');
+        setStatus('Lighting saved to the keyboard.');
         this.dirty = false;
       }
       await refresh();
     } catch (e) {
-      setStatus(`Apply failed: ${msg(e)}`, true);
+      setStatus(`Saving failed: ${msg(e)}`, true);
     } finally {
       this.applying = false;
       this.applyBtn.disabled = false;
