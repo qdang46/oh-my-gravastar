@@ -78,8 +78,16 @@ unverified · ⬜ not implemented
 | Non-tech UX pass (plain language, guided flows) | 🚧 in progress |
 | Writes in browser (confirm + read-back verify) | ✅ |
 
-### Roadmap (not started)
+### Roadmap
 
+Platform direction: **Full Custom + Agent-first + Safety-first** — see
+[docs/vision-full-custom.md](docs/vision-full-custom.md) for the audit and
+[docs/IMPLEMENTATION-ROADMAP.md](docs/IMPLEMENTATION-ROADMAP.md) (in progress)
+for the phased plan. Active work is tracked in beads (`br list`).
+
+- 🚧 Capability registry + safety/transaction engine + spec docs (Phase 0)
+- 🚧 Web UI: styled modals, profile history/diff, music-reactive page
+- ⬜ Keymap/Macro/Lighting Studio upgrades (Phase 1)
 - ⬜ HE keyboard hardware verification pass (needs a V75/V60 board)
 - ⬜ Mouse hardware verification pass (needs a Mercury mouse)
 - ⬜ SparkPlayJoy analog → visualizer/TUI feed (travel heatmap)
