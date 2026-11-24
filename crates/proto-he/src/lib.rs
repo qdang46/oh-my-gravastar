@@ -461,7 +461,7 @@ mod tests {
         d[1] = 5;
         d[2] = 0;
         // col 0: x=0.0, y=1.0 (y_raw=4), size 1.
-        let v0 = (4u16 << 11) | (0u16 << 4) | 1;
+        let v0 = (4u16 << 11) | 1;
         d[3..5].copy_from_slice(&v0.to_le_bytes());
         // col 1: x=1.25 (x_raw=5), y=2.5 (y_raw=10), size 3.
         let v1 = (10u16 << 11) | (5u16 << 4) | 3;
