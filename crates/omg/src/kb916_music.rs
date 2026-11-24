@@ -311,6 +311,7 @@ pub fn cmd(
     let mut sent: u64 = 0;
     let mut analyses: u64 = 0;
     let mut beats: u64 = 0;
+    let mut last_bpm: f32 = 0.0;
     let mut stream_error: Option<String> = None;
 
     let mut next_tick = Instant::now();
@@ -337,6 +338,7 @@ pub fn cmd(
         if let Some(mut b) = latest {
             beats += events.len() as u64;
             b.events = events;
+            last_bpm = b.bpm;
             bands = b;
         }
         let frame = viz.frame(&bands, started.elapsed().as_secs_f32());
@@ -394,6 +396,7 @@ pub fn cmd(
             "frames_sent": sent,
             "analyses": analyses,
             "beats": beats,
+            "bpm": last_bpm,
             "elapsed_s": elapsed,
             "stopped_by": stopped_by,
             "stream_error": stream_error,
@@ -402,8 +405,8 @@ pub fn cmd(
         }))?;
     } else {
         println!(
-            "music-reactive: {sent} frames, {analyses} analyses, {beats} beats in {:.1}s ({stopped_by})",
-            elapsed
+            "music-reactive: {sent} frames, {analyses} analyses, {beats} beats in {:.1}s ({stopped_by}), bpm {:.0}",
+            elapsed, last_bpm
         );
         for s in &restore_steps {
             match (
