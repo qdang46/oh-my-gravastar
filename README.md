@@ -46,6 +46,7 @@ unverified · ⬜ not implemented
 | Profile fields (sleep, light mode) | `kb916 set sleep`, `profile get` | setting page | ✅ |
 | Power / battery | `kb916 power` | device page | ✅ |
 | Advanced keys MT / SOCD / TGL | `kb916 adv …` | advanced page | 🧪 keymap binding ✅, history blob (cmd 18) does not persist on K1 Pro |
+| Fn-layer diagnostic ("Fn+X does nothing") | `kb916 doctor fn` | Fn doctor card | 🧪 read-only; K1 Pro names, other models slot indices |
 | Profile export (schema v1 JSON) | `omg profile export` | config page export | ✅ |
 | Profile import / restore | `omg profile import` | config page import | 🧪 CLI he-v2/compx only; khub916 export-only |
 | K98 Pro screen info/plan | `kb916 screen info\|plan` | — | 🧪 push/clock stubbed (no read-back) |
@@ -167,6 +168,7 @@ omg kb916 light music --source mic --yes         # or microphone input
 omg kb916 light music --effect pulse --yes       # beat flash | bass | ambient | spectrum | beat (hybrid)
 omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
 omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
+omg kb916 doctor fn                  # read-only Fn-layer check: dead slots, opaque tags, Fn-key binding
 ```
 
 Writes require `--yes` and are verified by read-back (live-verified on a

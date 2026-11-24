@@ -21,6 +21,7 @@ use serde_json::json;
 mod device;
 mod kb916_adv;
 mod plan;
+mod kb916_doctor;
 mod kb916_macro;
 mod kb916_light;
 mod kb916_music;
@@ -4100,6 +4101,12 @@ enum Kb916Commands {
         #[command(subcommand)]
         command: kb916_adv::Kb916Adv,
     },
+    /// Read-only diagnostics for "Fn+X does nothing". Sends keymap
+    /// queries only — no `--yes`, no writes, nothing near cmd-17 reset.
+    Doctor {
+        #[command(subcommand)]
+        command: Kb916Doctor,
+    },
     /// Restore factory defaults / reset the keyboard MCU (cmd 17,
     /// `setKeyboardReset`; type 0 = factory, type 2 = reset all keymap
     /// layers — per the official webapp). Fire-and-forget — the device
@@ -4121,6 +4128,17 @@ enum Kb916Commands {
         #[command(subcommand)]
         command: Kb916Set,
     },
+}
+
+#[derive(Subcommand)]
+enum Kb916Doctor {
+    /// Diagnose a dead Fn layer: reads the Fn layer (keymap arg 0x01)
+    /// and the base layer (arg 0x00), lists physical keys whose Fn-layer
+    /// slot is 0x00000000, flags opaque/unknown-tag slots (tag 0x08 et
+    /// al., preserved as-is) and cross-checks the Fn key's base-layer
+    /// binding. Read-only; exit 0 even when the verdict is bad — a
+    /// diagnostic is not a failure.
+    Fn,
 }
 
 #[derive(Subcommand)]
@@ -4470,6 +4488,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         Kb916Commands::Macro { command } => return kb916_macro::run(cli, command),
         Kb916Commands::Light { command } => return kb916_light::cmd(cli, command),
         Kb916Commands::Adv { command } => return kb916_adv::cmd(cli, command),
+        Kb916Commands::Doctor { command } => return cmd_kb916_doctor(cli, command),
         _ => {}
     }
 
@@ -4657,7 +4676,8 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         | Kb916Commands::Set { .. }
         | Kb916Commands::Macro { .. }
         | Kb916Commands::Light { .. }
-        | Kb916Commands::Adv { .. } => unreachable!("handled before the session is opened")
+        | Kb916Commands::Adv { .. }
+        | Kb916Commands::Doctor { .. } => unreachable!("handled before the session is opened")
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -4725,6 +4745,38 @@ pub(crate) fn kb916_write_report(
             "{} — write cmd {} verified by read-back",
             change, outcome.command
         );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ── khub916 doctor (`kb916 doctor`, read-only diagnostics) ─────────────
+
+/// `omg kb916 doctor fn`: opens the wired session, performs the two
+/// read-only keymap queries (Fn layer arg 0x01, base layer arg 0x00 —
+/// sequential, this firmware poisons concurrent feature reports) plus
+/// one device-info read for the catalog model, then hands off to
+/// [`kb916_doctor::cmd`]. No `--yes`: nothing is written.
+fn cmd_kb916_doctor(cli: &Cli, command: &Kb916Doctor) -> Result<ExitCode> {
+    match command {
+        Kb916Doctor::Fn => {
+            let (device, mut kb) = match kb916_session(cli)? {
+                Ok(s) => s,
+                Err(code) => return Ok(code),
+            };
+            let info = kb.device_info()?;
+            let fn_values = kb.key_values(kb916_doctor::FN_LAYER_ARG)?;
+            if fn_values.is_empty() {
+                bail!("khub916 Fn-layer read (keymap arg 0x01) returned no entries");
+            }
+            let base_values = kb.key_values(kb916_doctor::BASE_LAYER_ARG)?;
+            kb916_doctor::cmd(
+                cli,
+                &device,
+                info.catalog_model.as_deref(),
+                &fn_values,
+                &base_values,
+            )?;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

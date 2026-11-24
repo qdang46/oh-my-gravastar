@@ -116,6 +116,10 @@ const OUTPUT_NOTES: &[(&[&str], &str)] = &[
         "{device,layer,system,keymap:[u32…]}",
     ),
     (
+        &["kb916", "doctor", "fn"],
+        "{device,model,layout,fn_doctor:{fnArg,baseArg,slotCount,dead:[…],opaque:[…],fnKey:{…},intact,summary}}",
+    ),
+    (
         &["mouse", "info"],
         "{device,identity:{…},online:bool}",
     ),
