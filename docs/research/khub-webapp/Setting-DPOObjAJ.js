@@ -1,0 +1,1 @@
+import{_ as t}from"./_plugin-vue_export-helper-DlAUqK2U.js";import{e as o,o as s,f as n}from"./index-DSyCB7dO.js";const r={},a={class:"setting-container"};function c(_,e){return s(),o("div",a,[...e[0]||(e[0]=[n("h1",null,"设置区域",-1)])])}const i=t(r,[["render",c],["__scopeId","data-v-f9d149fa"]]);export{i as default};
