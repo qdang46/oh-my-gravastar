@@ -22,6 +22,73 @@ network, no telemetry.
 Scope, milestones and the safety contract live in [docs/plan.md](docs/plan.md);
 work is tracked as beads (`br list`).
 
+## Feature checklist
+
+Status: ✅ live-verified on real hardware · 🧪 code + unit-tested, hardware
+unverified · ⬜ not implemented
+
+### khub916 — K1 / K98 wired USB (K1 Pro live-verified)
+
+| Feature | CLI | Web UI | Status |
+| --- | --- | --- | --- |
+| Device detect / info (model, UUID, firmware) | `omg devices`, `kb916 info` | auto-connect + device page | ✅ |
+| Keymap read (4 layers, 126 keys → labels) | `kb916 keys` | visualizer + keys page | ✅ |
+| Key remap (single / full table) | `kb916 set key\|keymap` | keys page (217-key pool) | ✅ |
+| Lighting modes + speed/brightness | `kb916 set light-mode`, `light apply` | lighting page (18 modes, HSV picker) | ✅ |
+| Custom per-key RGB (126 slots) | `kb916 set light-color`, `light apply` | lighting page + presets | ✅ |
+| JSON-driven lighting (`light apply file.json`) | ✅ solid/gradient/rainbow | ✅ same schema in UI | ✅ |
+| Light-data blob decode (cmd 138, 23 groups) | `kb916 light get --json` | lighting page live state | ✅ |
+| Macro region read/write/bind/delete | `kb916 macro …` | macro page (step editor) | ✅ |
+| Profile fields (sleep, light mode) | `kb916 set sleep`, `profile get` | setting page | ✅ |
+| Power / battery | `kb916 power` | device page | ✅ |
+| Advanced keys MT / SOCD / TGL | `kb916 adv …` | advanced page | 🧪 keymap binding ✅, history blob (cmd 18) does not persist on K1 Pro |
+| Profile export (schema v1 JSON) | `omg profile export` | config page export | ✅ |
+| Profile import / restore | `omg profile import` | config page import | 🧪 CLI he-v2/compx only; khub916 export-only |
+| K98 Pro screen info/plan | `kb916 screen info\|plan` | — | 🧪 push/clock stubbed (no read-back) |
+| GIF light frames (cmd 8) | — | — | ⬜ |
+| 2.4 GHz wireless dongle | — | — | 🧪 transport code done (`wireless.rs`), no hardware |
+
+### HE keyboards — V60 / V75 / V75 Pro / V75 Lite (no hardware yet)
+
+| Feature | CLI | Status |
+| --- | --- | --- |
+| Info / layout / keycodes | `kb info`, `kb layout`, `kb keys` | 🧪 |
+| Per-key actuation + Rapid Trigger + deadzones | `kb perf get/set` | 🧪 |
+| Lighting (16 effects, palette, 3 zones) | `kb light`, `kb lighting-areas` | 🧪 |
+| Polling rate / profiles / OS mode | `kb polling`, `kb profile`, `kb os` | 🧪 |
+| Advanced keys (DKS/MPT/MT/TGL/END/SOCD/RS) | `kb hk get/set` | 🧪 |
+| Macros (paged actions) | `kb macro list/get/set` | 🧪 |
+| Live analog travel 6×21 (SparkPlayJoy) | `kb travel-matrix --watch` | 🧪 read-only |
+| Calibration | `kb calibration` | 🧪 |
+
+### Compx mice — M1 / M2 / X / X Pro (no hardware yet)
+
+| Feature | CLI | Status |
+| --- | --- | --- |
+| Info / battery / firmware / full config | `omg mouse info\|battery\|fw\|config` | 🧪 |
+| DPI stages, buttons, lighting, polling, macros | `omg mouse set …` | 🧪 |
+
+### Web UI (`web/`, Vite + WebHID PWA)
+
+| Feature | Status |
+| --- | --- |
+| Offline PWA, vendor-clone shell + keyboard visualizer | ✅ |
+| Silent auto-reconnect (WebHID permission persists) | ✅ |
+| Lighting / Keys / Macro / Advanced / Device / Config pages | ✅ |
+| Non-tech UX pass (plain language, guided flows) | 🚧 in progress |
+| Writes in browser (confirm + read-back verify) | ✅ |
+
+### Roadmap (not started)
+
+- ⬜ HE keyboard hardware verification pass (needs a V75/V60 board)
+- ⬜ Mouse hardware verification pass (needs a Mercury mouse)
+- ⬜ SparkPlayJoy analog → visualizer/TUI feed (travel heatmap)
+- ⬜ khub916 wireless dongle live verification
+- ⬜ K98 Pro screen GIF editor (needs K98 Pro hardware)
+- ⬜ khub916 whole-profile import mapping (export-only today)
+- ⬜ TUI (`omg-tui`) feature parity pass
+- ⬜ macOS `.app` bundle / Linux package for `omg`
+
 ## Install
 
 ```sh
@@ -80,6 +147,10 @@ omg kb916 power                       # battery % and raw status flags
 omg kb916 light-colors get            # 126 per-key RGB colours
 omg kb916 light-data                  # per-mode light blob (hex dump)
 omg kb916 macro                      # macro region (hex dump)
+omg kb916 light get --json           # decoded lighting state (mode/speed/colours)
+omg kb916 light apply fx.json --yes  # apply a lighting JSON (see docs/lighting-schema.md)
+omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
+omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
 ```
 
 Writes require `--yes` and are verified by read-back (live-verified on a
