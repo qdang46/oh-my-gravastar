@@ -34,6 +34,7 @@ pub fn cmd(
     source: &str,
     fps: f64,
     sensitivity: f32,
+    brightness: f32,
     duration: Option<f64>,
     yes: &Yes,
 ) -> Result<ExitCode> {
@@ -51,6 +52,9 @@ pub fn cmd(
     }
     if !(0.1..=10.0).contains(&sensitivity) {
         bail!("--sensitivity must be in 0.1..=10.0, got {sensitivity}");
+    }
+    if !(0.0..=1.0).contains(&brightness) {
+        bail!("--brightness must be in 0.0..=1.0, got {brightness}");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -89,6 +93,7 @@ pub fn cmd(
 
     let params = FrameParams {
         sensitivity,
+        brightness,
         ..FrameParams::default()
     };
     let period = Duration::from_secs_f64(1.0 / fps);

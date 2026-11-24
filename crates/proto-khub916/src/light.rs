@@ -407,9 +407,9 @@ impl Khub916 {
     }
 
     /// Send exactly one cmd-8 frame chunk (≤ [`GIF_FRAME_BYTES`] bytes).
-    /// The caller paces — see [`GIF_FRAME_PACING`]. **Hardware-verified
-    /// pending**: whether the device lights up is the open TEST-001
-    /// question (docs/research/music-reactive-feasibility.md §6).
+    /// The caller paces — see [`GIF_FRAME_PACING`]. **Live-verified**:
+    /// sustained 30–50 fps streams visibly animate the LEDs on K1 Pro
+    /// (TEST-001, docs/research/music-reactive-feasibility.md §6).
     pub fn write_gif_frame(&mut self, frame: &[u8]) -> Result<()> {
         let pkt = Self::gif_frame_packet(frame)?;
         self.gif_write(&pkt)

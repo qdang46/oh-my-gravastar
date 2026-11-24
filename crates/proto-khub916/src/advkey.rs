@@ -776,8 +776,8 @@ mod tests {
         // Fill SOCD region with a repeating non-zero pattern that has no
         // 4 consecutive zeros: 01 02 03 04 repeating → windows of 4 are
         // never all zero.
-        for i in 0..SOCD_REGION_BYTES {
-            blob[i] = (i % 4 + 1) as u8;
+        for (i, b) in blob.iter_mut().take(SOCD_REGION_BYTES).enumerate() {
+            *b = (i % 4 + 1) as u8;
         }
         let km = vec![1u32, 2];
         assert!(plan_socd(&blob, &km, 0, 1, 0).is_err());

@@ -3911,6 +3911,9 @@ enum Kb916Light {
         /// Input sensitivity multiplier (default 1.6).
         #[arg(long, default_value_t = 1.6)]
         sensitivity: f32,
+        /// Output brightness 0.0-1.0 (default 1.0 = full).
+        #[arg(long, default_value_t = 1.0)]
+        brightness: f32,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

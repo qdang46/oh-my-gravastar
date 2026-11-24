@@ -1,12 +1,13 @@
 # Music Reactive Lighting — feasibility research
 
-Status: **cmd-8 transport implemented + live-probed; LED visual
-confirmation still open** (see §6). Date: 2026-11-24. Scope: GravaStar
+Status: **cmd-8 transport implemented + live-verified animating LEDs;
+`omg kb916 light music` audio-reactive pipeline landed (mic live-tested,
+system loopback code-verified).** Date: 2026-11-24. Scope: GravaStar
 khub916 (K1/K1 Pro/K1 Lite/K98), HE v2 keyboards, Compx mouse.
 
 This document records what was verified, from which evidence, and what
-remains unknown. It is the input for a future `omg music` feature; nothing
-here is implemented.
+remains unknown. It is the input for the shipped `omg kb916 light music`
+feature (bead oh-my-gravastar-bp6).
 
 ## 1. How the official feature actually works
 
@@ -143,10 +144,12 @@ the vendor cmd-8 path (`Ht.setGifLight`: flat stream → 378-byte chunks →
   probe".
 - Sustained streams at 30 fps and 50 fps ran clean (≤361 frames per run);
   writes are fire-and-forget so acceptance is inferred, not ACKed.
-- **Still open:** whether the streamed bytes visibly drive the LEDs
-  (needs eyes — no read-back exists), the 378-byte frame layout
-  (planar cmd-6 order assumed; interleaved RGB possible), whether a
-  light mode must be active, and max sustained rate.
+- **LED response confirmed** (2026-11-24, K1 Pro wired): streamed frames
+  visibly animate the backlight; the planar `[R×126][G×126][B×126]`
+  layout (cmd-6 order) is the working frame format — still technically
+  unverified since no read-back exists, but patterns render correctly.
+- Still open: whether a light mode must be active for cmd-8 to show
+  (streams animate with the mode left as-is), and max sustained rate.
 
 Next step if LEDs respond: `omg kb916 light stream --pattern rainbow`
 is the demo; `--file -` accepts raw 378-byte frames on stdin for a future
