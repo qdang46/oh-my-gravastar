@@ -14,6 +14,13 @@ import {
   type ConnectedKhub,
   type Khub916Session,
 } from '../hid.ts';
+import {
+  deviceIdentity,
+  loadLastDevice,
+  orderByLastUsed,
+  sameDevice,
+  saveLastDevice,
+} from '../conn-core.ts';
 import { app, emit, setStatus, type DeviceSnapshot } from './core.ts';
 import { ensureKeymap } from './keymap.ts';
 
@@ -47,6 +54,9 @@ export async function connect(): Promise<void> {
     setStatus('Connecting…');
     app.connected = await openKhub916(device);
     app.deviceLabel = labelFor(app.connected, null);
+    // Remember this unit (vid/pid/serial — serial is for matching only,
+    // never displayed) so auto-connect prefers it next boot.
+    saveLastDevice(deviceIdentity(device));
     // A manual connect is the explicit re-approval that lifts the silent-
     // reconnect write gate (R6); the fresh session starts unblocked.
     app.reconnectedSilently = false;
@@ -71,6 +81,82 @@ export async function disconnect(): Promise<void> {
   app.reconnectedSilently = false;
   await c?.device.close().catch(() => {});
   setStatus('Disconnected.');
+}
+
+/**
+ * Open a granted HIDDevice as a READ-ONLY session: the snapshot loads
+ * immediately, but every write stays blocked until the user explicitly
+ * approves this session (`enableEditing` or a fresh manual Connect).
+ * Shared by boot auto-connect and the HID 'connect' hot-plug path.
+ * Returns true when a live session is up.
+ */
+async function openSilentSession(device: HIDDevice): Promise<boolean> {
+  app.connected = await openKhub916(device);
+  app.deviceLabel = labelFor(app.connected, null);
+  app.connected.session.writesBlocked = true;
+  app.reconnectedSilently = true;
+  saveLastDevice(deviceIdentity(device));
+  await refresh();
+  return app.connected !== null;
+}
+
+/**
+ * The single explicit user action that unlocks writes after a silent
+ * connect — the "Enable editing" banner button. Clears the session's
+ * write gate in place; no reconnect needed. Safety contract: nothing is
+ * ever written without this gesture (or an equivalent manual Connect).
+ */
+export function enableEditing(): void {
+  const c = app.connected;
+  if (c && c.session.writesBlocked) {
+    c.session.writesBlocked = false;
+    app.reconnectedSilently = false;
+    setStatus(`Editing enabled — changes to ${app.deviceLabel || 'the keyboard'} will be saved.`);
+    return;
+  }
+  app.reconnectedSilently = false;
+  emit();
+}
+
+/**
+ * WebHID 'connect' event: a GravaStar wired keyboard appeared. Auto-open
+ * a read-only session ONLY for devices the browser already granted — an
+ * unknown device still needs the Connect picker (a user gesture), so we
+ * never prompt from a hot-plug event.
+ */
+export async function handleHidConnect(device: HIDDevice): Promise<void> {
+  if (!('hid' in navigator) || app.busy || app.connected) return;
+  if (kindOf(device.vendorId, device.productId) !== 'wired') return;
+  const granted = await getRememberedDevices().catch(() => [] as HIDDevice[]);
+  const mine = deviceIdentity(device);
+  if (!granted.some((d) => sameDevice(mine, d))) return;
+  app.busy = true;
+  setStatus('Keyboard detected — connecting read-only…');
+  emit();
+  try {
+    await openSilentSession(device);
+  } catch {
+    app.connected = null;
+    app.snapshot = null;
+    app.deviceLabel = '';
+    app.reconnectedSilently = false;
+  } finally {
+    app.busy = false;
+    emit();
+  }
+}
+
+/**
+ * WebHID 'disconnect' event: the active keyboard went away — drop the
+ * session immediately so no stale snapshot survives and nothing queued
+ * can write to a dead handle. The remembered identity is kept, so
+ * re-plugging (or the next boot) auto-connects again.
+ */
+export function handleHidDisconnect(device: HIDDevice): void {
+  const c = app.connected;
+  if (!c) return;
+  if (!sameDevice(deviceIdentity(c.device), device)) return;
+  void disconnect();
 }
 
 /**
@@ -132,7 +218,7 @@ export async function refresh(): Promise<void> {
   const label = app.deviceLabel || 'keyboard';
   setStatus(
     app.reconnectedSilently
-      ? `Reconnected — ${label}. Nothing was changed; press Disconnect, then Connect, to make changes.`
+      ? `Read-only — ${label} connected. Press "Enable editing" to allow changes.`
       : `Ready — ${label} connected.`,
   );
   // Warm the current layer so the visualizer has labels immediately.
@@ -149,7 +235,11 @@ export async function refresh(): Promise<void> {
 export async function autoConnect(): Promise<void> {
   if (app.busy || app.connected || !('hid' in navigator)) return;
   const remembered = await getRememberedDevices().catch(() => [] as HIDDevice[]);
-  const candidates = remembered.filter((d) => kindOf(d.vendorId, d.productId) === 'wired');
+  // Prefer the last-used unit when several authorised keyboards exist.
+  const candidates = orderByLastUsed(
+    remembered.filter((d) => kindOf(d.vendorId, d.productId) === 'wired'),
+    loadLastDevice(),
+  );
   if (candidates.length === 0) return;
   app.busy = true;
   setStatus('Reconnecting keyboard…');
@@ -157,14 +247,7 @@ export async function autoConnect(): Promise<void> {
   try {
     for (const device of candidates) {
       try {
-        app.connected = await openKhub916(device);
-        app.deviceLabel = labelFor(app.connected, null);
-        // Silent reconnect: gate all writes until the user explicitly
-        // re-approves (Disconnect → Connect). Reads/refresh still work.
-        app.connected.session.writesBlocked = true;
-        app.reconnectedSilently = true;
-        await refresh();
-        return;
+        if (await openSilentSession(device)) return;
       } catch {
         // try the next remembered device
       }
@@ -184,9 +267,10 @@ export async function bootStatus(): Promise<void> {
     return;
   }
   const remembered = await getRememberedDevices().catch(() => [] as HIDDevice[]);
+  const wired = remembered.filter((d) => kindOf(d.vendorId, d.productId) === 'wired');
   setStatus(
-    remembered.length > 0
-      ? 'Welcome back! Press Connect to pick your keyboard.'
+    wired.length > 0
+      ? 'Welcome back! Looking for your keyboard…'
       : 'Ready. Plug in your GravaStar keyboard with a USB cable, then press Connect keyboard below.',
   );
 }

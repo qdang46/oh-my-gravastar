@@ -12,7 +12,17 @@
  * are omitted — this build is English-only and has no config profiles yet.
  */
 
-import { app, autoConnect, bootStatus, connect, disconnect, refresh, subscribe } from './state.ts';
+import {
+  app,
+  autoConnect,
+  bootStatus,
+  connect,
+  disconnect,
+  enableEditing,
+  refresh,
+  subscribe,
+} from './state.ts';
+import { installHidDeviceEvents } from './device-events.ts';
 import { NAV_PAGES, initPages, type PageId } from './pages.ts';
 
 // ── Inline SVG icons (stroke, 24 px viewBox — vendor uses an icon font) ──
@@ -120,8 +130,22 @@ export function mountShell(root: HTMLElement): void {
       'Press Stop on the Music page to restore your lighting.',
   );
   musicBanner.hidden = true;
+  // Read-only gate banner (conn-lifecycle): after a silent auto/hot-plug
+  // reconnect the session is live for viewing but writes stay blocked
+  // until this explicit "Enable editing" click (safety contract R6).
+  const editBanner = el('div', 'edit-banner');
+  const editBannerText = el(
+    'span',
+    'edit-banner-text',
+    'Connected — read only. The keyboard is live for viewing; ' +
+      'changes stay off until you approve this session.',
+  );
+  const editBtn = el('button', 'edit-banner-btn', 'Enable editing');
+  editBtn.type = 'button';
+  editBanner.append(editBannerText, editBtn);
+  editBanner.hidden = true;
   const page = el('main', 'page');
-  mainCol.append(topbar, statusEl, musicBanner, page);
+  mainCol.append(topbar, statusEl, musicBanner, editBanner, page);
 
   const shell = el('div', 'shell');
   shell.append(sidebar, mainCol);
@@ -146,6 +170,7 @@ export function mountShell(root: HTMLElement): void {
   connectBtn.addEventListener('click', () => void connect());
   disconnectBtn.addEventListener('click', () => void disconnect());
   refreshBtn.addEventListener('click', () => void refresh());
+  editBtn.addEventListener('click', enableEditing);
 
   // Sidebar tooltip positioning when collapsed (vendor behaviour).
   nav.addEventListener('mouseover', (e) => {
@@ -174,6 +199,9 @@ export function mountShell(root: HTMLElement): void {
     statusEl.textContent = app.status;
     statusEl.classList.toggle('error', app.statusError);
     musicBanner.hidden = !app.musicActive;
+    // Show the read-only banner whenever the live session's write gate
+    // is closed (silent reconnect / hot-plug connect / poison recovery).
+    editBanner.hidden = app.connected?.session.writesBlocked !== true;
 
     const connected = app.connected !== null;
     connectBtn.hidden = connected || app.busy;
@@ -204,6 +232,9 @@ export function mountShell(root: HTMLElement): void {
   });
 
   initPages(page, nav);
+  // Hot-plug: auto-open read-only sessions for granted keyboards and
+  // drop the session instantly when the active device disappears.
+  installHidDeviceEvents();
   void bootStatus().then(() => {
     // Silent reconnect when the browser still holds permission for the
     // keyboard — non-tech users shouldn't have to click Connect every load.

@@ -221,8 +221,8 @@ export function renderDashboard(root: HTMLElement): void {
   const warnings: string[] = [];
   if (app.reconnectedSilently || app.connected.session.writesBlocked) {
     warnings.push(
-      'This session reconnected silently — all changes are blocked until you ' +
-        'press Disconnect, then Connect again.',
+      'This session started read-only — press "Enable editing" in the banner ' +
+        'to allow changes.',
     );
   }
   warnings.push(...summary.caveats.map((c) => `Unverified: ${c}.`));

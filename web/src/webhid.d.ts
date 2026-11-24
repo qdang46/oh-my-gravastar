@@ -59,6 +59,8 @@ interface HIDDevice extends EventTarget {
   opened: boolean;
   vendorId: number;
   productId: number;
+  /** May be empty/absent — used only for identity matching, never shown. */
+  serialNumber?: string;
   productName?: string;
   manufacturerName?: string;
   collections: HIDCollection[];
@@ -69,7 +71,11 @@ interface HIDDevice extends EventTarget {
   receiveFeatureReport(reportId: number, timeout?: number): Promise<DataView>;
 }
 
-interface HID {
+interface HIDConnectEvent extends Event {
+  readonly device: HIDDevice;
+}
+
+interface HID extends EventTarget {
   requestDevice(options: HIDDeviceRequestOptions): Promise<HIDDevice[]>;
   getDevices(): Promise<HIDDevice[]>;
 }
