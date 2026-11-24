@@ -12,6 +12,7 @@ import { app, ensureKeymap, setLayer, subscribe, type KeyEntry } from './state.t
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, keyIndexOf, type KeyBlock } from './k1pro-layout.ts';
 import { KeyboardView } from './keyboard.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
+import { MacroPage } from './macro.ts';
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
@@ -245,7 +246,7 @@ function renderDevice(root: HTMLElement): void {
   kv(rawDl, 'Light mode', snap.profile.lightMode !== null ? `0x${snap.profile.lightMode.toString(16).padStart(4, '0')}` : '—');
   kv(rawDl, 'Sleep time', snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—');
   kv(rawDl, 'Light data (138)', `${snap.lightData.length} bytes (raw — per-mode RGB groups not decoded yet)`);
-  kv(rawDl, 'Macro region (133)', `${snap.macro.length} bytes (raw — header semantics unproven, spec §6)`);
+  kv(rawDl, 'Macro region (133)', `${snap.macro.length} bytes — decoded on the Macro page`);
   rawCard.body.append(rawDl);
   root.append(rawCard.card);
 
@@ -306,18 +307,20 @@ function renderLighting(root: HTMLElement): void {
   );
 }
 
+// ── Macro (bead ae3) ───────────────────────────────────────────────────
+//
+// The MacroPage is stateful (draft steps, selection, bind form), so it is
+// created once per mount and updates itself via `subscribe` — unlike the
+// stateless placeholder renderers it must NOT be rebuilt on every emit.
+// `isConnected` detects navigation away (another renderer's
+// `replaceChildren` detaches it) so returning to the route remounts.
+
+let macroPage: MacroPage | null = null;
+
 function renderMacro(root: HTMLElement): void {
-  root.replaceChildren();
-  const facts: string[] = [];
-  if (app.snapshot) facts.push(`Macro region currently holds ${app.snapshot.macro.length} raw bytes.`);
-  facts.push('Macro decode + editor arrive with the macro protocol bead (cmd 133 parse, cmd 3 write path).');
-  root.append(
-    comingSoon(
-      'Macro',
-      'Vendor page: 宏设置 — record/edit macros, bind them to keys, loop types.',
-      facts,
-    ),
-  );
+  if (macroPage && macroPage.el.isConnected) return;
+  macroPage?.destroy();
+  macroPage = new MacroPage(root);
 }
 
 function renderAdvanced(root: HTMLElement): void {
@@ -370,6 +373,8 @@ export function destroyPages(): void {
   keysView?.destroy();
   keysView = null;
   keysUnsub?.();
+  macroPage?.destroy();
+  macroPage = null;
   window.removeEventListener('hashchange', route);
 }
 
@@ -384,6 +389,12 @@ function updateNav(): void {
 function route(): void {
   const page = pageFromHash(location.hash);
   currentPage = page;
+  // The macro view is stateful — tear it down when navigating away so it
+  // does not keep a live subscription while detached.
+  if (page !== 'macro' && macroPage) {
+    macroPage.destroy();
+    macroPage = null;
+  }
   if (pageRoot) renderers[page](pageRoot);
   updateNav();
 }

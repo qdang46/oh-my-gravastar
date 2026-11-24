@@ -11,10 +11,9 @@
  *   (spec §1);
  * - `reportId = featureReports[0].reportId` with a 6 → 1..32 probe fallback
  *   like `probe_report_id` (only the read-only cmd-130 query is ever sent);
- * - feature-report transact with 3 s timeout + 3 attempts and echo check.
- *
- * READ-ONLY MVP: only query commands are exposed. No write opcodes exist
- * in this module.
+ * - feature-report transact with 3 s timeout + 3 attempts and echo check;
+ * - fire-and-forget config writes (cmd 3/5) followed by read-back verify —
+ *   port of `Khub916::write_keymap` / `write_macro_region`.
  */
 
 import {
@@ -28,6 +27,9 @@ import {
   parseKeyValues,
   parseLightColorData,
   parseMacroRegion,
+  keymapWritePacket,
+  macroWritePacket,
+  KEYMAP_ENTRIES,
   parsePower,
   parseProfile,
   queryPacket,
@@ -138,6 +140,8 @@ export function pickCollection(device: HIDDevice): CollectionMatch | null {
 
 const TRANSPORT_TIMEOUT_MS = 3000;
 const MAX_ATTEMPTS = 3;
+/** Settle delay between a fire-and-forget config write and its read-back. */
+const WRITE_SETTLE_MS = 150;
 
 /**
  * One open khub916 wired session. Feature-report reads are async; a
@@ -253,9 +257,90 @@ export class Khub916Session {
     return this.query(CMD.lightDataRead, 0x00, 0xe3, 0x01).then(parseLightColorData);
   }
 
-  /** Macro region (cmd 133, ≤512 B) — raw, parsing stubbed. */
+  /** Macro region (cmd 133, ≤512 B) — raw; decode with proto/macro916.ts. */
   macroRegion(): Promise<Uint8Array> {
     return this.query(CMD.macroRead, 0x00, 0x00, 0x02).then(parseMacroRegion);
+  }
+
+  // ── Writes (port of `config_write` + the verified write_* methods) ──
+
+  /**
+   * Fire-and-forget config write. The vendor JS never reads a reply to
+   * write commands — only `sendFeatureReport` — so this bypasses the
+   * echo-checked `transact`. A transport error poisons the session.
+   */
+  private async configWrite(pkt: Uint8Array): Promise<void> {
+    if (this.poisoned) {
+      throw new Error('khub916 session poisoned by an earlier transport/framing error; reconnect the device');
+    }
+    if (pkt.length !== FEATURE_PAYLOAD_BYTES) {
+      throw new Error(`khub916 packet must be ${FEATURE_PAYLOAD_BYTES} bytes, got ${pkt.length}`);
+    }
+    try {
+      await this.device.sendFeatureReport(this.reportId, pkt);
+      // Let the firmware commit before the verify read (vendor spacing is
+      // ~30 ms/command, debounce 100 ms; Rust uses 150 ms).
+      await new Promise((r) => setTimeout(r, WRITE_SETTLE_MS));
+    } catch (e) {
+      this.poisoned = true;
+      throw new Error(`khub916 config write failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Write the keymap (cmd 3, tags 248/1). `layer`/`system` pack into
+   * `arg = layer & 3 | (system & 1) << 2`. `values` is the u32 BE key
+   * list — at most 128; shorter lists are zero padded exactly like the
+   * vendor `formatKeyPayload` (see `keymapWritePacket`).
+   *
+   * Verify: re-reads cmd 131 with the same arg; every slot must match
+   * (missing tail entries count as 0). A mismatch throws — the session
+   * is *not* poisoned (the write landed, the data differs).
+   */
+  async writeKeymap(layer: number, system: number, values: readonly number[]): Promise<WriteOutcome> {
+    const arg = (layer & 3) | ((system & 1) << 2);
+    await this.configWrite(keymapWritePacket(layer, system, values));
+    const back = await this.keyValues(arg);
+    if (back.length > KEYMAP_ENTRIES) {
+      throw new Error(`khub916 keymap read-back has ${back.length} entries (> ${KEYMAP_ENTRIES})`);
+    }
+    // Compare zero-padded to the full 128-slot table: devices report
+    // only their populated slot count (K1 Pro: 126).
+    const matches = Array.from({ length: KEYMAP_ENTRIES }, (_, i) =>
+      (values[i] ?? 0) === (back[i] ?? 0),
+    ).every(Boolean);
+    if (!matches) {
+      throw new Error('khub916 keymap write not verified: read-back differs');
+    }
+    return { command: CMD.keymapWrite, verified: true };
+  }
+
+  /**
+   * Write the macro region (cmd 5, tags `len&0xFF`/0 — vendor header
+   * `[5,0,0,1,0,len,0]`). `data` is the assembled region (see
+   * `buildMacroRegion`); it is zero-padded to the vendor's fixed
+   * 512-byte payload exactly like `setKeyBoardMacroIndependent` /
+   * `deleteKeyBoardMacroKey`.
+   *
+   * Verify: cmd-133 read-back, zero-padded/truncated to 512 bytes, must
+   * equal the sent payload. A mismatch throws without poisoning.
+   */
+  async writeMacroRegion(data: Uint8Array): Promise<WriteOutcome> {
+    if (data.length === 0 || data.length > 512) {
+      throw new Error(`khub916 macro write needs 1..=512 bytes, got ${data.length}`);
+    }
+    const payload = new Uint8Array(512);
+    payload.set(data);
+    await this.configWrite(macroWritePacket(data));
+    const back = await this.macroRegion();
+    // Compare zero-padded to the fixed 512-byte region: the read may
+    // return fewer bytes (trailing zeros trimmed) — pad it the same way.
+    const backPad = new Uint8Array(512);
+    backPad.set(back.subarray(0, 512));
+    if (!bytesEqual(backPad, payload)) {
+      throw new Error('khub916 macro write not verified: read-back differs');
+    }
+    return { command: CMD.macroWrite, verified: true };
   }
 }
 
@@ -318,6 +403,16 @@ function range(from: number, to: number): number[] {
 }
 
 // ── High-level connect flow ────────────────────────────────────────────
+
+/** Result of a verified write (port of proto `WriteOutcome`). */
+export interface WriteOutcome {
+  command: number;
+  verified: boolean;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
 
 export interface ConnectedKhub {
   device: HIDDevice;

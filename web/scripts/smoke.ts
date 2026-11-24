@@ -30,6 +30,27 @@ import {
   uuidHex,
 } from '../src/proto/khub916.ts';
 
+import {
+  buildMacroRegion,
+  decodeStep,
+  encodeStep,
+  macroFreeSpace,
+  macroKeyValue,
+  macroNameForUsage,
+  macroSpaceNeeded,
+  macroUsageForName,
+  defaultKindForName,
+  padMacroRegion,
+  parseMacroRegion,
+  parseStepsJson,
+  MACRO_REGION_BYTES,
+  MAX_STEP_DURATION,
+  type MacroEntry,
+  type MacroStep,
+  type StepKind,
+} from '../src/proto/macro916.ts';
+import { keymapWritePacket, keymapWritePayload, macroWritePacket } from '../src/proto/khub916.ts';
+
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
   if (cond) {
@@ -169,6 +190,177 @@ const INFO_HEADER = [0x82, 0x01, 0x00, 0x01, 0x00, 0x0a, 0x00];
   check('catalog miss', catalogLookup('0xdeadbeef0001') === undefined);
   check('uuidHex', uuidHex(new Uint8Array([0x03, 0, 0, 0, 0x01, 0x97])) === '0x030000000197');
   check('usage label fallback', hidUsageLabel(0x999) === '999');
+}
+
+// ── Macro region codec (port of crates/proto-khub916/src/macro916.rs) ──
+
+function step(action: number, delay: number, usage: number, kind: StepKind): MacroStep {
+  return { action, delayMs: delay, usage, kind };
+}
+
+{
+  // Exact wire bytes — mirrors the Rust `single_macro_wire_bytes` test.
+  const entries: MacroEntry[] = [
+    { name: 'A', steps: [step(0, 8, 4, 'key'), step(1, 0, 4, 'key')] },
+  ];
+  const region = buildMacroRegion(entries);
+  const want = [
+    0x04, 0x00, 0x0a, 0x00, 0x01, 0x41, 0x00, 0x00, 0x08, 0x04, 0x80, 0x00, 0x00, 0x04,
+  ];
+  check('macro region wire bytes', eq([...region], want), [...region].join(','));
+  check('macro region length', region.length === 14);
+
+  const parsed = parseMacroRegion(padMacroRegion(region));
+  check('macro parse count', parsed.length === 1);
+  check('macro parse name', parsed[0]?.name === 'A');
+  check('macro parse steps', parsed[0]?.steps.length === 2);
+  check(
+    'macro step roundtrip',
+    eq(parsed[0]?.steps[0], step(0, 8, 4, 'key')),
+    JSON.stringify(parsed[0]?.steps[0]),
+  );
+}
+
+{
+  // Multi-entry offsets — mirrors `multi_entry_offsets`.
+  const entries: MacroEntry[] = [
+    { name: 'a', steps: [step(0, 1, 1, 'key')] },
+    { name: 'bb', steps: [] },
+  ];
+  const region = buildMacroRegion(entries);
+  const u16 = (i: number) => (region[i] ?? 0) | ((region[i + 1] ?? 0) << 8);
+  check('multi offsets h0', u16(0) === 8 && u16(2) === 6);
+  check('multi offsets h1', u16(4) === 14 && u16(6) === 3);
+  const parsed = parseMacroRegion(padMacroRegion(region));
+  check('multi parse', parsed.length === 2 && parsed[1]?.name === 'bb' && parsed[1]?.steps.length === 0);
+}
+
+{
+  // Kind nibbles + unknown nibble preservation — mirrors `modifier_and_mouse_nibbles`.
+  check('modifier down nibble', (encodeStep(step(0, 0, 225, 'modifier'))[0] ?? 0) >> 4 === 1);
+  check('modifier up nibble', (encodeStep(step(1, 0, 225, 'modifier'))[0] ?? 0) >> 4 === 9);
+  check('mouse down nibble', (encodeStep(step(0, 0, 1, 'mouse'))[0] ?? 0) >> 4 === 2);
+  check('mouse up nibble', (encodeStep(step(1, 0, 1, 'mouse'))[0] ?? 0) >> 4 === 10);
+  const s = decodeStep(new Uint8Array([0xb0, 0, 0, 7]));
+  check('other nibble decode', s.kind === 11 && s.action === 0);
+  const rt = encodeStep({ ...s, action: 1 });
+  check('other nibble roundtrip', (rt[0] ?? 0) >> 4 === 11);
+  const sm = decodeStep(new Uint8Array([0x10, 0, 0, 225]));
+  check('modifier decode', sm.action === 0 && sm.kind === 'modifier');
+}
+
+{
+  // 20-bit duration — mirrors `duration_is_20bit`.
+  const b = encodeStep(step(0, 0xabcde, 30, 'key'));
+  check('duration hi nibble', ((b[0] ?? 0) & 0x0f) === 0xa);
+  check('duration mid', b[1] === 0xbc && b[2] === 0xde);
+  check('duration decode', decodeStep(b).delayMs === 0xabcde);
+  let overMax = false;
+  try {
+    encodeStep(step(0, MAX_STEP_DURATION + 1, 1, 'key'));
+  } catch {
+    overMax = true;
+  }
+  check('duration over 20-bit rejected', overMax);
+
+  // Oversize region / long name rejected — mirrors `build_rejects_oversize`.
+  const big: MacroEntry = { name: 'x', steps: Array.from({ length: 120 }, () => step(0, 0, 1, 'key')) };
+  let threw = false;
+  try {
+    buildMacroRegion([big, big]);
+  } catch {
+    threw = true;
+  }
+  check('oversize region rejected', threw);
+  threw = false;
+  try {
+    buildMacroRegion([{ name: 'n'.repeat(256), steps: [] }]);
+  } catch {
+    threw = true;
+  }
+  check('long name rejected', threw);
+}
+
+{
+  // Free space + key value + name table — mirrors the remaining Rust tests.
+  const r = new Uint8Array([1, 2, 3, 4, ...new Array(100).fill(0)]);
+  check('free space run', macroFreeSpace(r) === 100);
+  check('free space none', macroFreeSpace(new Uint8Array([1, 2, 3, 0, 1, 2, 3, 0])) === 0);
+  check('free space all zero', macroFreeSpace(new Uint8Array(MACRO_REGION_BYTES)) === MACRO_REGION_BYTES);
+  check('key value', macroKeyValue(1, 1, 0) === 0x03010100 && macroKeyValue(1, 2, 255) === 0x030102ff);
+  check('space needed', macroSpaceNeeded('jump', 4) === 5 + 4 + 16);
+  check('usage for name', macroUsageForName('KeyA') === 4 && macroUsageForName('MouseLeft') === 1);
+  check('name for usage', macroNameForUsage(4, 'key') === 'KeyA');
+  check('mouse special', macroNameForUsage(8, 'mouse') === 'MouseForward' && macroNameForUsage(8, 'key') === 'KeyE');
+  check('kind defaults', defaultKindForName('ShiftLeft') === 'modifier' && defaultKindForName('MouseRight') === 'mouse' && defaultKindForName('KeyA') === 'key');
+
+  // Empty/garbage regions parse empty — mirrors `empty_region_parses_empty`.
+  check('empty region', parseMacroRegion(new Uint8Array(0)).length === 0);
+  check('zero region', parseMacroRegion(new Uint8Array(MACRO_REGION_BYTES)).length === 0);
+  check('short r region', parseMacroRegion(new Uint8Array([2, 0, 0, 0])).length === 0);
+  check('odd r region', parseMacroRegion(new Uint8Array([3, 0, 0, 0, 0, 0, 0, 0])).length === 0);
+
+  // Full roundtrip incl. modifier + mouse steps.
+  const entries2: MacroEntry[] = [
+    {
+      name: 'hello',
+      steps: [
+        step(0, 8, 4, 'key'),
+        step(1, 120, 4, 'key'),
+        step(0, 0, 225, 'modifier'),
+        step(1, 0, 1, 'mouse'),
+      ],
+    },
+    { name: 'second', steps: [step(0, 1000, 30, 'key')] },
+  ];
+  const rt = parseMacroRegion(padMacroRegion(buildMacroRegion(entries2)));
+  check(
+    'full roundtrip',
+    rt.length === 2 &&
+      rt[0]?.name === 'hello' &&
+      rt[0]?.steps.length === 4 &&
+      rt[0]?.steps[2]?.kind === 'modifier' &&
+      rt[0]?.steps[3]?.kind === 'mouse' &&
+      rt[1]?.steps[0]?.delayMs === 1000,
+    JSON.stringify(rt),
+  );
+
+  // Steps JSON import (docs/macro-schema.md).
+  const imported = parseStepsJson(
+    '{"name":"jump","steps":[{"action":"down","key":"ShiftLeft","delay_ms":8},{"action":"down","key":"KeyB","delay_ms":0},{"action":"up","key":"KeyB","delay_ms":50},{"action":"up","key":"ShiftLeft","delay_ms":0}]}',
+  );
+  check('json import name', imported.name === 'jump');
+  check(
+    'json import steps',
+    imported.steps.length === 4 &&
+      imported.steps[0]?.usage === 225 &&
+      imported.steps[0]?.kind === 'modifier' &&
+      imported.steps[1]?.usage === 5 &&
+      imported.steps[2]?.action === 1 &&
+      imported.steps[2]?.delayMs === 50,
+    JSON.stringify(imported.steps),
+  );
+  const bare = parseStepsJson('[{"action":"press","key":"0x04","delay_ms":8}]');
+  check('json bare array + hex key', bare.name === null && bare.steps[0]?.usage === 4 && bare.steps[0]?.action === 0);
+  let bad = false;
+  try {
+    parseStepsJson('{"steps":[{"action":"down","key":"Fn"}]}');
+  } catch {
+    bad = true;
+  }
+  check('json Fn rejected', bad);
+}
+
+{
+  // Write packets — mirror `write_keymap` / `write_macro_region` layout.
+  const kp = keymapWritePacket(1, 0, [0x03010100, 0x00000029]);
+  check('keymap write header', eq([...kp.slice(0, 7)], [3, 1, 0, 1, 0, 0xf8, 0x01]));
+  check('keymap write be u32', kp[7] === 0x03 && kp[8] === 0x01 && kp[9] === 0x01 && kp[10] === 0x00 && kp[11] === 0x00 && kp[14] === 0x29);
+  const kpl = keymapWritePayload([0x03010100]);
+  check('keymap payload 512', kpl.length === 512 && kpl[510] === 0x5a && kpl[511] === 0xa5);
+  const mp = macroWritePacket(new Uint8Array([1, 2, 3]));
+  check('macro write header', eq([...mp.slice(0, 7)], [5, 0, 0, 1, 0, 0, 0]));
+  check('macro write payload', mp.length === 519 && mp[7] === 1 && mp[9] === 3 && mp[10] === 0);
 }
 
 console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} check(s) failed.`);

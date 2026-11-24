@@ -24,6 +24,7 @@ export const CUSTOM_LIGHT_ENTRIES = 126;
 export const CMD = {
   keymapWrite: 3,
   profileWrite: 4,
+  macroWrite: 5,
   customLightWrite: 6,
   deviceInfo: 130, // 0x82
   keymapRead: 131, // 0x83
@@ -280,11 +281,64 @@ export function parseLightColorData(p: Uint8Array): Uint8Array {
 }
 
 /**
- * cmd-133 macro region (≤512 B assembled table). Returned raw — header
- * semantics are not proven yet (spec §6), so no parsing in the MVP.
+ * cmd-133 macro region (≤512 B assembled table). Returned raw — decode it
+ * with `proto/macro916.ts::parseMacroRegion` (spec §6).
  */
 export function parseMacroRegion(p: Uint8Array): Uint8Array {
   return p.slice();
+}
+
+// ── Write packets (fire-and-forget; verify by read-back) ───────────────
+
+/**
+ * Keymap write payload (cmd 3): the u32 BE key values zero-padded to a
+ * fixed 512-byte payload whose **last two bytes are the `5A A5` end
+ * marker** (packet bytes 517/518 = payload bytes 510/511). Mirrors
+ * `Khub916::write_keymap` in `crates/proto-khub916/src/lib.rs`.
+ */
+export function keymapWritePayload(values: readonly number[]): Uint8Array {
+  if (values.length === 0 || values.length > KEYMAP_ENTRIES) {
+    throw new Error(
+      `khub916 keymap write needs 1..=${KEYMAP_ENTRIES} values, got ${values.length}`,
+    );
+  }
+  const payload = new Uint8Array(KEYMAP_ENTRIES * 4);
+  values.forEach((v, i) => {
+    const n = v >>> 0;
+    payload[i * 4] = (n >>> 24) & 0xff;
+    payload[i * 4 + 1] = (n >>> 16) & 0xff;
+    payload[i * 4 + 2] = (n >>> 8) & 0xff;
+    payload[i * 4 + 3] = n & 0xff;
+  });
+  payload[KEYMAP_ENTRIES * 4 - 2] = 0x5a;
+  payload[KEYMAP_ENTRIES * 4 - 1] = 0xa5;
+  return payload;
+}
+
+/**
+ * Keymap write packet (cmd 3, tags 248/1). `layer`/`system` pack into
+ * `arg = layer & 3 | (system & 1) << 2` (spec §6).
+ */
+export function keymapWritePacket(layer: number, system: number, values: readonly number[]): Uint8Array {
+  const arg = (layer & 3) | ((system & 1) << 2);
+  return buildPacket(CMD.keymapWrite, arg, 0xf8, 0x01, keymapWritePayload(values));
+}
+
+/**
+ * Macro region write packet (cmd 5): `region` (the assembled ≤512 B
+ * table) is zero-padded to the vendor's fixed 512-byte payload; the
+ * header is `[5,0,0,1,0,len&0xFF,0]` with len=512 → tag byte 0
+ * (`setKeyBoardMacroIndependent` in the vendor JS).
+ */
+export function macroWritePacket(region: Uint8Array): Uint8Array {
+  if (region.length === 0 || region.length > 512) {
+    throw new Error(`khub916 macro write needs 1..=512 bytes, got ${region.length}`);
+  }
+  const payload = new Uint8Array(512);
+  payload.set(region);
+  // Vendor sends `[5,0,0,1,0,v.length,0]` with v.length = 512, which
+  // wraps to 0 in the Uint8Array — tagA is `len & 0xFF`.
+  return buildPacket(CMD.macroWrite, 0x00, 512 & 0xff, 0x00, payload);
 }
 
 // ── Key value decoding (spec §6 "Key value encoding") ──────────────────
