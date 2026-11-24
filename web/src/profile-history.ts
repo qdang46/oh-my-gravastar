@@ -83,13 +83,11 @@ export const PROFILE_SECTIONS: readonly ProfileSectionDef[] = [
 ] as const;
 
 /**
- * Sections `parseProfileImport` can actually write. `profile` is
- * export-only there (same stance as `omg profile import`), so it never
- * appears in the restore picker.
+ * Sections `parseProfileImport` can actually write — all five since
+ * bead ra1 added the cmd-4 profile-blob/field write (sleep time +
+ * lighting mode round-trip through `writeProfile`).
  */
-export const RESTORABLE_SECTIONS: readonly ProfileSectionDef[] = PROFILE_SECTIONS.filter(
-  (d) => d.id !== 'profile',
-);
+export const RESTORABLE_SECTIONS: readonly ProfileSectionDef[] = PROFILE_SECTIONS;
 
 /** Sections present in a doc's state (for badges / picker defaults). */
 export function sectionsInState(state: ProfileState | null): ProfileSectionDef[] {

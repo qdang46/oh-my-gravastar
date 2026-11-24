@@ -27,24 +27,24 @@
 import { app, refresh, setStatus, subscribe, type DeviceSnapshot } from './state.ts';
 import { profileWithSleepSeconds } from './proto/khub916.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS } from './k1pro-layout.ts';
-import { CUSTOM_LIGHT_SLOTS, LIGHT_DATA_MAX } from './proto/light.ts';
-import { MACRO_REGION_BYTES } from './proto/macro916.ts';
 import { confirmDialog } from './modal.ts';
-import { canApplyProfile } from './core/index.ts';
 import { initProfileHistory, renderProfileHistory } from './profiles.ts';
 import {
   SnapshotStore,
-  hexToBytes,
   rollbackSections,
   runTransaction,
   snapshotBeforeWrite,
-  validateKeymapSection,
   validateProfileJson,
   type DeviceSnapshot as SafetySnapshot,
-  type OpType,
   type PlannedOp,
   type SnapshotSectionName,
 } from './safety/index.ts';
+import {
+  planProfileImport,
+  type ParsedImport,
+  type ProfileImportWriter,
+  type SectionOutcome,
+} from './profile-import.ts';
 
 // ── DOM helpers (mirror pages.ts) ──────────────────────────────────────
 
@@ -86,10 +86,6 @@ function bytesToHex(b: Uint8Array): string {
   let s = '';
   for (const x of b) s += x.toString(16).padStart(2, '0');
   return s;
-}
-
-function isRec(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 function msg(e: unknown): string {
@@ -209,329 +205,55 @@ export async function buildProfileExport(): Promise<Record<string, unknown>> {
 }
 
 // ── Config import (schema-v1 → device writes) ──────────────────────────
+//
+// The section mapping itself lives in ./profile-import.ts (pure — no
+// state/hid imports, smoke-tested by scripts/smoke-import.ts). This file
+// only adapts `app`/the session into `planProfileImport`'s context and
+// keeps the hardened `applyParsedImport` transaction below.
 
-/** Result of one applied import section (for the journal/report). */
-interface SectionOutcome {
-  /** Human-readable result line, e.g. `saved (set 1 ✓, set 2)`. */
-  text: string;
-  /** False when the write was sent but read-back did not confirm it. */
-  verified: boolean;
-}
-
-interface ImportSection {
-  name: string;
-  /** Human-readable summary shown in the preview. */
-  summary: string;
-  /** Policy op type for the transaction journal (safety/policy.ts). */
-  opType: OpType;
-  /**
-   * Snapshot section (safety/snapshots.ts) this import part maps to —
-   * used for the best-effort rollback after a partial failure (R2).
-   * Two import parts may share one snapshot section (the two lighting
-   * writes both restore from `lighting`).
-   */
-  snapSection?: SnapshotSectionName;
-  /** Apply this section; returns a result line + verify flag. */
-  apply: () => Promise<SectionOutcome>;
-}
-
-export interface ParsedImport {
-  fileName: string;
-  model: string;
-  sections: ImportSection[];
-  skipped: string[];
-  /**
-   * Compatibility problems that forbid the import (e.g. the backup was
-   * made for a different protocol). When non-empty no apply UI is shown.
-   */
-  compatErrors: string[];
-  /**
-   * Compatibility warnings the user may override after an explicit
-   * confirm (e.g. the backup targets a different keyboard model).
-   */
-  compatWarnings: string[];
-}
+export type { ParsedImport } from './profile-import.ts';
+export type { ImportSection, SectionOutcome } from './profile-import.ts';
 
 // ── Write-path capability detection ────────────────────────────────────
 //
-// The khub916 write methods (`writeProfile`, `writeKeymap`, …) land on
-// `Khub916Session` with the lighting/keys/macro beads (hid.ts). This page
-// is committed independently, so every write goes through this optional
-// interface: when a method is absent the section is reported as "pending"
-// instead of failing the build or the import.
+// The khub916 write methods (`writeProfile`, `writeKeymap`, …) live on
+// `Khub916Session` (hid.ts). `planProfileImport` takes them as a
+// structural `ProfileImportWriter`: when a method is absent the section
+// is reported as "pending" instead of failing the build or the import.
 
-interface WriteOutcome {
-  command: number;
-  verified: boolean;
-}
-
-interface KhubWrites {
-  writeProfile?(blob: Uint8Array): Promise<WriteOutcome>;
-  writeKeymap?(layer: number, system: number, values: readonly number[]): Promise<WriteOutcome>;
-  writeCustomLightColors?(
-    colors: readonly { r: number; g: number; b: number }[],
-  ): Promise<WriteOutcome>;
-  writeLightData?(data: Uint8Array): Promise<WriteOutcome>;
-  writeMacroRegion?(data: Uint8Array): Promise<WriteOutcome>;
-}
-
-function sessionWrites(session: unknown): KhubWrites {
-  return session as KhubWrites;
+function sessionWrites(session: unknown): ProfileImportWriter {
+  return session as ProfileImportWriter;
 }
 
 const PENDING = 'not available in this version yet';
 
 /**
  * Parse a schema-v1 profile file and turn its khub916 `state` into the
- * list of writable sections. Sections with no verified write path (the
- * raw profile blob — same export-only stance as `omg profile import`)
- * are reported in `skipped`, never silently dropped.
+ * list of writable sections (see profile-import.ts for the full
+ * section → command map). Sections with no verified write path are
+ * reported in `skipped`, never silently dropped.
  */
 export function parseProfileImport(text: string, fileName: string): ParsedImport {
-  const doc = JSON.parse(text) as Record<string, unknown>;
-  if (doc.schema !== 1) {
-    throw new Error('This file is not a supported omg profile backup.');
-  }
-  const devices = doc.devices;
-  if (!Array.isArray(devices) || devices.length === 0) {
-    throw new Error('This does not look like an omg profile backup file.');
-  }
-  const dev = devices.find(
-    (d) => (d as Record<string, unknown>).protocol === 'khub916',
-  ) as Record<string, unknown> | undefined;
-  if (!dev) throw new Error('This backup does not contain a khub916 keyboard.');
-
-  const profiles = dev.profiles;
-  const prof = (Array.isArray(profiles) ? profiles : []).find(
-    (p) => (p as Record<string, unknown>).name === 'current',
-  ) as Record<string, unknown> | undefined;
-  const state = (prof?.state ??
-    (Array.isArray(profiles) ? (profiles[0] as Record<string, unknown>)?.state : undefined)) as
-    | Record<string, unknown>
-    | undefined;
-  if (!state || typeof state !== 'object') {
-    throw new Error('This backup has no keyboard settings to import.');
-  }
-
+  const doc: unknown = JSON.parse(text);
   const c = app.connected;
   const snap = app.snapshot;
   if (!c || !snap) throw new Error('Connect a keyboard first.');
-  const w = sessionWrites(c.session);
-  const sections: ImportSection[] = [];
-  const skipped: string[] = [];
-
-  // ── Compatibility gate (core/compatibility.ts — SAFETY-SPEC R1) ──
-  //
-  // Protocol mismatch blocks the import outright; a model mismatch is a
-  // warning the user may override with an explicit confirm at apply time.
-  // The connected side is described as a DeviceLike: HID ids from the
-  // picker plus the cmd-130 identity (uuid/catalog) from the snapshot.
-  const devLike = {
-    vendorId: c.device.vendorId,
-    productId: c.device.productId,
-    productName: c.device.productName ?? null,
-    usagePage: c.collection.usagePage,
-    usage: c.collection.usage,
-    uuid: snap.info.uuid,
-    catalogModel: snap.info.catalogModel,
-    catalogName: snap.info.catalogName,
-    screenSize: snap.info.screenSize,
-  };
-  const fileModel =
-    typeof dev.model === 'string' && dev.model !== 'unknown' ? dev.model : undefined;
-  const devInfo = isRec(state.device_info) ? state.device_info : undefined;
-  const fileCatalog =
-    devInfo && typeof devInfo.catalog_model === 'string' ? devInfo.catalog_model : undefined;
-  const compatErrors = canApplyProfile(devLike, { protocol: 'khub916' }).reasons;
-  const compatWarnings = canApplyProfile(devLike, {
-    ...(fileModel ? { model: fileModel } : {}),
-    ...(fileCatalog ? { catalogModel: fileCatalog } : {}),
-  }).reasons;
-
-  // ── Keymap (cmd 3 writes, args 0–7 = layer | system<<2) ──
-  // Values are validated by safety/validation.ts::validateKeymapSection:
-  // u32 bounds ("0x........" hex or int 0..4294967295), ≤128 entries per
-  // set, args 0–7 only — the whole section is skipped on any problem.
-  const km = state.keymap;
-  if (km !== undefined && km !== null) {
-    const checked = validateKeymapSection(km);
-    if (!checked.ok || !checked.values) {
-      skipped.push(`key assignments: ${checked.errors[0] ?? 'unreadable data'}`);
-    } else {
-      const jobs = Object.keys(checked.values)
-        .map((k) => Number(k))
-        .sort((a, b) => a - b)
-        .map((arg) => ({ arg, values: checked.values![arg] ?? [] }));
-      if (jobs.length) {
-        if (!w.writeKeymap) {
-          skipped.push(`key assignments (${jobs.length} set(s)): ${PENDING}`);
-        } else {
-          const writeKeymap = w.writeKeymap.bind(c.session);
-          sections.push({
-            name: 'Key assignments',
-            summary: `${jobs.length} key set(s)`,
-            opType: 'keymap_write',
-            snapSection: 'keymap',
-            apply: async () => {
-              const done: string[] = [];
-              let verified = true;
-              for (const j of jobs) {
-                const out = await writeKeymap(j.arg & 3, (j.arg >> 2) & 1, j.values);
-                verified = verified && out.verified;
-                done.push(`set ${(j.arg & 3) + 1}${out.verified ? ' ✓' : ''}`);
-              }
-              return { text: `saved (${done.join(', ')})`, verified };
-            },
-          });
-        }
-      }
-    }
-  }
-
-  // ── Custom light colours (cmd 6, needs all 126 slots) ──
-  // Same bounds as validateProfileJson: index must be a unique int in
-  // 0..125, r/g/b ints 0..255, at most CUSTOM_LIGHT_SLOTS entries.
-  const lc = state.light_colors;
-  if (Array.isArray(lc) && lc.length > 0) {
-    const byIndex = new Map<number, { r: number; g: number; b: number }>();
-    let bad = lc.length > CUSTOM_LIGHT_SLOTS;
-    if (!bad) {
-      for (const e of lc) {
-        const o = isRec(e) ? e : {};
-        const i = o.index;
-        const r = o.r;
-        const g = o.g;
-        const b = o.b;
-        const idxOk =
-          Number.isInteger(i) &&
-          (i as number) >= 0 &&
-          (i as number) < CUSTOM_LIGHT_SLOTS &&
-          !byIndex.has(i as number);
-        const rgbOk = [r, g, b].every(
-          (v) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 255,
-        );
-        if (!idxOk || !rgbOk) {
-          bad = true;
-          break;
-        }
-        byIndex.set(i as number, {
-          r: (r as number) & 0xff,
-          g: (g as number) & 0xff,
-          b: (b as number) & 0xff,
-        });
-      }
-    }
-    // Fill gaps from the live snapshot so the 126-slot payload stays sane.
-    const colors: { r: number; g: number; b: number }[] = [];
-    let complete = !bad;
-    for (let i = 0; i < CUSTOM_LIGHT_SLOTS; i++) {
-      const col = byIndex.get(i) ?? snap.colors[i];
-      if (!col) {
-        complete = false;
-        break;
-      }
-      colors.push({ r: col.r, g: col.g, b: col.b });
-    }
-    if (complete) {
-      if (!w.writeCustomLightColors) {
-        skipped.push(`per-key colours (${byIndex.size} key(s)): ${PENDING}`);
-      } else {
-        const writeColors = w.writeCustomLightColors.bind(c.session);
-        sections.push({
-          name: 'Per-key colours',
-          summary: `${byIndex.size} key colour(s) from the file`,
-          opType: 'light_write',
-          snapSection: 'lighting',
-          apply: async () => {
-            const out = await writeColors(colors);
-            return {
-              text: `saved${out.verified ? ' and checked' : ''}`,
-              verified: out.verified,
-            };
-          },
-        });
-      }
-    } else {
-      skipped.push('per-key colours: unreadable data in the file');
-    }
-  }
-
-  // ── Per-mode light data (wired cmd 10) ──
-  const ld = state.light_data_hex;
-  if (typeof ld === 'string' && ld.length > 0) {
-    const bytes = hexToBytes(ld);
-    if (bytes && bytes.length > 0) {
-      if (bytes.length > LIGHT_DATA_MAX) {
-        skipped.push(
-          `lighting effects: ${bytes.length} bytes in the file — the wire blob holds at most ${LIGHT_DATA_MAX}`,
-        );
-      } else if (!w.writeLightData) {
-        skipped.push(`lighting effects (${bytes.length} bytes of data): ${PENDING}`);
-      } else {
-        const writeLightData = w.writeLightData.bind(c.session);
-        sections.push({
-          name: 'Lighting effects',
-          summary: `${bytes.length} bytes of effect data`,
-          opType: 'light_write',
-          snapSection: 'lighting',
-          apply: async () => {
-            const out = await writeLightData(bytes);
-            return {
-              text: `saved${out.verified ? ' and checked' : ''}`,
-              verified: out.verified,
-            };
-          },
-        });
-      }
-    } else {
-      skipped.push('lighting effects: unreadable data in the file');
-    }
-  }
-
-  // ── Macro region (cmd 5) ──
-  const mx = state.macro_hex;
-  if (typeof mx === 'string' && mx.length > 0) {
-    const bytes = hexToBytes(mx);
-    if (bytes && bytes.length > 0 && bytes.length <= MACRO_REGION_BYTES) {
-      if (!w.writeMacroRegion) {
-        skipped.push(`macros (${bytes.length} bytes of data): ${PENDING}`);
-      } else {
-        const writeMacro = w.writeMacroRegion.bind(c.session);
-        sections.push({
-          name: 'Macros',
-          summary: `${bytes.length} bytes of macro data`,
-          opType: 'macro_write',
-          snapSection: 'macro',
-          apply: async () => {
-            const out = await writeMacro(bytes);
-            return {
-              text: `saved${out.verified ? ' and checked' : ''}`,
-              verified: out.verified,
-            };
-          },
-        });
-      }
-    } else {
-      skipped.push('macros: unreadable or oversized data in the file');
-    }
-  }
-
-  // ── Profile blob: export-only, same as `omg profile import` ──
-  if (state.profile && typeof state.profile === 'object') {
-    skipped.push(
-      'sleep time and lighting mode: not applied by import — change those ' +
-        'on the Sleep timer and Lighting pages instead',
-    );
-  }
-
-  return {
-    fileName,
-    model: String(dev.model ?? 'unknown'),
-    sections,
-    skipped,
-    compatErrors,
-    compatWarnings,
-  };
+  return planProfileImport(doc, fileName, {
+    device: {
+      vendorId: c.device.vendorId,
+      productId: c.device.productId,
+      productName: c.device.productName ?? null,
+      usagePage: c.collection.usagePage,
+      usage: c.collection.usage,
+      uuid: snap.info.uuid,
+      catalogModel: snap.info.catalogModel,
+      catalogName: snap.info.catalogName,
+      screenSize: snap.info.screenSize,
+    },
+    writer: sessionWrites(c.session),
+    liveColors: snap.colors,
+    currentProfile: snap.profile.raw,
+  });
 }
 
 /**
