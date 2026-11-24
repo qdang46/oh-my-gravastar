@@ -1,0 +1,12 @@
+[package]
+name = "omg-proto-sparkplayjoy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SparkPlayJoy 6x21 analog keyboard protocol (GravaStar Mercury HE)"
+
+[dependencies]
+anyhow.workspace = true
+omg-hid = { path = "../hid" }
+serde.workspace = true

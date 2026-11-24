@@ -73,6 +73,39 @@ pub fn transfer(
     }
 }
 
+/// Sends one report, then reads exactly `count` input reports under a single
+/// shared `timeout` deadline. Pending input is flushed first, exactly like
+/// [`transfer`]. Returns `Ok(None)` when the deadline expires before all
+/// `count` reports arrive; `Ok(Some)` yields exactly `count` reports in
+/// arrival order. Any link error aborts with `Err`.
+///
+/// Unlike [`transfer`], no `accept` predicate is applied: callers whose
+/// responses span several reports (or carry no report/transaction id) read a
+/// fixed report count and validate the concatenated stream themselves.
+pub fn transfer_exact(
+    link: &mut dyn Link,
+    report_id: u8,
+    payload: &[u8],
+    count: usize,
+    timeout: Duration,
+) -> Result<Option<Vec<Vec<u8>>>> {
+    while link.read(Duration::ZERO)?.is_some() {}
+    link.write(report_id, payload)?;
+    let deadline = Instant::now() + timeout;
+    let mut reports = Vec::with_capacity(count);
+    for _ in 0..count {
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        match link.read(deadline - now)? {
+            Some(report) => reports.push(report),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(reports))
+}
+
 /// The device did not answer in time. Distinguishes timeouts from OS errors,
 /// which mean the handle is stale and the device must be reopened.
 #[derive(Debug)]

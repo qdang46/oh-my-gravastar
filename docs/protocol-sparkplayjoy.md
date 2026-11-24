@@ -2,6 +2,9 @@
 
 Status: firmware-proven for GravaStar Mercury V75 / V75 Pro / V75 Lite;
 physically validated on V75 (identity, board, map, scale, direct travel).
+Rust port: `crates/proto-sparkplayjoy` (`omg-proto-sparkplayjoy`) implements
+this spec read-only — **hardware-pending**: no physical SparkPlayJoy device
+has been attached yet; all verification is synthetic-frame unit tests.
 Source of truth: HallJoy `aula_win60he_protocol.{h,cpp}`,
 `aula_win60he_client.{h,cpp}`, `aula_win60he_backend.cpp`, and
 `docs/research/GRAVASTAR_MERCURY_V75_FIRMWARE_STATIC_ANALYSIS_2026-08-22.md`.

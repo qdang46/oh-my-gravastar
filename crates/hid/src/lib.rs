@@ -8,4 +8,4 @@ pub mod devices;
 mod link;
 
 pub use devices::{classify, find_devices, DeviceInfo, DeviceKind};
-pub use link::{transfer, HidLink, Link, NoAnswer};
+pub use link::{transfer, transfer_exact, HidLink, Link, NoAnswer};

@@ -223,6 +223,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omg-proto-sparkplayjoy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "omg-hid",
+ "serde",
+]
+
+[[package]]
 name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
