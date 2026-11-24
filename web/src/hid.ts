@@ -551,7 +551,7 @@ export async function probeReportId(
   const declared = collection.featureReports.map((r) => r.reportId);
   const candidates = [...new Set([...declared, 6, ...range(1, 32).filter((i) => i !== 6)])];
   const pkt = queryPacket(CMD.deviceInfo, 0x01, 0x0a, 0x00);
-  let lastErr = 'no report id answered';
+  let lastErr = 'no reply from the keyboard';
   for (const id of candidates) {
     try {
       await device.sendFeatureReport(id, pkt);
@@ -565,12 +565,12 @@ export async function probeReportId(
       if (bytes.length >= HEADER_LEN + 9 && echoMatches(pkt, bytes)) {
         return id;
       }
-      lastErr = `report id ${id}: bad echo/short response (${bytes.length} bytes)`;
+      lastErr = `channel ${id}: unexpected reply (${bytes.length} bytes)`;
     } catch (e) {
-      lastErr = `report id ${id}: ${e instanceof Error ? e.message : String(e)}`;
+      lastErr = `channel ${id}: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
-  throw new Error(`could not identify the keyboard's data channel (${lastErr})`);
+  throw new Error(`the keyboard did not answer on any known channel (${lastErr})`);
 }
 
 function range(from: number, to: number): number[] {

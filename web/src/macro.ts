@@ -506,21 +506,30 @@ export class MacroPage {
     }
     layerSel.value = String(app.layer);
     row.append(field('Layer', layerSel));
+    body.append(row);
+
+    // Rarely needed — the defaults (type 1, loop 1) cover normal macros.
+    const adv = el('details', 'advanced');
+    adv.append(el('summary', '', 'Advanced'));
+    const advBody = el('div', 'advanced-body');
+    const advRow = el('div', 'macro-bind-row');
 
     const typeInput = el('input', 'macro-num') as HTMLInputElement;
     typeInput.type = 'number';
     typeInput.min = '1';
     typeInput.max = '255';
     typeInput.value = '1';
-    row.append(field('Macro type', typeInput));
+    advRow.append(field('Macro type', typeInput));
 
     const loopInput = el('input', 'macro-num') as HTMLInputElement;
     loopInput.type = 'number';
     loopInput.min = '1';
     loopInput.max = '255';
     loopInput.value = '1';
-    row.append(field('Loop count', loopInput));
-    body.append(row);
+    advRow.append(field('Loop count', loopInput));
+    advBody.append(advRow);
+    adv.append(advBody);
+    body.append(adv);
 
     const btnRow = el('div', 'macro-save-row');
     const bind = btn('Assign macro to key');

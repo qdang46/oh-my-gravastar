@@ -982,7 +982,6 @@ details.advanced > .advanced-body {
 .macro-select,
 .macro-num,
 .macro-delay,
-.light-select,
 .cp-hex,
 .cp-num,
 .pool-search-input {
@@ -1001,7 +1000,6 @@ details.advanced > .advanced-body {
 .macro-select:focus,
 .macro-num:focus,
 .macro-delay:focus,
-.light-select:focus,
 .cp-hex:focus,
 .cp-num:focus,
 .pool-search-input:focus {
@@ -1200,10 +1198,6 @@ input[type='color'] {
   gap: var(--space-3);
   margin: var(--space-2) 0;
   flex-wrap: wrap;
-}
-
-.light-select {
-  min-width: 220px;
 }
 
 .light-sliders {

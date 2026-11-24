@@ -76,9 +76,19 @@ function hex8(v: number): string {
   return advHex8(v);
 }
 
+/**
+ * Cell text for a stored key value — label only. The keymap decoder
+ * falls back to `0x…` for unnamed values; raw hex goes to the cell's
+ * `title` tooltip instead (same pattern as remap.ts).
+ */
 function valueText(v: number): string {
   const label = valueLabel(v);
-  return label ? `${label} (${hex8(v)})` : hex8(v);
+  return label !== '' && !label.startsWith('0x') ? label : '(custom value)';
+}
+
+/** `title` tooltip carrying the raw hex for a list of values. */
+function valuesTitle(values: readonly number[]): string {
+  return values.map((v) => hex8(v)).join(', ');
 }
 
 /** Human-readable detail for one binding's low bits. */
@@ -278,12 +288,16 @@ export class AdvPage {
         const payloadText = payload
           ? payload.map((v) => valueText(v)).join(', ')
           : '(no saved settings — stale assignment)';
+        const setting = el('td', 'mono', valueLabel(b.value) || KIND_LABEL[b.kind]);
+        setting.title = hex8(b.value);
+        const saved = el('td', 'mono adv-payload', payloadText);
+        if (payload) saved.title = valuesTitle(payload);
         tr.append(
           el('td', 'mono', `#${b.index}`),
           el('td', 'mono', String(b.pos)),
-          el('td', 'mono', hex8(b.value)),
+          setting,
           el('td', '', detailText(b)),
-          el('td', 'mono adv-payload', payloadText),
+          saved,
         );
         const actions = el('td', 'macro-row-actions');
         const un = btn('Unbind', 'Remove this key\'s advanced function. The saved settings stay stored on the keyboard.');
@@ -309,10 +323,9 @@ export class AdvPage {
       const htbody = el('tbody');
       for (const e of entries) {
         const tr = el('tr');
-        tr.append(
-          el('td', 'mono', String(e.slot)),
-          el('td', 'mono', e.values.map((v) => valueText(v)).join(', ')),
-        );
+        const saved = el('td', 'mono', e.values.map((v) => valueText(v)).join(', '));
+        saved.title = valuesTitle(e.values);
+        tr.append(el('td', 'mono', String(e.slot)), saved);
         htbody.append(tr);
       }
       htable.append(htbody);
@@ -378,7 +391,7 @@ export class AdvPage {
       time.title = 'How long you must hold the key before the Hold action fires';
       row.append(field('Hold time (×10 ms)', time));
       body.append(row);
-      const go = btn(`Add MT key`, 'Plan + write: keymap binding (cmd 3, verified) then history blob (cmd 18, best-effort)');
+      const go = btn(`Add MT key`, 'Saves the key binding and its settings to the keyboard');
       go.classList.add('primary');
       go.disabled = this.busy;
       go.title = 'Saves the key binding and its settings to the keyboard';
@@ -397,7 +410,8 @@ export class AdvPage {
         const km = this.keymap ?? [];
         km.forEach((v, i) => {
           if (i === Number(keyA.value)) return;
-          const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'} · ${hex8(v)}`);
+          const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
+          o.title = hex8(v);
           o.value = String(i);
           keyB.append(o);
         });
