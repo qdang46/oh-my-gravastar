@@ -252,6 +252,10 @@ fn impact_ttl(kind: BeatKind) -> u32 {
     }
 }
 
+/// Hard cap on concurrent impacts (Hypercolor MAX_WAVES) — guards against
+/// runaway onset detection stacking rings every refractory interval.
+const MAX_IMPACTS: usize = 12;
+
 /// Stateful beat-motion renderer — call [`BeatViz::frame`] per LED frame.
 pub struct BeatViz {
     params: FrameParams,
@@ -330,10 +334,13 @@ impl BeatViz {
         // Scale rendered-frame ages into 30 fps reference units so motion
         // speed and impact TTLs are wall-clock stable at any --fps.
         let age_scale = (30.0 / self.params.fps.clamp(1.0, 240.0)).clamp(0.125, 8.0);
-        self.impacts.retain(|i| {
-            self.frame_no.wrapping_sub(i.born) as f32 * age_scale
-                < impact_ttl(i.kind) as f32
-        });
+        self.impacts
+            .retain(|i| self.frame_no.wrapping_sub(i.born) as f32 * age_scale
+                < impact_ttl(i.kind) as f32);
+        if self.impacts.len() > MAX_IMPACTS {
+            let excess = self.impacts.len() - MAX_IMPACTS;
+            self.impacts.drain(..excess);
+        }
 
         // Ambient base from the spectrum visualiser, gated by the
         // broadband level: quiet music → near-black keyboard so beats
@@ -351,13 +358,19 @@ impl BeatViz {
                     BeatKind::Kick => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
                         let radius = 0.035 * age;
-                        let ring =
-                            (-((d - radius).powi(2)) / (2.0 * 0.07f32.powi(2))).exp();
+                        // Stronger kicks throw a wider ring — beat energy
+                        // drives ring *width*, not a flat brightness add
+                        // (Hypercolor audio_pulse lesson: flat adds read
+                        // as strobing on LED hardware).
+                        let sigma = 0.07 * (1.0 + im.strength * 0.6);
+                        let ring = (-((d - radius).powi(2)) / (2.0 * sigma * sigma)).exp();
                         // Bright core at the impact point on the first
                         // ~0.2 s — the ring alone leaves the centre dark.
                         let core = (-d / 0.10).exp() * (-age / 6.0).exp();
                         let env = (-age / 24.0).exp();
-                        let i = (s * (ring + core * 0.8) * env).min(1.0);
+                        // Rings dim as they spread (Hypercolor age_fade).
+                        let spread_fade = (1.0 - radius * 0.5).clamp(0.0, 1.0);
+                        let i = (s * (ring * spread_fade + core * 0.8) * env).min(1.0);
                         (i, i * 0.72, i * 0.30)
                     }
                     BeatKind::Snare => {
