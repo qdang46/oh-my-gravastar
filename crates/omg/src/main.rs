@@ -3914,6 +3914,10 @@ enum Kb916Light {
         /// Output brightness 0.0-1.0 (default 1.0 = full).
         #[arg(long, default_value_t = 1.0)]
         brightness: f32,
+        /// Visualiser: `beat` (onset-driven kick/snare/hat motion over a
+        /// dim spectrum base) or `spectrum` (classic equaliser bars).
+        #[arg(long, default_value = "beat")]
+        effect: String,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

@@ -981,10 +981,11 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
             fps,
             sensitivity,
             brightness,
+            effect,
             duration,
             yes,
         } => crate::kb916_music::cmd(
-            cli, source, *fps, *sensitivity, *brightness, *duration, yes,
+            cli, source, *fps, *sensitivity, *brightness, effect, *duration, yes,
         ),
     }
 }
