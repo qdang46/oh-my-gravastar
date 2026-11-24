@@ -1,5 +1,9 @@
 # Agent Architecture
 
+> **Normative contract:** `docs/agent-api.md` documents the shipped
+> schema v1 (op names, arg shapes, lifecycle, policy). This file is the
+> design rationale; where they disagree, `agent-api.md` wins.
+
 Spec for the agent-first layer (`docs/vision-full-custom.md` §"Agent-first
 architecture"). Target layout per vision §9:
 
@@ -76,49 +80,55 @@ Closed JSON schema; one op = one atomic device mutation. Versioned
     {
       "op": "set_keymap",
       "layer": 0, "system": 0,
-      "keys": { "caps_lock": "left_ctrl", "a": "b" },
+      "entries": [ {"index": 40, "value": 224},
+                   {"index": 4, "value": 5} ],
       "id": "op-1"
     },
     {
-      "op": "set_lighting",
-      "mode": 3, "speed": 4, "brightness": 80,
-      "colors": { "row": 1, "gradient": "left_to_right", "from": "#FF0000", "to": "#0000FF" }
+      "op": "set_light",
+      "config": { "mode": 3, "speed": 4, "brightness": 80 }
     },
     {
       "op": "set_macro",
-      "name": "hello", "bind_key": "f13",
+      "name": "hello", "bind_key": 58,
       "steps": [ {"delay_ms": 0, "key": "h", "up": false},
                  {"delay_ms": 50, "key": "h", "up": true} ]
     },
     {
-      "op": "set_advkey",
-      "key": "caps_lock", "mode": "mt", "hold_ms": 200, "tap_key": "esc"
+      "op": "set_adv",
+      "mode": "mt", "key": "caps_lock",
+      "tap": "0x70000000", "hold": "0xe0",
+      "hold_ms": 200
     },
     {
       "op": "restore_snapshot",
-      "snapshot_id": "snap-2026-11-24T…",
+      "id": "snap-2026-11-24T…",
       "sections": ["keymap", "lighting"]
     },
     {
-      "op": "set_profile_field",
-      "field": "sleep_seconds", "value": 300
+      "op": "set_profile_section",
+      "section": "sleep_seconds", "value": 300
     }
   ],
   "meta": { "requested_by": "user|agent:<name>", "rationale": "…" }
 }
 ```
 
-Op vocabulary v1 (map to existing transports):
+Shipped op vocabulary (schema v1 — see `agent-api.md` §1 for exact arg
+shapes; `action-schema.ts` is the source of truth):
 
 | op | khub916 | HE v2 | Compx | notes |
 |---|---|---|---|---|
-| `set_keymap` | cmd 3/4 write | `03 02/04` | — | per-layer, per-key or whole table |
-| `set_lighting` | cmd 10/134 + profile fields | cat 5 zones/palette | `set light` | |
+| `set_keymap` | cmd 3/4 write | `03 02/04` | — | per-layer, sparse slot patches |
+| `set_light` | cmd 10/134 + profile fields | cat 5 zones/palette | `set light` | config = `validateLightConfig` shape |
 | `set_macro` | cmd 5 region + tag-3 bind | cat 7 paged | mouse macros | ≤512 B region for 916 |
-| `set_advkey` | cmd 18 (**verified:false**) | cat 6 `hk` | — | carries caveat |
-| `set_profile_field` | cmd 132/4 profile blob | profile cmds | config flash | sleep, light mode… |
-| `restore_snapshot` | composed of above | composed | composed | executor expands to section ops |
-| `set_polling`, `set_os`, `set_performance`, `calibrate` | — | HE only | — | L3 class |
+| `set_adv` | cmd 18 (**verified:false**) | cat 6 `hk` | — | mt/socd/tgl; carries caveat |
+| `set_profile_section` | cmd 132/4 profile blob | profile cmds | config flash | `sleep_seconds` only in v1 |
+| `restore_snapshot` | composed of above | composed | composed | expands to section ops |
+
+**Not expressible in schema v1:** `set_polling`, `set_os`,
+`set_performance`, `calibrate` (L3 class, HE-only) — adding them needs a
+new op kind plus the stronger-confirmation flow. See `agent-api.md` §8.
 
 Planner output = `{ ops[], diff, warnings[], rollback_hint }`. The `diff`
 is human/agent-readable ("Layer0: Caps→Ctrl") — same structure the UI
@@ -128,7 +138,7 @@ preview modal renders (UIUX-SPEC §6).
 
 - **`planner.ts`**: NL or structured request → op list. Rule-based first
   (bead `7js`): intent table ("caps as ctrl" → set_keymap, "dim lights" →
-  set_lighting), slot-filling from DeviceContext (layer count, key names,
+  set_light), slot-filling from DeviceContext (layer count, key names,
   mode ids). Never invents ops; unknown intent → clarification question,
   not a guess.
 - **`validator.ts`**: ordered checks — (1) JSON schema, (2) per-op arg
