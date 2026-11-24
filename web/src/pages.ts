@@ -8,12 +8,12 @@
  *  docs/web-ui-plan.md §2).
  */
 
-import { app, ensureKeymap, setLayer, subscribe, type KeyEntry } from './state.ts';
-import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, keyIndexOf, type KeyBlock } from './k1pro-layout.ts';
-import { KeyboardView } from './keyboard.ts';
+import { app, subscribe, type KeyEntry } from './state.ts';
+import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, type KeyBlock } from './k1pro-layout.ts';
 import { renderLightingPage, destroyLightingPage } from './lighting.ts';
-import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { MacroPage } from './macro.ts';
+import { renderKeysPage, destroyKeysPage } from './remap.ts';
+import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
@@ -132,12 +132,9 @@ function renderHome(root: HTMLElement): void {
   root.append(c);
 }
 
-// ── Keys (keyboard visualizer, bead k00) ───────────────────────────────
+// ── Keys (keyboard visualizer k00 + remap page 28d → remap.ts) ────────
 
-let keysView: KeyboardView | null = null;
-let keysUnsub: (() => void) | null = null;
-
-function blocksForModel(): { blocks: readonly KeyBlock[]; note: string | null } {
+export function blocksForModel(): { blocks: readonly KeyBlock[]; note: string | null } {
   const model = app.snapshot?.info.catalogModel;
   if (!model || K1_PRO_LAYOUT_MODELS.includes(model)) {
     return {
@@ -152,57 +149,7 @@ function blocksForModel(): { blocks: readonly KeyBlock[]; note: string | null } 
 }
 
 function renderKeys(root: HTMLElement): void {
-  keysView?.destroy();
-  keysView = null;
-  keysUnsub?.();
-  keysUnsub = null;
-  root.replaceChildren();
-
-  if (!app.connected || !app.snapshot) {
-    root.append(
-      comingSoon(
-        'Keys',
-        'The keyboard visualizer needs a connected device — it renders the live ' +
-          'keymap and per-key RGB colours read over WebHID.',
-      ),
-    );
-    return;
-  }
-
-  const { blocks, note } = blocksForModel();
-
-  const { card: c, body } = card('Keyboard');
-
-  // Vendor-style segment bar: layer selector (the model/system selector is
-  // a later bead — the khub916 system bit is not wired into the UI yet).
-  const toolbar = el('div', 'segment-bar');
-  for (let layer = 0; layer < 4; layer++) {
-    const b = el('button', `segment-item${app.layer === layer ? ' active' : ''}`, `Layer ${layer}`);
-    b.type = 'button';
-    b.addEventListener('click', () => void setLayer(layer));
-    toolbar.append(b);
-  }
-  body.append(toolbar);
-  if (note) body.append(el('p', 'hint warn', note));
-
-  const holder = el('div', 'kb-holder');
-  body.append(holder);
-  keysView = new KeyboardView(holder, blocks);
-
-  const refreshView = (): void => {
-    const snap = app.snapshot;
-    keysView?.setData({
-      keymap: snap?.keymaps.get(app.layer) ?? null,
-      colors: snap?.colors ?? null,
-    });
-    toolbar.querySelectorAll('.segment-item').forEach((b, i) => {
-      b.classList.toggle('active', i === app.layer);
-    });
-  };
-  refreshView();
-  keysUnsub = subscribe(refreshView);
-  void ensureKeymap(app.layer).catch(() => {});
-  root.append(c);
+  renderKeysPage(root);
 }
 
 // ── Device (overview + raw regions) ────────────────────────────────────
@@ -357,12 +304,10 @@ export function initPages(root: HTMLElement, nav: HTMLElement): void {
 export function destroyPages(): void {
   unsub?.();
   unsub = null;
-  keysView?.destroy();
-  keysView = null;
-  keysUnsub?.();
+  destroyKeysPage();
+  destroyLightingPage();
   macroPage?.destroy();
   macroPage = null;
-  destroyLightingPage();
   window.removeEventListener('hashchange', route);
 }
 

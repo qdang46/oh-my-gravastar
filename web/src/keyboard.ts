@@ -15,7 +15,7 @@
 
 import { keyIndexOf, layoutBounds, type KeyBlock } from './k1pro-layout.ts';
 import type { KeyEntry } from './state.ts';
-import type { LightColor } from './proto/khub916.ts';
+import { keyValueLabelOf, type LightColor } from './proto/khub916.ts';
 
 /** Vendor luminance threshold: >128 → black text, else white. */
 function luminance(r: number, g: number, b: number): number {
@@ -27,6 +27,10 @@ export interface KeyboardData {
   keymap: readonly KeyEntry[] | null;
   /** cmd 134 colours; entry `i` ↔ key index `i` (`pos = 8 + i*4`). */
   colors: readonly LightColor[] | null;
+  /** Pending (unsaved) remap values per slot index — keys page only. */
+  pending?: ReadonlyMap<number, number> | null;
+  /** Currently selected slot index (picker target highlight). */
+  selected?: number | null;
 }
 
 export interface KeyboardViewOptions {
@@ -80,10 +84,14 @@ export class KeyboardView {
     return c ? { r: c.r, g: c.g, b: c.b } : null;
   }
 
-  private labelFor(block: KeyBlock): string {
+  private labelFor(block: KeyBlock, n: number): string {
+    // A pending remap shows the value it will become (vendor marks the
+    // key `replaced` and swaps the name immediately on pick).
+    const pending = this.data.pending?.get(n);
+    if (pending !== undefined) return keyValueLabelOf(pending) || '(none)';
     const km = this.data.keymap;
     if (km) {
-      const entry = km[keyIndexOf(block.pos)];
+      const entry = km[n];
       if (entry?.label) return entry.label;
     }
     // Fall back to the factory name, prettified ('L_shift' → 'L Shift').
@@ -114,16 +122,30 @@ export class KeyboardView {
         el.classList.add('kb-key--idle');
       }
 
-      const label = this.labelFor(block);
+      const dirty = this.data.pending?.has(n) ?? false;
+      const selected = this.data.selected === n;
+      if (dirty) el.classList.add('kb-key--dirty');
+      if (selected) el.classList.add('kb-key--selected');
+
+      const label = this.labelFor(block, n);
       const text = document.createElement('span');
       text.className = 'kb-key-label';
       text.textContent = label;
+      if (dirty) {
+        const dot = document.createElement('span');
+        dot.className = 'kb-key-dirty';
+        el.append(dot);
+      }
       el.append(text);
 
       const km = this.data.keymap?.[n];
+      const pv = this.data.pending?.get(n);
       el.title =
         `pos ${block.pos} (n=${n})` +
-        (km ? ` · 0x${km.value.toString(16).toUpperCase().padStart(8, '0')} · ${km.label || '(empty)'}` : '');
+        (km ? ` · 0x${km.value.toString(16).toUpperCase().padStart(8, '0')} · ${km.label || '(empty)'}` : '') +
+        (pv !== undefined
+          ? ` → pending 0x${pv.toString(16).toUpperCase().padStart(8, '0')}`
+          : '');
       el.addEventListener('click', () => {
         this.onKeyClick?.(n);
         this.detail.textContent = km

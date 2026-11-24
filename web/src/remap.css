@@ -1,0 +1,202 @@
+/* ── Keys remap page (bead 28d — vendor BasicChangeKeyCode) ───────────── */
+
+.remap-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.remap-toolbar .segment-bar {
+  margin-bottom: 0;
+}
+
+.remap-pending {
+  color: var(--warn);
+  border-color: rgba(255, 243, 77, 0.35);
+}
+
+.btn {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-weight: 600;
+  transition:
+    background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Dirty / selected key states on the visualizer. */
+.kb-key--dirty {
+  outline: 2px solid var(--warn);
+  outline-offset: -2px;
+}
+
+.kb-key--selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 2;
+}
+
+.kb-key-dirty {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 4px rgba(255, 243, 77, 0.8);
+}
+
+/* Vendor-style bottom pool: tabs + search + scrollable keycap grid. */
+.pool-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.pool-toolbar .segment-bar {
+  margin-bottom: 0;
+}
+
+.pool-toolbar-right {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.pool-search-row {
+  margin-bottom: var(--space-2);
+}
+
+.pool-search-input {
+  width: 100%;
+  max-width: 420px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+}
+
+.pool-search-input:focus {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.pool-selected {
+  margin-bottom: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+  min-height: 18px;
+}
+
+.pool-dupwarn {
+  margin-bottom: var(--space-2);
+  font-size: 12px;
+  color: var(--warn);
+  min-height: 16px;
+}
+
+.pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-2);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.pool-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: var(--space-2) var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  transition:
+    background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+
+.pool-item:hover {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+
+.pool-item--current {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pool-item-name {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.pool-item-hex {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Confirm-write modal additions (shared .modal-overlay/.modal). */
+.modal-title {
+  margin: 0 0 var(--space-2);
+  font-size: 16px;
+}
+
+.modal-list {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}

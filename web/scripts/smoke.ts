@@ -72,6 +72,7 @@ import {
   type StepKind,
 } from '../src/proto/macro916.ts';
 import { keymapWritePacket, keymapWritePayload, macroWritePacket } from '../src/proto/khub916.ts';
+import { KEY_POOL, POOL_GROUPS, POOL_UNASSIGN, poolNameFor } from '../src/keypool.ts';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -548,6 +549,51 @@ function liveProfile(): Uint8Array {
   }
   check('cmd10 oversize refused', threw);
 }
+
+// ── Keymap write arg packing + padding (bead 28d) ─────────────────────
+
+{
+  // arg = layer & 3 | (system & 1) << 2 (spec §6, same as Rust write_keymap).
+  check('keymap arg layer', keymapWritePacket(2, 0, [1])[1] === 2);
+  check('keymap arg system', keymapWritePacket(1, 1, [1])[1] === 5);
+  check('keymap arg masks', keymapWritePacket(7, 3, [1])[1] === 7);
+
+  // Short value lists zero-pad to the full 512-byte payload: slot 126/127
+  // area stays zero except the 5A A5 marker at bytes 510/511.
+  const one = keymapWritePayload([0x00000004]);
+  check('keymap pad zeros', one[8] === 0 && one[509] === 0);
+  check('keymap marker pos', one[510] === 0x5a && one[511] === 0xa5);
+  check('keymap be order', one[0] === 0 && one[1] === 0 && one[2] === 0 && one[3] === 0x04);
+
+  // Padded-tolerance verify (mirrors writeKeymap's zero-pad-to-128 compare):
+  // a 126-entry read-back must verify against a 126-value write.
+  const written = Array.from({ length: 126 }, (_, i) => (i === 0 ? 0x29 : 0));
+  const readBack = written.slice(); // device reports 126 of 128 slots
+  const paddedMatch = Array.from({ length: 128 }, (_, i) =>
+    (written[i] ?? 0) === (readBack[i] ?? 0),
+  ).every(Boolean);
+  check('read-back padded verify', paddedMatch);
+  const mismatch = written.map((v, i) => (i === 5 ? v ^ 1 : v));
+  check(
+    'read-back mismatch detected',
+    !Array.from({ length: 128 }, (_, i) => (written[i] ?? 0) === (mismatch[i] ?? 0)).every(Boolean),
+  );
+}
+
+// ── Key pool table (bead 28d — vendor Ca[] port) ───────────────────────
+
+{
+  check('pool size', KEY_POOL.length === 217, `got ${KEY_POOL.length}`);
+  check('pool groups', POOL_GROUPS.length === 5);
+  check('pool has mouse', KEY_POOL.some((e) => e.name === 'mouse-left' && e.value === 0x1010100));
+  check('pool has media', KEY_POOL.some((e) => e.name === 'volume-up'));
+  check('pool has Fn', KEY_POOL.some((e) => e.name === 'Fn' && e.value === 0xd000000));
+  check('pool has Fn1', KEY_POOL.some((e) => e.name === 'Fn1' && e.value === 0xd010000));
+  check('pool unassign', POOL_UNASSIGN.value === 0);
+  check('pool name lookup', poolNameFor(0x20000e9) === 'volume-up');
+  check('pool name miss', poolNameFor(0xdeadbeef) === null);
+}
+
 
 console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);
