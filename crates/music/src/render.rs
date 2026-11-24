@@ -191,6 +191,10 @@ impl SpectrumViz {
             let envelope = 0.72 + 0.28 * (std::f32::consts::PI * x).sin();
             // Bar body = envelope; peak cap adds a bright tip on top.
             let mut v = (env * 0.85 + peak * 0.45) * envelope;
+            // Contrast curve: quiet bands drop toward black instead of
+            // hovering at a uniform dim glow — this is what makes some
+            // keys dark while others carry the spectrum.
+            v = v.powf(1.6);
             v += bands.bass * 0.10; // bass pulse lifts everything slightly
             v = (v * self.params.brightness + self.flash * 0.25 * (1.0 - x)).clamp(0.0, 1.0);
 
@@ -410,21 +414,21 @@ impl BeatViz {
             if bands.bpm > 1.0 {
                 let phase_x = (bands.beat_phase - x * 0.15).rem_euclid(1.0);
                 let env = (1.0 - phase_x) * (1.0 - phase_x);
-                let bounce = env * gate * 0.35 * self.params.brightness;
+                let bounce = env * gate * 0.22 * self.params.brightness;
                 add[0] += bounce;
                 add[1] += bounce * 0.72;
                 add[2] += bounce * 0.40;
             }
             // Bass wash: continuous warm presence so the whole field
             // breathes with the low end between onset impacts.
-            let wash = bands.bass * bands.agc.min(2.0) * 0.20 * self.params.brightness;
+            let wash = bands.bass * bands.agc.min(2.0) * 0.08 * self.params.brightness;
             add[0] += wash;
             add[1] += wash * 0.55;
             add[2] += wash * 0.25;
             for c in 0..3 {
                 // Beat thump: the whole field lifts ~60% for ~200 ms on
                 // each detected beat — the "keyboard punches" layer.
-                let thump = 1.0 + bands.beat_pulse * 0.6;
+                let thump = 1.0 + bands.beat_pulse * 0.4;
                 let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate * thump;
                 let v = (base_v + add[c]).clamp(0.0, 1.0);
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
