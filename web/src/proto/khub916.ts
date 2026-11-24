@@ -34,6 +34,8 @@ export const CMD = {
   customLightRead: 134, // 0x86
   powerRead: 135, // 0x87
   lightDataRead: 138, // 0x8A
+  advKeyWrite: 18, // sendAdvanKeyHistory — SOCD/MT/TGL history blob
+  advKeyRead: 146, // getKeyboardAdvancedKey — adv-key history blob
 } as const;
 
 // ── Device UUID / model catalog (spec §1, vendor `Dp` table) ───────────

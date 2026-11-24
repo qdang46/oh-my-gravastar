@@ -43,6 +43,12 @@ import {
   type ProfileInfo,
 } from './proto/khub916.ts';
 import { decodeKeyValue, keyValueLabel } from './proto/khub916.ts';
+import {
+  ADV_BLOB_BYTES,
+  advKeyWritePacket,
+  keyConfigurationWritePacket,
+  normalizeBlob,
+} from './proto/advkey916.ts';
 import { buildLightDataPacket, CUSTOM_LIGHT_SLOTS, type Rgb } from './proto/light.ts';
 
 // ── Device identity tables (spec §1, `Ts` table) ───────────────────────
@@ -407,6 +413,104 @@ export class Khub916Session {
     }
     return { command: CMD.lightDataWrite, verified: true };
   }
+
+  // ── Advanced keys (SOCD/MT/TGL — proto/advkey916.ts) ─────────────────
+
+  /**
+   * Keymap values on the vendor `sendKeyConfiguration` channel:
+   * cmd 131 arg 0, tags 0/2 — the read counterpart of
+   * `writeKeyConfiguration` (distinct from `keyValues`' 248/1
+   * layer/system channel, which is what the adv planners read via
+   * `getKeyboardKeys({layer:0})`). The vendor JS never reads this
+   * channel back; this read exists so writes can be verified.
+   */
+  async keyConfiguration(): Promise<number[]> {
+    return parseKeyValues(await this.query(CMD.keymapRead, 0x00, 0x00, 0x02));
+  }
+
+  /**
+   * SOCD/MT/TGL history blob (cmd 146, tags 0/2 — vendor
+   * `getKeyboardAdvancedKey`). Returns the raw payload; use
+   * `normalizeBlob` (proto/advkey916.ts) for a fixed 512-byte view.
+   */
+  async advKeyConfig(): Promise<Uint8Array> {
+    return this.query(CMD.advKeyRead, 0x00, 0x00, 0x02);
+  }
+
+  /**
+   * Write the 512-byte SOCD/MT/TGL history blob (cmd 18, tags 0/2 —
+   * vendor `sendAdvanKeyHistory`). Fire-and-forget like every config
+   * write.
+   *
+   * Read-back verify is **best-effort**: on K1 Pro (live-tested) cmd-146
+   * returns unrelated firmware-memory pages for ~60 s after the write
+   * within the same session, and the write itself did not persist on
+   * that unit. This polls ~2.2 s and reports `verified: false` rather
+   * than throwing, so callers can surface "sent, unconfirmed" honestly.
+   * Treat cmd 18 as code-verified, persistence unconfirmed (see
+   * docs/advkeys-schema.md).
+   */
+  async writeAdvKeyConfig(blob: Uint8Array): Promise<WriteOutcome> {
+    if (blob.length !== ADV_BLOB_BYTES) {
+      throw new Error(`khub916 adv-key write needs exactly ${ADV_BLOB_BYTES} bytes, got ${blob.length}`);
+    }
+    await this.configWrite(advKeyWritePacket(blob));
+    const want = normalizeBlob(blob);
+    let back = await this.advKeyConfig();
+    for (let attempt = 0; attempt <= 10; attempt++) {
+      if (bytesEqual(normalizeBlob(back), want)) {
+        return { command: CMD.advKeyWrite, verified: true };
+      }
+      if (attempt === 10) break;
+      await sleep(200);
+      back = await this.advKeyConfig();
+    }
+    // Best-effort only: the write was sent vendor-identically.
+    return { command: CMD.advKeyWrite, verified: false };
+  }
+
+  /**
+   * Write the keymap through the vendor `sendKeyConfiguration` header
+   * `[3,0,0,1,0,0,2]` — arg 0, tags 0/2 — used by every adv-key set
+   * operation (distinct from `writeKeymap`'s 248/1 header). `values` is
+   * the u32 BE key list (≤128, zero-padded, `5A A5` end marker).
+   *
+   * Verify: cmd-131 read-back on the same 0/2 channel
+   * (`keyConfiguration`) must match zero-padded to 128 entries. Same
+   * async-commit caveat as the cmd-18 history write: poll briefly
+   * before declaring a mismatch; a mismatch throws without poisoning.
+   */
+  async writeKeyConfiguration(values: readonly number[]): Promise<WriteOutcome> {
+    if (values.length === 0 || values.length > KEYMAP_ENTRIES) {
+      throw new Error(
+        `khub916 key configuration write needs 1..=${KEYMAP_ENTRIES} values, got ${values.length}`,
+      );
+    }
+    await this.configWrite(keyConfigurationWritePacket(values));
+    // Expected read-back = `values` zero-padded to KEYMAP_ENTRIES with
+    // the same `5A A5` trailer the write payload carries (bytes
+    // 510/511 land inside u32 index 127). Port of advkey.rs.
+    const want = new Array<number>(KEYMAP_ENTRIES).fill(0);
+    values.forEach((v, i) => {
+      want[i] = v >>> 0;
+    });
+    want[KEYMAP_ENTRIES - 1] = ((want[KEYMAP_ENTRIES - 1] ?? 0) & 0xffff_0000 | 0x5aa5) >>> 0;
+    for (let attempt = 0; attempt <= 10; attempt++) {
+      const back = await this.keyConfiguration();
+      if (back.length > KEYMAP_ENTRIES) {
+        throw new Error(
+          `khub916 key configuration read-back has ${back.length} entries (> ${KEYMAP_ENTRIES})`,
+        );
+      }
+      const matches = want.every((w, i) => w === (back[i] ?? 0));
+      if (matches) {
+        return { command: CMD.keymapWrite, verified: true };
+      }
+      if (attempt === 10) break;
+      await sleep(50);
+    }
+    throw new Error('khub916 key configuration write not verified: read-back differs');
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -477,6 +581,10 @@ export interface WriteOutcome {
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export interface ConnectedKhub {

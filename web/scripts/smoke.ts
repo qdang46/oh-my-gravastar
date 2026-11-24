@@ -73,6 +73,22 @@ import {
 } from '../src/proto/macro916.ts';
 import { keymapWritePacket, keymapWritePayload, macroWritePacket } from '../src/proto/khub916.ts';
 import { KEY_POOL, POOL_GROUPS, POOL_UNASSIGN, poolNameFor } from '../src/keypool.ts';
+import {
+  ADV_BLOB_BYTES,
+  MT_BASE,
+  SOCD_BASE,
+  TGL_BASE,
+  advKeyWritePacket,
+  bindingPayload,
+  decodeAdvBinding,
+  historyEntries,
+  keyConfigurationWritePacket,
+  normalizeBlob,
+  planMt,
+  planSocd,
+  planTgl,
+  scanAdvBindings,
+} from '../src/proto/advkey916.ts';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -594,6 +610,153 @@ function liveProfile(): Uint8Array {
   check('pool name miss', poolNameFor(0xdeadbeef) === null);
 }
 
+
+// ── Advanced keys codec (proto/advkey916.ts — port of advkey.rs tests) ──
+
+{
+  const zeros = (n: number) => new Uint8Array(n);
+
+  // plan_socd_writes_history_and_keymap
+  {
+    const km = new Array<number>(64).fill(0);
+    km[10] = 0x0000_0004;
+    km[20] = 0x0000_0005;
+    const plan = planSocd(zeros(ADV_BLOB_BYTES), km, 10, 20, 1);
+    check('socd keymap A', plan.keymap[10] === SOCD_BASE + 1, hex(plan.keymap[10] ?? 0));
+    check('socd keymap B', plan.keymap[20] === SOCD_BASE + 256 + 1);
+    check(
+      'socd history entry',
+      eq([...plan.blob.slice(0, 8)], [0, 0, 0, 4, 0, 0, 0, 5]),
+    );
+    check('socd tgl footer cleared', plan.blob[510] === 0 && plan.blob[511] === 0);
+    const entries = historyEntries(plan.blob);
+    check('socd one entry', entries.length === 1 && entries[0]?.kind === 'socd' && entries[0]?.slot === 0);
+    check('socd entry values', eq(entries[0]?.values, [4, 5]));
+    const bindings = scanAdvBindings(plan.keymap);
+    check('socd two bindings', bindings.length === 2);
+    check(
+      'socd binding detail',
+      bindings[0]?.detail.kind === 'socd' &&
+        bindings[0]?.detail.direction === 1 &&
+        bindings[0]?.detail.keyB === false &&
+        bindings[1]?.detail.kind === 'socd' &&
+        bindings[1]?.detail.keyB === true,
+    );
+    check('socd payload', eq(bindingPayload(plan.blob, bindings[0]!), [4, 5]));
+  }
+
+  // plan_mt_stores_tap_then_hold
+  {
+    const km = new Array<number>(64).fill(0);
+    km[3] = 0x1d;
+    const plan = planMt(zeros(ADV_BLOB_BYTES), km, 3, 4, 5, 50);
+    check('mt keymap', plan.keymap[3] === MT_BASE + 50);
+    check('mt history at 200', eq([...plan.blob.slice(200, 208)], [0, 0, 0, 4, 0, 0, 0, 5]));
+    const entries = historyEntries(plan.blob);
+    check('mt entry', entries.length === 1 && entries[0]?.kind === 'mt' && eq(entries[0]?.values, [4, 5]));
+    const b = scanAdvBindings(plan.keymap);
+    check('mt detail', b[0]?.detail.kind === 'mt' && b[0]?.detail.time === 50);
+  }
+
+  // plan_tgl_stores_toggle_value
+  {
+    const km = new Array<number>(64).fill(0);
+    km[7] = 0x15;
+    km[9] = 0x0002_001e;
+    const plan = planTgl(zeros(ADV_BLOB_BYTES), km, 7, 9);
+    check('tgl keymap exact base', plan.keymap[7] === TGL_BASE);
+    check('tgl history at 400', eq([...plan.blob.slice(400, 404)], [0x00, 0x02, 0x00, 0x1e]));
+    const b = scanAdvBindings(plan.keymap);
+    check('tgl detail', b[0]?.detail.kind === 'tgl');
+    check('tgl payload', eq(bindingPayload(plan.blob, b[0]!), [0x0002_001e]));
+  }
+
+  // second_entry_gets_next_slot (base_address nonzero-group count)
+  {
+    const blob = zeros(ADV_BLOB_BYTES);
+    blob.set([0, 0, 0, 4, 0, 0, 0, 5], 0);
+    const km = [1, 2];
+    const plan = planSocd(blob, km, 0, 1, 0);
+    check('socd slot1 keymap A', plan.keymap[0] === SOCD_BASE + 0x1_0000);
+    check('socd slot1 keymap B', plan.keymap[1] === SOCD_BASE + 0x1_0000 + 256);
+    check('socd slot1 entry at 8', eq([...plan.blob.slice(8, 16)], [0, 0, 0, 1, 0, 0, 0, 2]));
+  }
+
+  // plan_rejects_bound_and_missing_positions
+  {
+    const blob = zeros(ADV_BLOB_BYTES);
+    const km = new Array<number>(8).fill(0);
+    km[1] = 0x20_00_00_01;
+    check('reject bound socd', throws(() => planSocd(blob, km, 1, 2, 0)));
+    check('reject oob socd', throws(() => planSocd(blob, km, 1, 99, 0)));
+    check('reject oob mt', throws(() => planMt(blob, km, 99, 1, 2, 50)));
+    check('reject oob tgl', throws(() => planTgl(blob, km, 1, 99)));
+    check('reject same key', throws(() => planSocd(blob, [1, 2, 3, 4], 2, 2, 0)));
+    check('reject bad direction', throws(() => planSocd(blob, [1, 2, 3, 4], 2, 3, 4)));
+    check('reject full socd region', throws(() => {
+      const full = zeros(ADV_BLOB_BYTES);
+      for (let i = 0; i < 200; i++) full[i] = (i % 4) + 1;
+      planSocd(full, [1, 2], 0, 1, 0);
+    }));
+  }
+
+  // decode_adv_binding_fields
+  {
+    check('decode non-adv', decodeAdvBinding(0x29) === null);
+    const d1 = decodeAdvBinding(SOCD_BASE + 2);
+    check('decode socd', d1?.kind === 'socd' && d1.slot === 0 && d1.detail.kind === 'socd' && d1.detail.direction === 2 && d1.detail.keyB === false);
+    const d2 = decodeAdvBinding(SOCD_BASE + 0x100 + 3);
+    check('decode socd keyB', d2?.detail.kind === 'socd' && d2.detail.direction === 3 && d2.detail.keyB === true);
+    const d3 = decodeAdvBinding(MT_BASE + (5 << 16) + 42);
+    check('decode mt', d3?.kind === 'mt' && d3.slot === 5 && d3.detail.kind === 'mt' && d3.detail.time === 42);
+    const d4 = decodeAdvBinding(TGL_BASE + (7 << 16));
+    check('decode tgl', d4?.kind === 'tgl' && d4.slot === 7 && d4.detail.kind === 'tgl');
+  }
+
+  // normalize_blob pads short reads
+  {
+    const short = new Uint8Array(100).fill(0xab);
+    const b = normalizeBlob(short);
+    check('normalize pads', b.length === 512 && b[99] === 0xab && b[100] === 0 && b[511] === 0);
+    const long = new Uint8Array(600).fill(0xcd);
+    check('normalize truncates', normalizeBlob(long).every((x) => x === 0xcd));
+  }
+
+  // Write packets: cmd 18 history + cmd 3 0/2 key-configuration.
+  {
+    const blob = zeros(ADV_BLOB_BYTES);
+    blob[0] = 0x11;
+    const wp = advKeyWritePacket(blob);
+    check('adv write packet 519', wp.length === 519);
+    check('adv write header', eq([...wp.slice(0, 7)], [18, 0, 0, 1, 0, 0, 2]));
+    check('adv write payload', wp[7] === 0x11);
+    let threw = false;
+    try {
+      advKeyWritePacket(new Uint8Array(100));
+    } catch {
+      threw = true;
+    }
+    check('adv write bad length refused', threw);
+
+    const kp = keyConfigurationWritePacket([0x21000032, 0x00000004]);
+    check('keyconf write header', eq([...kp.slice(0, 7)], [3, 0, 0, 1, 0, 0, 2]));
+    check('keyconf payload 512', kp.length === 519);
+    check('keyconf be u32', kp[7] === 0x21 && kp[8] === 0x00 && kp[10] === 0x32 && kp[14] === 0x04);
+    check('keyconf 5A A5 marker', kp[517] === 0x5a && kp[518] === 0xa5);
+  }
+}
+
+function hex(v: number): string {
+  return `0x${(v >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
+}
+function throws(fn: () => unknown): boolean {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

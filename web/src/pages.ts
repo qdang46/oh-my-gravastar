@@ -12,6 +12,7 @@ import { app, subscribe, type KeyEntry } from './state.ts';
 import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, type KeyBlock } from './k1pro-layout.ts';
 import { renderLightingPage, destroyLightingPage } from './lighting.ts';
 import { MacroPage } from './macro.ts';
+import { AdvPage } from './advkeys.ts';
 import { renderKeysPage, destroyKeysPage } from './remap.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { formatVidPid } from './hid.ts';
@@ -257,19 +258,17 @@ function renderMacro(root: HTMLElement): void {
   macroPage = new MacroPage(root);
 }
 
+// ── Advanced keys (bead 0um) ──────────────────────────────────────────
+//
+// Stateful like MacroPage: created once per mount, subscribes itself,
+// destroyed on navigation away (`isConnected` check + route() teardown).
+
+let advPage: AdvPage | null = null;
+
 function renderAdvanced(root: HTMLElement): void {
-  root.replaceChildren();
-  root.append(
-    comingSoon(
-      'Advanced',
-      'Vendor page: 高级键 — SOCD, MT (hold/tap) and TGL trigger configuration ' +
-        'on top of the keyboard visualizer.',
-      [
-        'Blocked on the khub916 advanced-keys protocol bead (cmd 18 wired / cmd 82 wireless).',
-        'Key values with SOCD/MT/TGL tags already decode in the keymap labels.',
-      ],
-    ),
-  );
+  if (advPage && advPage.el.isConnected) return;
+  advPage?.destroy();
+  advPage = new AdvPage(root);
 }
 
 // ── Router ─────────────────────────────────────────────────────────────
@@ -308,6 +307,8 @@ export function destroyPages(): void {
   destroyLightingPage();
   macroPage?.destroy();
   macroPage = null;
+  advPage?.destroy();
+  advPage = null;
   window.removeEventListener('hashchange', route);
 }
 
@@ -322,11 +323,16 @@ function updateNav(): void {
 function route(): void {
   const page = pageFromHash(location.hash);
   currentPage = page;
-  // The macro view is stateful — tear it down when navigating away so it
-  // does not keep a live subscription while detached.
+  // The macro/advanced views are stateful — tear them down when
+  // navigating away so they do not keep a live subscription while
+  // detached.
   if (page !== 'macro' && macroPage) {
     macroPage.destroy();
     macroPage = null;
+  }
+  if (page !== 'advanced' && advPage) {
+    advPage.destroy();
+    advPage = null;
   }
   if (pageRoot) renderers[page](pageRoot);
   updateNav();

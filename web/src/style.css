@@ -859,6 +859,18 @@ a:focus-visible,
   padding: var(--space-1);
 }
 
+/* ── Advanced keys page (bead 0um) ────────────────────────────────────── */
+
+.adv-page .macro-table td {
+  vertical-align: top;
+}
+
+.adv-payload {
+  font-size: 11px;
+  word-break: break-all;
+  max-width: 34ch;
+}
+
 /* ── Lighting page (bead far) ─────────────────────────────────────────── */
 
 .mono {
