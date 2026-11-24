@@ -664,9 +664,9 @@ pub fn default_map_request(first_row: u8, second_row: u8) -> [u8; WIRE_REPORT_BY
 pub fn key_function_request(query: &KeyFunctionQuery) -> [u8; WIRE_REPORT_BYTES] {
     let mut payload = [0u8; KEY_FUNCTION_PAYLOAD];
     payload[0] = 0x00;
-    for i in 0..KEY_FUNCTION_RECORDS {
+    for (i, &key) in query.keys.iter().enumerate() {
         let off = 1 + i * 4;
-        payload[off] = query.keys[i];
+        payload[off] = key;
         payload[off + 1] = LAYOUT_FN0;
     }
     req(CMD_KEY_FUNCTIONS, &payload)
@@ -1107,9 +1107,9 @@ mod tests {
     /// Key-function response payload echoing `query` with `func(i)` per record.
     fn keyfunc_payload(query: &KeyFunctionQuery, func: impl Fn(usize) -> u16) -> Vec<u8> {
         let mut p = vec![0u8; KEY_FUNCTION_PAYLOAD];
-        for i in 0..KEY_FUNCTION_RECORDS {
+        for (i, &key) in query.keys.iter().enumerate() {
             let off = 1 + i * 4;
-            p[off] = query.keys[i];
+            p[off] = key;
             p[off + 1] = LAYOUT_FN0;
             p[off + 2..off + 4].copy_from_slice(&func(i).to_le_bytes());
         }
@@ -1389,8 +1389,8 @@ mod tests {
         };
         short.keys[0] = keys[0];
         short.keys[1] = keys[1];
-        for i in 2..KEY_FUNCTION_RECORDS {
-            short.keys[i] = keys[1]; // pad repeats last real key
+        for slot in short.keys.iter_mut().skip(2) {
+            *slot = keys[1]; // pad repeats last real key
         }
         let mut p = keyfunc_payload(&short, |_| 0x0028);
         // Make the two echoes of key[1] disagree.
@@ -1590,13 +1590,11 @@ mod tests {
         // actually 0x29; find the 0x1e key).
         let mut saw_fn = false;
         let mut saw_usage = false;
-        for r in 0..ROWS {
-            for c in 0..COLS {
-                if let Some(k) = active.keys[r][c] {
-                    match k {
-                        KeyFunction::Fn => saw_fn = true,
-                        KeyFunction::HidUsage(_) => saw_usage = true,
-                    }
+        for row in active.keys.iter() {
+            for k in row.iter().flatten() {
+                match *k {
+                    KeyFunction::Fn => saw_fn = true,
+                    KeyFunction::HidUsage(_) => saw_usage = true,
                 }
             }
         }
