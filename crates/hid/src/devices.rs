@@ -22,8 +22,8 @@ pub const HE_USAGE_PAGE: u16 = 0xffb0;
 /// Product ids the official web driver routes to the v2 (HE) protocol.
 /// Kept as the decimal literals used upstream.
 pub const HE_PIDS: [u16; 23] = [
-    11272, 11273, 11282, 11275, 11276, 11288, 11289, 11296, 11297, 11290, 11291, 11292, 11293, 11274, 11278, 11277, 4896,
-    11283, 11284, 11305, 11306, 11300, 11298,
+    11272, 11273, 11282, 11275, 11276, 11288, 11289, 11296, 11297, 11290, 11291, 11292, 11293,
+    11274, 11278, 11277, 4896, 11283, 11284, 11305, 11306, 11300, 11298,
 ];
 
 // ── SparkPlayJoy 6x21 analog protocol ─────────────────────────────────
@@ -61,6 +61,12 @@ pub const KHUB916_WIRED: &[(u16, u16)] = &[
     (0x379a, 0xa008),
     (0x379a, 0xa005),
 ];
+
+/// khub916 wired vendor collection: the WebHID driver requires
+/// `usagePage >= 0xFF00` on a collection that has both feature and input
+/// reports (docs/protocol-khub916.md §1). The K1 Pro exposes 7 HID
+/// interfaces under one VID/PID; only this one speaks the protocol.
+pub const KHUB916_WIRED_USAGE_PAGE_MIN: u16 = 0xff00;
 
 /// 2.4 GHz dongle identities from the `916_wireLess` device table
 /// (duplicates removed). VID 0x3554 PID 0xfa09 is a wireless dongle and is
@@ -113,7 +119,7 @@ pub fn classify(vid: u16, pid: u16, usage_page: u16, usage: u16) -> Option<Devic
     if vid == MOUSE_VID && MOUSE_PIDS.contains(&pid) && usage_page == MOUSE_USAGE_PAGE {
         return Some(DeviceKind::CompxMouse);
     }
-    if KHUB916_WIRED.contains(&(vid, pid)) {
+    if KHUB916_WIRED.contains(&(vid, pid)) && usage_page >= KHUB916_WIRED_USAGE_PAGE_MIN {
         return Some(DeviceKind::Khub916Wired);
     }
     if KHUB916_WIRELESS.contains(&(vid, pid)) {
@@ -185,24 +191,42 @@ mod tests {
 
     #[test]
     fn khub916_wired_k1_pro_matches() {
-        assert_eq!(classify(0x258a, 0x010c, 0, 0), Some(DeviceKind::Khub916Wired));
+        // Only the vendor collection (usage page >= 0xff00) speaks the
+        // protocol; the keyboard's standard interfaces share the VID/PID.
+        assert_eq!(
+            classify(0x258a, 0x010c, 0xff00, 0),
+            Some(DeviceKind::Khub916Wired)
+        );
+        assert_eq!(classify(0x258a, 0x010c, 0x0001, 0), None);
     }
 
     #[test]
     fn he_keyboard_matches() {
-        assert_eq!(classify(0x1ca6, 11272, 0xffb0, 0), Some(DeviceKind::HeKeyboardV2));
+        assert_eq!(
+            classify(0x1ca6, 11272, 0xffb0, 0),
+            Some(DeviceKind::HeKeyboardV2)
+        );
         assert_eq!(classify(0x1ca6, 11272, 0xff02, 0), None);
     }
 
     #[test]
     fn mouse_and_wireless_do_not_collide() {
-        assert_eq!(classify(0x3554, 0xf54b, 0xff02, 0), Some(DeviceKind::CompxMouse));
-        assert_eq!(classify(0x3554, 0xfa09, 0, 0), Some(DeviceKind::Khub916Wireless));
+        assert_eq!(
+            classify(0x3554, 0xf54b, 0xff02, 0),
+            Some(DeviceKind::CompxMouse)
+        );
+        assert_eq!(
+            classify(0x3554, 0xfa09, 0, 0),
+            Some(DeviceKind::Khub916Wireless)
+        );
     }
 
     #[test]
     fn sparkplayjoy_matches_on_usage() {
-        assert_eq!(classify(0x1ca5, 0x2201, 0xffa0, 1), Some(DeviceKind::SparkPlayJoy));
+        assert_eq!(
+            classify(0x1ca5, 0x2201, 0xffa0, 1),
+            Some(DeviceKind::SparkPlayJoy)
+        );
         assert_eq!(classify(0x1ca5, 0x2201, 0xffa0, 2), None);
     }
 }

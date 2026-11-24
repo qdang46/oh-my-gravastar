@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 /// One open HID interface.
 pub trait Link {
@@ -13,6 +13,23 @@ pub trait Link {
     fn write(&mut self, report_id: u8, data: &[u8]) -> Result<()>;
     /// Next input report payload (without report id), or `None` after `timeout`.
     fn read(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>>;
+    /// Numbered HID **feature** report request/response (control endpoint),
+    /// used by the khub916 wired protocol. `payload` excludes the report id;
+    /// the returned bytes also exclude it. The default implementation reports
+    /// the transport as unsupported.
+    ///
+    /// Note: hidapi's `get_feature_report` has no timeout; real implementations
+    /// may block until the device answers.
+    fn feature_exchange(
+        &mut self,
+        _report_id: u8,
+        _payload: &[u8],
+        _timeout: Duration,
+    ) -> Result<Option<Vec<u8>>> {
+        Err(anyhow::anyhow!(
+            "this HID link does not support feature reports"
+        ))
+    }
 }
 
 pub struct HidLink {
@@ -45,6 +62,35 @@ impl Link for HidLink {
             _ if self.numbered => Some(buf[1..n].to_vec()),
             _ => Some(buf[..n].to_vec()),
         })
+    }
+
+    fn feature_exchange(
+        &mut self,
+        report_id: u8,
+        payload: &[u8],
+        _timeout: Duration,
+    ) -> Result<Option<Vec<u8>>> {
+        // hidapi wants the report id as buffer byte 0 on both calls.
+        let mut buf = Vec::with_capacity(payload.len() + 1);
+        buf.push(report_id);
+        buf.extend_from_slice(payload);
+        self.dev
+            .send_feature_report(&buf)
+            .context("feature report send failed")?;
+        let mut out = vec![0u8; buf.len()];
+        out[0] = report_id;
+        // Blocking control transfer: the khub916 firmware answers every
+        // feature request, so no timeout is available or needed here.
+        let n = self
+            .dev
+            .get_feature_report(&mut out)
+            .context("feature report get failed")?;
+        // Byte 0 of `out` is the report id; strip it like `read` does.
+        Ok(Some(if n > 1 {
+            out[1..n].to_vec()
+        } else {
+            Vec::new()
+        }))
     }
 }
 

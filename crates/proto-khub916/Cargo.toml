@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "GravaStar K1/K98 series khub916 feature-report protocol (reversing in progress)"
+description = "GravaStar K1/K98 series khub916 wired feature-report protocol"
 
 [dependencies]
 anyhow.workspace = true
 omg-hid = { path = "../hid" }
+omg-model = { path = "../model" }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
