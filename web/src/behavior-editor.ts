@@ -23,7 +23,13 @@
  *   reports "sent, not confirmed" honestly.
  */
 
-import { app, emit, ensureKeymap, setStatus } from './state.ts';
+// Import the state slices directly (not the `./state.ts` barrel): the
+// barrel pulls in `state/connection.ts` → `hid.ts`, whose WebHID session
+// class uses TS parameter properties that Node's type-stripping cannot
+// parse — keeping this file importable under `scripts/test-*.ts`.
+import { app, emit, setStatus } from './state/core.ts';
+import { ensureKeymap, keymapBase } from './state/keymap.ts';
+import { guardKeymapBase, isOpaqueKeymapValue } from './keymap-guard.ts';
 import { KEY_POOL, POOL_UNASSIGN } from './keypool.ts';
 import { KEYMAP_ENTRIES } from './proto/khub916.ts';
 import {
@@ -84,7 +90,13 @@ interface AdvCache {
   /** Connection the cache belongs to (refetch on reconnect). */
   conn: unknown;
   blob: Uint8Array;
-  /** Arg-0 keymap u32 values (vendor sendKeyConfiguration channel read). */
+  /**
+   * Arg-0 keymap u32 values — the base every adv whole-table write is
+   * planned on. Always a guarded read (`keymapBase` →
+   * `guardKeymapBase`, §Safety 6/7): empty/short/corrupt reads abort
+   * instead of becoming a zero-padded write base, and opaque
+   * unknown-tag slots pass through byte-identical.
+   */
   keymap: number[];
 }
 
@@ -173,11 +185,16 @@ export class BehaviorEditor {
         const s = conn.session;
         // Sequential — concurrent feature reports poison the session.
         const rawBlob = await s.advKeyConfig();
-        const km = await s.keyValues(0);
+        // §Safety 6 — drop the decode cache so this is a fresh device
+        // read, then require a complete, u32-clean base pinned to the
+        // length of any previous good read (same as advkeys.ts refresh).
+        const prevLen = this.adv && this.adv.conn === conn ? this.adv.keymap.length : undefined;
+        app.snapshot?.keymaps.delete(0);
+        const km = guardKeymapBase(await keymapBase(0), { arg: 0, expectedLen: prevLen });
         this.adv = {
           conn,
           blob: normalizeBlob(rawBlob),
-          keymap: km.map((v) => v >>> 0),
+          keymap: km,
         };
       } catch (e) {
         this.advError = e instanceof Error ? e.message : String(e);
@@ -273,6 +290,21 @@ export class BehaviorEditor {
       );
     }
     host.append(head);
+
+    // §Safety 7 — a slot holding an undocumented-tag value is opaque:
+    // it must survive byte-identical, so the whole editor locks for it
+    // (no staged plain edit, no adv bind, no remove).
+    if (isOpaqueKeymapValue(ctx.committed)) {
+      host.append(
+        this.el(
+          'p',
+          'hint warn',
+          'This key holds a setting this app does not recognize — it is ' +
+            'locked so the unknown value is preserved.',
+        ),
+      );
+      return;
+    }
 
     // Mode tabs.
     const tabs = this.el('div', 'segment-bar beh-mode');
@@ -563,8 +595,15 @@ export class BehaviorEditor {
     onPick: (i: number) => void,
   ): HTMLSelectElement {
     const sel = this.el('select', 'macro-select beh-select') as HTMLSelectElement;
+    // Committed arg-0 values — used only to keep opaque (unknown-tag)
+    // slots out of the picker (§Safety 7). When the decode cache is not
+    // populated yet every slot is listed; the write-time diff check in
+    // commitAdv still refuses to overwrite an opaque slot.
+    const km = app.snapshot?.keymaps.get(0);
     for (let i = 0; i < KEYMAP_ENTRIES; i++) {
       if (i === exclude) continue;
+      const v = km?.[i]?.value;
+      if (v !== undefined && isOpaqueKeymapValue(v >>> 0)) continue;
       const o = this.el('option', '', `Key ${i} — ${ctx.labelFor(i) || '(empty)'}`) as HTMLOptionElement;
       o.value = String(i);
       sel.append(o);
@@ -838,7 +877,22 @@ export class BehaviorEditor {
       confirmLabel: 'Save to keyboard now',
     });
     if (!ok || this.busy) return;
+    await this.commitAdv(ctx, draft, adv, desc);
+  }
 
+  /**
+   * The device-write half of `applyAdv` (post-confirm): plan, guard the
+   * whole-table keymap write (§Safety 6/7), send the vendor-order writes
+   * and refresh the caches. Kept free of the confirm dialog so the guard
+   * paths are unit-testable with a mocked session.
+   */
+  private async commitAdv(
+    ctx: ConfigureContext,
+    draft: AdvDraft,
+    adv: AdvCache,
+    desc: string,
+  ): Promise<void> {
+    if (!app.connected || !app.snapshot) return;
     let plan: AdvPlan;
     try {
       const km = adv.keymap;
@@ -865,14 +919,54 @@ export class BehaviorEditor {
     this.busy = true;
     const s = app.connected.session;
     try {
+      // §Safety 6 — `plan.keymap` is a whole-table write; refuse to send
+      // one that is empty/short/corrupt or that does not match the
+      // guarded base it was planned on.
+      const km = guardKeymapBase(plan.keymap, { arg: 0, expectedLen: adv.keymap.length });
+      // §Safety 7 — a plan may only rewrite slots whose previous value
+      // is known or empty; an opaque (unknown-tag) slot must survive
+      // byte-identical, so any plan that changes one is refused here
+      // even if it slipped past the pickers (same diff check as
+      // advkeys.ts applyPlan).
+      for (let i = 0; i < km.length; i++) {
+        const before = adv.keymap[i];
+        if (before !== undefined && km[i] !== before && isOpaqueKeymapValue(before)) {
+          throw new Error(
+            `key ${i} holds a value this app does not recognize — refusing to overwrite it`,
+          );
+        }
+      }
+      // TGL stores the target's *value* in the history blob rather than
+      // rewriting its keymap slot — still refuse an opaque target so an
+      // unrecognized value is never captured into a binding.
+      if (draft.kind === 'tgl') {
+        const tv = adv.keymap[draft.target];
+        if (tv !== undefined && isOpaqueKeymapValue(tv)) {
+          throw new Error(
+            `key ${draft.target} holds a value this app does not recognize — refusing to bind it`,
+          );
+        }
+      }
       // Vendor order: keymap binding first (cmd 3, 0/2 channel), then the
       // history blob (cmd 18) — same as advkeys.ts / `omg kb916 adv set`.
-      await s.writeKeyConfiguration(plan.keymap);
+      await s.writeKeyConfiguration(km);
       const ho = await s.writeAdvKeyConfig(plan.blob);
 
-      // Refresh what we can trust (same bookkeeping as AdvPage).
-      const km = await s.keyValues(0).catch(() => null);
-      if (km && this.adv) this.adv.keymap = km.map((v) => v >>> 0);
+      // Refresh what we can trust (same bookkeeping as AdvPage). The
+      // read-back seeds the next write's base, so it passes the same
+      // guard pinned to the length just verified on the wire; an
+      // untrusted read-back drops the cache instead of keeping it.
+      const back = await s.keyValues(0).catch(() => null);
+      if (back && this.adv) {
+        try {
+          this.adv.keymap = guardKeymapBase(back.map((v) => v >>> 0), {
+            arg: 0,
+            expectedLen: km.length,
+          });
+        } catch {
+          this.adv = null;
+        }
+      }
       if (this.adv) this.adv.blob = plan.blob;
       app.snapshot.keymaps.delete(0);
       void ensureKeymap(0).catch(() => {});
@@ -915,11 +1009,38 @@ export class BehaviorEditor {
       danger: true,
     });
     if (!ok) return;
+    await this.commitRemoveAdv(ctx);
+  }
+
+  /**
+   * The device-write half of `removeAdv` (post-confirm). Rebuilds the
+   * whole-table write from a FRESH guarded read (`keymapBase` →
+   * `guardKeymapBase`, §Safety 6) — never the cached decode padded with
+   * zeros — and refuses to zero an opaque unknown-tag slot (§Safety 7).
+   * Kept free of the confirm dialog so the guard paths are
+   * unit-testable with a mocked session.
+   */
+  private async commitRemoveAdv(ctx: ConfigureContext): Promise<void> {
+    if (!app.connected || !app.snapshot || ctx.arg !== 0) return;
     this.busy = true;
     try {
-      await ensureKeymap(0);
-      const entries = app.snapshot?.keymaps.get(0) ?? [];
-      const values = entries.map((e) => e.value >>> 0);
+      app.snapshot.keymaps.delete(0);
+      const base = guardKeymapBase(await keymapBase(0), {
+        arg: 0,
+        expectedLen: this.adv?.keymap.length,
+      });
+      if (ctx.index >= base.length) {
+        throw new Error(
+          `key ${ctx.index} is past the ${base.length} keys the keyboard reports — nothing was sent`,
+        );
+      }
+      const before = base[ctx.index] ?? 0;
+      if (isOpaqueKeymapValue(before)) {
+        throw new Error(
+          `key ${ctx.index} holds a value this app does not recognize — refusing to overwrite it`,
+        );
+      }
+      const values = base.slice();
       while (values.length < KEYMAP_ENTRIES) values.push(0);
       values[ctx.index] = 0;
       await app.connected.session.writeKeymap(0, 0, values);
