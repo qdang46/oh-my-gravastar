@@ -498,10 +498,11 @@ impl BeatViz {
             for c in 0..3 {
                 let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate;
                 let v = (base_v + add[c] + punch_rgb[c]).clamp(0.0, 1.0);
-                // Output gamma: dim residue (dying rings, wash, ambient)
-                // collapses toward black while beat peaks stay bright —
-                // the "keys off between beats" read the vendor video has.
-                let v = v.powf(1.5);
+                // Deadzone: anything below ~4.5% pre-gamma is residue
+                // (wash tail, ambient floor, dying ring edge) — snap to
+                // black so between-beat frames are genuinely off, not
+                // a uniform dim glow across every key.
+                let v = if v < 0.045 { 0.0 } else { v.powf(1.5) };
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
             }
         }
