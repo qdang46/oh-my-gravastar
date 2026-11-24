@@ -18,6 +18,7 @@ import { renderMusicPage, destroyMusicPage } from './music.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { renderDiagnostics, destroyDiagnostics } from './diagnostics.ts';
 import { renderPerfPage, destroyPerfPage } from './perf.ts';
+import { renderAssistantPage, destroyAssistantPage } from './assistant.ts';
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
@@ -28,6 +29,7 @@ export type PageId =
   | 'advanced'
   | 'music'
   | 'performance'
+  | 'assistant'
   | 'device'
   | 'diagnostics'
   | 'basic'
@@ -50,6 +52,9 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   // Performance Studio (bead xp0): HE-only actuation/RT/DKS-MPT page —
   // renders honest unsupported states on khub916 devices.
   { id: 'performance', path: '/performance', title: 'Performance' },
+  // AI Assistant (bead 7js): NL → plan → preview → apply over the agent
+  // engine — read-only until a device is connected and writes enabled.
+  { id: 'assistant', path: '/assistant', title: 'Assistant' },
   { id: 'device', path: '/device', title: 'Device' },
   { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
   // Secondary pages (bead jwb): vendor basicFunctions / configurationManagement
@@ -66,6 +71,7 @@ export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] =
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'music', path: '/music', title: 'Music' },
   { id: 'performance', path: '/performance', title: 'Performance' },
+  { id: 'assistant', path: '/assistant', title: 'Assistant' },
   { id: 'device', path: '/device', title: 'Device' },
   { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
 ];
@@ -300,6 +306,7 @@ const renderers: Record<PageId, (root: HTMLElement) => void> = {
   advanced: renderAdvanced,
   music: renderMusic,
   performance: renderPerfPage,
+  assistant: renderAssistantPage,
   device: renderDevice,
   diagnostics: renderDiagnostics,
   ...SECONDARY_RENDERERS,
@@ -336,6 +343,7 @@ export function destroyPages(): void {
   // Leaving Performance stops the live-travel poll (the HE session
   // itself survives — see perf.ts).
   destroyPerfPage();
+  destroyAssistantPage();
   window.removeEventListener('hashchange', route);
 }
 

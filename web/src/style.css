@@ -2683,3 +2683,388 @@ input[type='color'] {
 .edit-banner-btn:hover {
   background: rgba(0, 0, 0, 0.32);
 }
+
+/* ── Layout editor (bead oh-my-gravastar-aur) — visual-only overrides ── */
+
+.ly-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+}
+
+.ly-label {
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+.ly-select {
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  max-width: 320px;
+}
+
+.sec-file-input {
+  display: none;
+}
+
+.ly-messages {
+  margin-top: var(--space-2);
+}
+
+.ly-viewport {
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  margin-top: var(--space-2);
+}
+
+.ly-canvas {
+  position: relative;
+  transform-origin: top left;
+}
+
+.ly-key {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 4px rgba(0, 0, 0, 0.45);
+  background: var(--key-cap);
+  color: var(--fg);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.ly-key:active {
+  cursor: grabbing;
+}
+
+.ly-key--sel {
+  outline: 2px solid var(--accent, #6ea8fe);
+  outline-offset: 1px;
+}
+
+.ly-key--overlap {
+  border-color: #d98a4a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(217, 138, 74, 0.7);
+}
+
+.ly-key-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-align: center;
+  line-height: 1.15;
+  padding: 0 3px;
+  color: var(--fg-2);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+  pointer-events: none;
+}
+
+.ly-detail {
+  min-height: 18px;
+  margin-top: var(--space-2);
+  color: var(--fg-2);
+  font-size: 13px;
+}
+
+.ly-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.ly-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.ly-field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ly-num,
+.ly-text {
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ly-text {
+  min-width: 180px;
+}
+
+.ly-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: 13px;
+  color: var(--fg);
+}
+
+/* ── AI Assistant page (bead 7js) ──────────────────────────────────────
+   Chat log + plan/preview/result cards. Reuses card/btn/hint/chip tokens. */
+
+.assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 860px;
+}
+
+.assistant-session {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev, rgba(255, 255, 255, 0.03));
+}
+
+.assistant-device {
+  font-weight: 700;
+}
+
+.assistant-log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--space-1) 0;
+}
+
+.agent-msg {
+  max-width: 85%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.agent-msg .agent-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.agent-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #101408;
+}
+
+.agent-bot {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+}
+
+.agent-card {
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  padding: var(--space-3);
+}
+
+.agent-card.agent-empty {
+  color: var(--fg-muted, #9aa0a6);
+}
+
+.agent-card.agent-error {
+  border-color: var(--danger, #e5534b);
+}
+
+.agent-card.agent-ok {
+  border-color: var(--accent);
+}
+
+.agent-plan-title {
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+}
+
+.agent-subtitle {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted, #9aa0a6);
+}
+
+.agent-ops,
+.agent-list,
+.agent-writes,
+.agent-results {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.agent-plan-op {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.agent-op-diff {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.agent-badge {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--border-ctl);
+}
+
+.agent-badge-l0 { color: var(--fg-muted, #9aa0a6); }
+.agent-badge-l1 { color: var(--info, #58a6ff); }
+.agent-badge-l2 { color: var(--accent); border-color: var(--accent); }
+.agent-badge-l3 { color: var(--warn, #d29922); border-color: var(--warn, #d29922); }
+.agent-badge-l4 { color: var(--danger, #e5534b); border-color: var(--danger, #e5534b); }
+
+.agent-method {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.agent-unsupported {
+  color: var(--warn, #d29922);
+}
+
+.agent-question {
+  margin: var(--space-2) 0 0;
+  font-size: 13px;
+}
+
+.agent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.agent-chip {
+  padding: 2px var(--space-3);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.agent-errors {
+  color: var(--danger, #e5534b);
+}
+
+.agent-warnings {
+  color: var(--warn, #d29922);
+}
+
+.agent-results {
+  list-style: none;
+  padding-left: 0;
+}
+
+.agent-result-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.agent-result-badge {
+  flex: none;
+  min-width: 76px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.agent-result-success .agent-result-badge { color: var(--accent); }
+.agent-result-unverified .agent-result-badge { color: var(--warn, #d29922); }
+.agent-result-failed .agent-result-badge { color: var(--danger, #e5534b); }
+
+.agent-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+.agent-actions .hint {
+  margin: 0;
+}
+
+.assistant-form {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.assistant-input {
+  flex: 1;
+  height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev, rgba(255, 255, 255, 0.04));
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.assistant-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.assistant-input:disabled {
+  opacity: 0.5;
+}
