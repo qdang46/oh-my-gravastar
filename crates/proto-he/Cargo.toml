@@ -1,0 +1,11 @@
+[package]
+name = "omg-proto-he"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "GravaStar HE keyboard v2 protocol (port of orbit-gravastar keyboard.rs)"
+
+[dependencies]
+anyhow.workspace = true
+omg-hid = { path = "../hid" }

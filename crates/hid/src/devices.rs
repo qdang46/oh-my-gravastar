@@ -4,7 +4,7 @@
 //! tables (`docs/research/khub-webapp/index.js`, `916` / `916_wireLess`
 //! protocol keys) and from `orbit-gravastar` protocol constants.
 
-use std::path::Path;
+use std::ffi::CString;
 
 use anyhow::{Context, Result};
 use hidapi::HidApi;
@@ -145,8 +145,9 @@ impl DeviceInfo {
     /// Open this device as a [`HidLink`]. Compx mice use numbered reports.
     pub fn open_link(&self) -> Result<HidLink> {
         let api = HidApi::new().context("failed to initialise hidapi")?;
+        let path = CString::new(self.path.as_bytes()).context("device path contains NUL")?;
         let dev = api
-            .open_path(Path::new(&self.path))
+            .open_path(&path)
             .with_context(|| format!("failed to open HID device {}", self.vid_pid()))?;
         let numbered = self.kind == DeviceKind::CompxMouse;
         Ok(HidLink::new(dev, numbered))
@@ -155,7 +156,7 @@ impl DeviceInfo {
 
 /// Enumerate all HID interfaces and keep only known GravaStar identities.
 pub fn find_devices() -> Result<Vec<DeviceInfo>> {
-    let api = HidApi::new().context("failed to initialise hidapi")?;
+    let mut api = HidApi::new().context("failed to initialise hidapi")?;
     api.refresh_devices()
         .context("failed to refresh HID device list")?;
     let mut out = Vec::new();

@@ -22,4 +22,3 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
-pedantic = { level = "warn", priority = -1 }

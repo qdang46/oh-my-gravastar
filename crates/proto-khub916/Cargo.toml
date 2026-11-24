@@ -1,0 +1,11 @@
+[package]
+name = "omg-proto-khub916"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "GravaStar K1/K98 series khub916 feature-report protocol (reversing in progress)"
+
+[dependencies]
+anyhow.workspace = true
+omg-hid = { path = "../hid" }

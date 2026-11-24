@@ -1,0 +1,9 @@
+[package]
+name = "omg-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Key labels, layouts and lighting mode tables for GravaStar HE keyboards"
+
+[dependencies]
