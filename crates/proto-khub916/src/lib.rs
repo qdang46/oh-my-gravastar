@@ -67,6 +67,7 @@ use omg_hid::Link;
 use serde::Serialize;
 
 pub mod macro916;
+pub mod light;
 pub mod wireless;
 
 // ── Wire constants (docs/protocol-khub916.md §2/§6) ─────────────────────

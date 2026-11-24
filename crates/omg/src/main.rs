@@ -19,6 +19,7 @@ use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
 mod kb916_macro;
+mod kb916_light;
 mod profile;
 
 #[derive(Parser)]
@@ -3775,6 +3776,14 @@ enum Kb916Commands {
         #[command(subcommand)]
         command: Kb916Screen,
     },
+    /// Decoded lighting state and JSON-driven light configuration
+    /// (docs/lighting-schema.md): `get` merges the profile light fields,
+    /// the cmd-138 per-mode blob and the cmd-134 custom colours;
+    /// `apply` writes cmd 6/4/10 with read-back verify and requires `--yes`.
+    Light {
+        #[command(subcommand)]
+        command: Kb916Light,
+    },
     /// The 916_wireLess 2.4 GHz transport is a separate bead — always
     /// "not implemented".
     Wireless,
@@ -3823,6 +3832,24 @@ enum Kb916Screen {
     /// Sync the screen RTC (cmd 11, wired keyboard interface) — refused:
     /// fire-and-forget write with no read-back, hardware-unverified.
     Clock,
+}
+
+#[derive(Subcommand)]
+enum Kb916Light {
+    /// Full decoded lighting state: profile light fields (mode, speed,
+    /// brightness, colour model), the cmd-138 per-mode blob decoded into
+    /// 21-byte groups, and the 126 custom per-key colours.
+    Get,
+    /// Apply a JSON lighting config (docs/lighting-schema.md) — mode,
+    /// speed, brightness, colour model, single group colour and/or
+    /// per-key custom colours (solid/gradient/rainbow presets or explicit
+    /// entries). Requires `--yes`; every write is read-back verified.
+    Apply {
+        /// Config JSON file, or `-` for stdin.
+        file: String,
+        #[command(flatten)]
+        yes: Yes,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4018,6 +4045,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         }
         Kb916Commands::Set { command } => return cmd_kb916_set(cli, command),
         Kb916Commands::Macro { command } => return kb916_macro::run(cli, command),
+        Kb916Commands::Light { command } => return kb916_light::cmd(cli, command),
         _ => {}
     }
 
@@ -4186,7 +4214,8 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         Kb916Commands::Screen { .. }
         | Kb916Commands::Wireless
         | Kb916Commands::Set { .. }
-        | Kb916Commands::Macro { .. } => unreachable!("handled before the session is opened")
+        | Kb916Commands::Macro { .. }
+        | Kb916Commands::Light { .. } => unreachable!("handled before the session is opened")
     }
     Ok(ExitCode::SUCCESS)
 }

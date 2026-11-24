@@ -263,6 +263,7 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
 | 5 | write macro region | → | len&0xFF/0 | ≤512 B assembled macro table | `setKeyBoardMacroKey`, `deleteKeyBoardMacroKey`, `setKeyBoardMacroIndependent` |
 | 6 | write custom light colors | → | 122/1 | 378 B (126×R,126×G,126×B planes), no marker | `setKeyboardCustomLightColor(Array)` |
 | 8 | GIF light frames | → | 122/1 | 512 B frames, 7-B prefix `[8,0,0,1,0,122,1]`, data at +7 | `setGifLight` |
+| 10 | write light colour data | → | 0/2 | header `[10,0,0,0,0,0,2]` (**byte 3 = 0x00**, not the usual 0x01) + ~483 B blob at offset 7; `5A A5` pinned at packet bytes **513/514** | `setKeyboardLight` (`type==1 && color` branch) |
 | 11 | set screen time | → | 14/0 | `[0,0,0,0] + 7B datetime + week` | `setKeyBoardScreenTime` |
 | 12 | screen image data | → | 0/2 | `[0,frameIdx,chunkIdx,0,0,2] + 512 B` per frame | `setKeyBoardImg` |
 | 13 | screen image header/footer | → | 5/(64 or 0) | `[count&255,0,interval&255,interval>>8]` | `setKeyBoardImg` |
@@ -311,6 +312,11 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
 - `profile[1]` = system/layout byte (used by `getKeyboardSystem` in siblings)
 - light "type": speed nibble `s = speed&15`, `typeCode = (type==1 ? 0 : 7)`,
   packed `s<<4 | typeCode` written back at `t+mode*2-1`.
+- Decode (`getKeyboardLight`, wired): the record index uses `profile[10]`
+  (mode low byte); modes `0,19,275,277` report speed=0/bright=0/type=1;
+  mode 1 reports speed=0; packed low nibble `7` → colour model 2
+  (mixing), anything else → 1 (monochrome). `speed`/`bright` are limited
+  to ≤ 20 by the vendor `setKeyboardLight`.
 
 ### Custom light colors (cmd 134/6) [code-verified]
 
@@ -318,11 +324,25 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
 `pos = 8 + i*4`, color `{r=plane0[i], g=plane1[i], b=plane2[i]}`.
 Write replaces the whole 378-B blob (partial edits are read-modify-write).
 
-### Light color data (cmd 138) [code-verified]
+### Light color data (cmd 138 read / cmd 10 write) [live-verified on K1 Pro]
 
-~480 B blob; per-mode 21-byte RGB group at `mode*21` (`updateGroupColor`,
-`getGroupColor`). Written via cmd 4 profile path or the 519-B `d` buffer with
-`[10,0,0,0,0,0,2]` prefix inside `setKeyboardLight`.
+483-byte blob on the K1 Pro = **23 groups × 21 bytes**, group `m` at
+`m*21`. Bytes `0..3` of each group are the mode's RGB colour
+(`getGroupColor`/`updateGroupColor`); the remaining 18 bytes are a
+constant firmware template (all 23 groups identical live — semantics
+unknown, never interpreted). Modes ≥ 23 and the special modes
+`0/19/275/277` have no group; `updateGroupColor` silently no-ops
+out-of-bounds. Effect modes/speeds/brightness live in the **profile**
+blob (§"Profile blob"), not here.
+
+Wired write is **cmd 10**, sent only by `setKeyboardLight` when
+`type==1 && color` (monochrome single-colour effects): packet
+`[10,0,0,0,0,0,2]` + blob at offset 7, zero-padded to 519, `5A A5` at
+packet bytes 513/514 (fixed offsets — a vendor quirk, not end-of-data).
+The wireless equivalent is the chunked cmd 9 (§7). The vendor JS sends
+*only* cmd 10 in that branch and skips the cmd-4 profile write — `omg`
+deliberately sends both, each read-back verified (see
+`docs/lighting-schema.md`).
 
 ### Macro region (cmd 133/5) [code-verified]
 
@@ -356,7 +376,7 @@ Writes use the chunked format of §3.
 | 4 | write profile/config | ~128 B | chunked; also sleep-time write |
 | 5 | get device info | — | → uuid/version/screen |
 | 6 | reset | `[6,1,0,type]` padded to 18 B | clears cached state `R` |
-| 9 | write light color data | 512 B | chunked; `5A A5` marker on last |
+| 9 | write light color data | 512 B | chunked; `5A A5` marker on last (wired equivalent: cmd 10, §6) |
 | 18 | write SOCD/MT/TGL history | 512 B | chunked |
 | 65 | get key map | `[65,0,sys<<7,layer<<4,0,0,0]` | multi-packet resp |
 | 66 | get custom light colors | `[66,0,0,0,0,0,0]` | → 378 B |
