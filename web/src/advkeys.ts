@@ -187,7 +187,7 @@ export class AdvPage {
       const c = el('section', 'card');
       c.append(el('h2', '', 'Advanced keys'));
       const body = el('div', 'card-body');
-      body.append(el('p', 'hint', this.loading ? 'Reading adv-key state…' : 'Adv-key state unavailable — press Refresh.'));
+      body.append(el('p', 'hint', this.loading ? 'Reading advanced key settings…' : 'Advanced key settings unavailable — press Refresh.'));
       const r = btn('Refresh');
       r.disabled = this.busy;
       r.addEventListener('click', () => void this.refresh());
@@ -206,14 +206,14 @@ export class AdvPage {
 
   private renderInfo(): void {
     const c = el('section', 'card');
-    c.append(el('h2', '', 'Advanced keys — SOCD / MT / TGL'));
+    c.append(el('h2', '', 'Advanced keys'));
     const body = el('div', 'card-body');
     const entries = this.entries();
     const bindings = this.bindings();
     const chips = el('div', 'chip-row');
     for (const k of ['mt', 'socd', 'tgl'] as const) {
       chips.append(
-        el('span', 'chip', `${KIND_LABEL[k]}: ${entries.filter((e) => e.kind === k).length} history · ${bindings.filter((b) => b.kind === k).length} bound`),
+        el('span', 'chip', `${KIND_LABEL[k]}: ${entries.filter((e) => e.kind === k).length} saved · ${bindings.filter((b) => b.kind === k).length} in use`),
       );
     }
     body.append(chips);
@@ -221,11 +221,11 @@ export class AdvPage {
       el(
         'p',
         'hint',
-        'SOCD makes two opposing keys share one output, mod-tap (MT) gives a key ' +
-          'two actions depending on how long you hold it, and toggle (TGL) makes ' +
-          'a key switch another key on or off with each press. There is no delete ' +
-          'on the device — "Unbind" clears the key\'s assignment but keeps its ' +
-          'stored settings.',
+        'SOCD makes two opposing keys (like W and S) share one output, ' +
+          'mod-tap (MT) gives a key two actions depending on how long you hold it, ' +
+          'and toggle (TGL) makes a key switch another key on or off with each press. ' +
+          'There is no delete on the device — "Remove" clears the key\'s assignment ' +
+          'but keeps its saved settings.',
       ),
     );
     const tech = el('details', 'advanced');
@@ -235,8 +235,8 @@ export class AdvPage {
       el(
         'p',
         'hint',
-        `History blob: ${ADV_BLOB_BYTES} B — SOCD/MT slots are 8 B, TGL slots 4 B. ` +
-          'Bindings live in the layer-0 keymap as 0x20/0x21/0x22 values.',
+        `Settings storage: ${ADV_BLOB_BYTES} bytes on the keyboard. ` +
+          'The actual key actions are stored in the key assignments.',
       ),
     );
     tech.append(techBody);
@@ -275,7 +275,7 @@ export class AdvPage {
     } else {
       const table = el('table', 'macro-table');
       const head = el('tr');
-      for (const h of ['Key slot', 'Position', 'Setting', 'Detail', 'Saved values', '']) {
+      for (const h of ['Key', 'Entry', 'Function', 'How it works', 'Saved settings', '']) {
         head.append(el('th', '', h));
       }
       const thead = el('thead');
@@ -287,20 +287,20 @@ export class AdvPage {
         const payload = this.blob ? bindingPayload(this.blob, b) : null;
         const payloadText = payload
           ? payload.map((v) => valueText(v)).join(', ')
-          : '(no saved settings — stale assignment)';
+          : '(no saved settings)';
         const setting = el('td', 'mono', valueLabel(b.value) || KIND_LABEL[b.kind]);
         setting.title = hex8(b.value);
         const saved = el('td', 'mono adv-payload', payloadText);
         if (payload) saved.title = valuesTitle(payload);
         tr.append(
-          el('td', 'mono', `#${b.index}`),
+          el('td', 'mono', `Key ${b.index}`),
           el('td', 'mono', String(b.pos)),
           setting,
           el('td', '', detailText(b)),
           saved,
         );
         const actions = el('td', 'macro-row-actions');
-        const un = btn('Unbind', 'Remove this key\'s advanced function. The saved settings stay stored on the keyboard.');
+        const un = btn('Remove', 'Remove this key\'s advanced function. The saved settings stay stored on the keyboard.');
         un.disabled = this.busy;
         un.addEventListener('click', () => void this.unbind(b));
         actions.append(un);
@@ -316,7 +316,7 @@ export class AdvPage {
       body.append(el('p', 'hint', 'Saved settings on the keyboard:'));
       const htable = el('table', 'macro-table');
       const hhead = el('tr');
-      for (const h of ['Slot', 'Stored values']) hhead.append(el('th', '', h));
+      for (const h of ['Entry', 'Saved settings']) hhead.append(el('th', '', h));
       const hthead = el('thead');
       hthead.append(hhead);
       htable.append(hthead);
@@ -325,7 +325,7 @@ export class AdvPage {
         const tr = el('tr');
         const saved = el('td', 'mono', e.values.map((v) => valueText(v)).join(', '));
         saved.title = valuesTitle(e.values);
-        tr.append(el('td', 'mono', String(e.slot)), saved);
+        tr.append(el('td', 'mono', `#${e.slot}`), saved);
         htbody.append(tr);
       }
       htable.append(htbody);
@@ -345,7 +345,7 @@ export class AdvPage {
     const km = this.keymap ?? [];
     km.forEach((v, i) => {
       if (exclude.includes(i)) return;
-      const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
+      const o = el('option', '', `Key ${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
       o.title = hex8(v);
       o.value = String(i);
       sel.append(o);
@@ -400,9 +400,9 @@ export class AdvPage {
     } else if (kind === 'socd') {
       const keyA = this.slotSelect();
       keyA.value = String(this.firstBindableSlot());
-      row.append(field('Key A (slot)', keyA));
+      row.append(field('Key A', keyA));
       const keyB = this.slotSelect([Number(keyA.value)]);
-      row.append(field('Key B (slot)', keyB));
+      row.append(field('Key B', keyB));
       keyA.addEventListener('change', () => {
         // Keep B distinct from A.
         const cur = Number(keyB.value);
@@ -410,7 +410,7 @@ export class AdvPage {
         const km = this.keymap ?? [];
         km.forEach((v, i) => {
           if (i === Number(keyA.value)) return;
-          const o = el('option', '', `#${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
+          const o = el('option', '', `Key ${i} — ${keyValueLabel(decodeKeyValue(v)) || '(empty)'}`);
           o.title = hex8(v);
           o.value = String(i);
           keyB.append(o);
@@ -435,7 +435,7 @@ export class AdvPage {
       bind.value = String(this.firstBindableSlot());
       row.append(field('Key to change', bind));
       const toggle = this.slotSelect([Number(bind.value)]);
-      row.append(field('Toggle target (slot)', toggle));
+      row.append(field('Key to toggle', toggle));
       bind.addEventListener('change', () => {
         const cur = Number(toggle.value);
         const km = this.keymap ?? [];
@@ -453,13 +453,14 @@ export class AdvPage {
   private addHint(kind: AdvKind): string {
     switch (kind) {
       case 'mt':
-        return 'Mod-tap: short press emits Tap, long press emits Hold after the threshold. ' +
-          'The bind key\'s current value is replaced by the adv binding.';
+        return 'Mod-tap: a short press does the Tap action, a long press does the Hold ' +
+          'action after the threshold. The key\'s current action is replaced.';
       case 'socd':
-        return 'SOCD: two opposing keys share one output; the Direction picks the resolution mode. ' +
-          'Both keys\' current values are stored as the history entry.';
+        return 'SOCD: two opposing keys share one output; Direction picks what happens ' +
+          'when both are pressed at once. The keys\' current actions are saved.';
       case 'tgl':
-        return 'Toggle: pressing the bind key toggles the output stored from the toggle slot\'s current value.';
+        return 'Toggle: pressing the key switches the other key\'s action on or off ' +
+          'with each press.';
     }
   }
 
@@ -549,8 +550,8 @@ export class AdvPage {
     const holdName = valueLabel(holdV) || hex8(holdV);
     await this.applyPlan(
       plan,
-      `MT key[#${key}] (${keyValueLabel(decodeKeyValue(this.keymap[key] ?? 0)) || 'empty'}): ` +
-        `tap ${tapName}, hold ${holdName}, threshold ${t * 10} ms`,
+      `MT on key ${key} (${keyValueLabel(decodeKeyValue(this.keymap[key] ?? 0)) || 'empty'}): ` +
+        `tap ${tapName}, hold ${holdName}, after ${t * 10} ms`,
     );
   }
 
@@ -569,7 +570,7 @@ export class AdvPage {
     const dirLabel = SOCD_DIRECTIONS.find((x) => x.id === d)?.label ?? String(d);
     await this.applyPlan(
       plan,
-      `SOCD key[#${a}] + key[#${b}]: direction ${dirLabel}`,
+      `SOCD on keys ${a} + ${b}: ${dirLabel}`,
     );
   }
 
@@ -587,7 +588,7 @@ export class AdvPage {
     const tgt = this.keymap[t] ?? 0;
     await this.applyPlan(
       plan,
-      `TGL key[#${key}] toggles key[#${t}] (${valueLabel(tgt) || hex8(tgt)})`,
+      `TGL on key ${key} toggles key ${t} (${valueLabel(tgt) || 'custom'})`,
     );
   }
 
@@ -599,7 +600,7 @@ export class AdvPage {
     const oldLabel = keyValueLabel(decodeKeyValue(b.value)) || hex8(b.value);
     if (
       !window.confirm(
-        `Remove the ${KIND_LABEL[b.kind]} function from key slot #${b.index}?\n\n` +
+        `Remove the ${KIND_LABEL[b.kind]} function from key ${b.index}?\n\n` +
           `The key currently runs ${oldLabel}. Its saved settings stay stored on ` +
           'the keyboard (the device has no delete), but the key goes back to normal.',
       )
@@ -616,7 +617,7 @@ export class AdvPage {
       this.keymap = values.map((v) => v >>> 0);
       app.snapshot.keymaps.delete(0);
       void ensureKeymap(0).catch(() => {});
-      setStatus(`Removed the ${KIND_LABEL[b.kind]} function from key slot #${b.index} — checked on the keyboard.`);
+      setStatus(`Removed the ${KIND_LABEL[b.kind]} function from key ${b.index} — checked on the keyboard.`);
       emit();
     } catch (e) {
       setStatus(`Could not remove that function: ${e instanceof Error ? e.message : String(e)}`, true);

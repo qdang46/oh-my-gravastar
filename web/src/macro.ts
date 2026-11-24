@@ -496,7 +496,7 @@ export class MacroPage {
     slotInput.max = String(KEYMAP_ENTRIES - 1);
     slotInput.value = '0';
     slotInput.placeholder = '0–127';
-    row.append(field('Key slot', slotInput));
+    row.append(field('Key number', slotInput));
 
     const layerSel = el('select', 'macro-select') as HTMLSelectElement;
     for (let l = 0; l < 4; l++) {
@@ -519,14 +519,14 @@ export class MacroPage {
     typeInput.min = '1';
     typeInput.max = '255';
     typeInput.value = '1';
-    advRow.append(field('Macro type', typeInput));
+    advRow.append(field('Type', typeInput));
 
     const loopInput = el('input', 'macro-num') as HTMLInputElement;
     loopInput.type = 'number';
     loopInput.min = '1';
     loopInput.max = '255';
     loopInput.value = '1';
-    advRow.append(field('Loop count', loopInput));
+    advRow.append(field('Repeat count', loopInput));
     advBody.append(advRow);
     adv.append(advBody);
     body.append(adv);
@@ -542,7 +542,7 @@ export class MacroPage {
     btnRow.append(bind, unbind);
     body.append(btnRow);
     body.append(
-      el('p', 'hint', 'Key slots are numbered 0–127; pick the slot for the key you want to change.'),
+      el('p', 'hint', 'Type the key number (0–127) — click a key on the Keys page to see its number.'),
     );
 
     c.append(body);
@@ -702,7 +702,7 @@ export class MacroPage {
     const slot = Number(slotInput.value);
     const layer = Number(layerSel.value);
     if (!Number.isInteger(slot) || slot < 0 || slot >= KEYMAP_ENTRIES) {
-      setStatus(`Key slot must be an integer 0..${KEYMAP_ENTRIES - 1}`, true);
+      setStatus(`Key number must be a whole number between 0 and ${KEYMAP_ENTRIES - 1}`, true);
       return;
     }
     const arg = (layer & 3); // system bit stays 0 in this UI
@@ -711,11 +711,11 @@ export class MacroPage {
     const loopCount = unbind ? 1 : Number(loopInput.value);
     if (!unbind) {
       if (!Number.isInteger(macroType) || macroType < 1 || macroType > 255) {
-        setStatus('Macro type must be an integer 1..255', true);
+        setStatus('Type must be a whole number between 1 and 255', true);
         return;
       }
       if (!Number.isInteger(loopCount) || loopCount < 1 || loopCount > 255) {
-        setStatus('Loop count must be an integer ≥ 1', true);
+        setStatus('Repeat count must be a whole number of at least 1', true);
         return;
       }
     }
@@ -728,9 +728,10 @@ export class MacroPage {
     };
 
     const before = await oldLabel().catch(() => 'unknown');
+    const macroName = unbind ? '' : (this.entries()[index]?.name ?? `#${index}`);
     const desc = unbind
-      ? `Clear key slot ${slot} on layer ${layer} (currently ${before})`
-      : `Assign macro[${index}] to key slot ${slot} on layer ${layer} (currently ${before})`;
+      ? `Clear key ${slot} on layer ${layer} (currently ${before})`
+      : `Assign macro "${macroName}" to key ${slot} on layer ${layer} (currently ${before})`;
     if (!window.confirm(`${desc}\n\nSave this change to the keyboard?`)) return;
 
     this.busy = true;
@@ -738,7 +739,7 @@ export class MacroPage {
     try {
       const values = await app.connected.session.keyValues(arg);
       if (slot >= values.length) {
-        throw new Error(`key slot ${slot} is out of range — the keymap only has ${values.length} entries`);
+        throw new Error(`key ${slot} is out of range — the keymap only has ${values.length} entries`);
       }
       const nextVals = values.slice();
       while (nextVals.length < KEYMAP_ENTRIES) nextVals.push(0);
@@ -747,11 +748,10 @@ export class MacroPage {
       // Refresh the cached decode for this arg.
       app.snapshot.keymaps.delete(arg);
       void ensureKeymap(arg).catch(() => {});
-      const macroName = unbind ? '' : (this.entries()[index]?.name ?? `#${index}`);
       setStatus(
         unbind
-          ? `Key slot ${slot} cleared — checked on the keyboard.`
-          : `Key slot ${slot} now runs macro "${macroName}" — checked on the keyboard.`,
+          ? `Key ${slot} cleared — checked on the keyboard.`
+          : `Key ${slot} now runs macro "${macroName}" — checked on the keyboard.`,
       );
       emit();
     } catch (e) {

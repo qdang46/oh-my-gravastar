@@ -105,7 +105,7 @@ export async function connect(): Promise<void> {
   app.busy = true;
   emit();
   try {
-    setStatus('Choose your keyboard in the browser popup…');
+    setStatus('Pick your keyboard in the browser window…');
     const device = await requestKhubDevice();
     if (!device) {
       setStatus('No keyboard selected.');
@@ -180,7 +180,9 @@ export async function refresh(): Promise<void> {
     }
   }
   setStatus(
-    `Ready — ${app.snapshot.info.catalogName ?? 'keyboard'} connected. Pick an option on the left.`,
+    app.snapshot.info.catalogName
+      ? `Ready — ${app.snapshot.info.catalogName} connected.`
+      : 'Ready — keyboard connected.',
   );
   // Warm the current layer so the visualizer has labels immediately.
   await ensureKeymap(app.layer).catch(() => {});
@@ -211,7 +213,7 @@ export async function autoConnect(): Promise<void> {
         // try the next remembered device
       }
     }
-    setStatus('Previously authorised device not found — use Connect.');
+    setStatus('Could not find the keyboard — press Connect to pick it.');
   } finally {
     app.busy = false;
     emit();
@@ -228,6 +230,6 @@ export async function bootStatus(): Promise<void> {
   setStatus(
     remembered.length > 0
       ? 'Welcome back! Press Connect to pick your keyboard.'
-      : 'Ready. Plug in your GravaStar keyboard with a USB cable, then press Connect.',
+      : 'Ready. Plug in your GravaStar keyboard with a USB cable, then press Connect keyboard below.',
   );
 }

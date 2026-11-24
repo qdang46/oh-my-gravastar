@@ -448,7 +448,7 @@ export function parseProfileImport(text: string, fileName: string): ParsedImport
     const p = state.profile as Record<string, unknown>;
     skipped.push(
       'raw device profile (sleep time, light mode): not applied — change those ' +
-        'on the Settings and Lighting pages instead',
+        'on the Sleep timer and Lighting pages instead',
     );
   }
 
@@ -834,10 +834,10 @@ function renderSetting(root: HTMLElement): void {
 export type SecondaryPageId = 'basic' | 'config' | 'rhythm' | 'setting';
 
 export const SECONDARY_PAGES: readonly { id: SecondaryPageId; path: string; title: string }[] = [
-  { id: 'basic', path: '/basic', title: 'Layout' },
-  { id: 'config', path: '/config', title: 'Backup' },
-  { id: 'rhythm', path: '/rhythm', title: 'Music' },
-  { id: 'setting', path: '/setting', title: 'Settings' },
+  { id: 'basic', path: '/basic', title: 'Keyboard layout' },
+  { id: 'config', path: '/config', title: 'Backup & restore' },
+  { id: 'rhythm', path: '/rhythm', title: 'Music lighting' },
+  { id: 'setting', path: '/setting', title: 'Sleep timer' },
 ] as const;
 
 export const SECONDARY_RENDERERS: Record<SecondaryPageId, (root: HTMLElement) => void> = {

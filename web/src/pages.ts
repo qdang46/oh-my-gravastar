@@ -8,8 +8,7 @@
  *  docs/web-ui-plan.md §2).
  */
 
-import { app, connect, subscribe, type KeyEntry } from './state.ts';
-import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS, type KeyBlock } from './k1pro-layout.ts';
+import { app, subscribe, type KeyEntry } from './state.ts';
 import { renderLightingPage, destroyLightingPage } from './lighting.ts';
 import { MacroPage } from './macro.ts';
 import { AdvPage } from './advkeys.ts';
@@ -18,7 +17,6 @@ import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-se
 import { formatVidPid } from './hid.ts';
 
 export type PageId =
-  | 'home'
   | 'lighting'
   | 'keys'
   | 'macro'
@@ -29,8 +27,12 @@ export type PageId =
   | 'rhythm'
   | 'setting';
 
+/**
+ * Full route table — every hash route keeps working (deep links),
+ * including the rarely-used secondary pages. `NAV_PAGES` below is the
+ * slim sidebar subset; secondary pages are reached from the Device page.
+ */
 export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
-  { id: 'home', path: '/home', title: 'Home' },
   { id: 'lighting', path: '/lighting', title: 'Lighting' },
   { id: 'keys', path: '/keys', title: 'Keys' },
   { id: 'macro', path: '/macro', title: 'Macro' },
@@ -41,9 +43,28 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   ...SECONDARY_PAGES,
 ] as const;
 
+/** Sidebar shows at most these five — plain labels, no jargon. */
+export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] = [
+  { id: 'lighting', path: '/lighting', title: 'Lighting' },
+  { id: 'keys', path: '/keys', title: 'Keys' },
+  { id: 'macro', path: '/macro', title: 'Macro' },
+  { id: 'advanced', path: '/advanced', title: 'Advanced' },
+  { id: 'device', path: '/device', title: 'Device' },
+];
+
+/** Which sidebar item should look active for a given route. */
+export function navIdFor(page: PageId): PageId {
+  // Rarely-used pages live under Device in the mental model.
+  return page === 'basic' || page === 'config' || page === 'rhythm' || page === 'setting'
+    ? 'device'
+    : page;
+}
+
 export function pageFromHash(hash: string): PageId {
   const p = hash.replace(/^#\/?/, '');
-  return (PAGES.find((pg) => pg.path === `/${p}`)?.id ?? 'home') as PageId;
+  // The old `#/home` route (and anything unknown) lands on Lighting —
+  // the keyboard visualizer IS the home screen now.
+  return (PAGES.find((pg) => pg.path === `/${p}`)?.id ?? 'lighting') as PageId;
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────────
@@ -85,94 +106,7 @@ function comingSoon(title: string, blurb: string, facts: string[] = []): HTMLEle
   return c;
 }
 
-// ── Home ───────────────────────────────────────────────────────────────
-
-function renderHome(root: HTMLElement): void {
-  root.replaceChildren();
-  if (!app.connected || !app.snapshot) {
-    const hero = el('div', 'home-hero');
-    hero.append(el('h1', 'home-title', 'Set up your GravaStar keyboard'));
-    hero.append(
-      el(
-        'p',
-        'home-note',
-        'Change key colours and effects, remap keys, record macros — all from ' +
-          'your browser. Nothing is installed and nothing leaves your computer.',
-      ),
-    );
-    const btn = el('button', 'home-connect', 'Connect keyboard');
-    btn.type = 'button';
-    btn.disabled = app.busy;
-    btn.addEventListener('click', () => void connect());
-    hero.append(btn);
-
-    const steps = el('ol', 'home-steps');
-    for (const [n, t] of [
-      ['1', 'Plug the keyboard into your computer with a USB cable.'],
-      ['2', 'Press "Connect keyboard" and pick it in the browser popup.'],
-      ['3', 'Pick what to change on the left — colours, keys, macros.'],
-    ] as const) {
-      const li = el('li');
-      li.append(el('span', 'num', n), el('span', '', t));
-      steps.append(li);
-    }
-    hero.append(steps);
-
-    const needs = el('p', 'hint');
-    needs.textContent =
-      'Works in Chrome or Edge on a computer (not phones or Firefox). ' +
-      'Supported: GravaStar K1 / K1 Pro / K98 series over USB cable.';
-    hero.append(needs);
-    root.append(hero);
-    return;
-  }
-
-  const snap = app.snapshot;
-  const { card: c, body } = card(`Welcome back, ${snap.info.catalogName ?? 'GravaStar keyboard'}`);
-  const chips = el('div', 'chip-row');
-  chips.append(
-    el('span', 'chip', snap.info.catalogName ?? 'Unknown model'),
-    el('span', 'chip', `Firmware ${snap.info.versionHex}`),
-    el('span', 'chip', `Battery ${snap.power.percent}%`),
-  );
-  body.append(chips);
-  body.append(
-    el(
-      'p',
-      'hint',
-      'Everything you change is saved to the keyboard itself — it keeps ' +
-        'working the same when you unplug it.',
-    ),
-  );
-  const links = el('div', 'home-links');
-  for (const [path, label] of [
-    ['/lighting', 'Colours & effects'],
-    ['/keys', 'Remap keys'],
-    ['/macro', 'Macros'],
-  ] as const) {
-    const a = el('a', '', label);
-    a.href = `#${path}`;
-    links.append(a);
-  }
-  body.append(links);
-  root.append(c);
-}
-
 // ── Keys (keyboard visualizer k00 + remap page 28d → remap.ts) ────────
-
-export function blocksForModel(): { blocks: readonly KeyBlock[]; note: string | null } {
-  const model = app.snapshot?.info.catalogModel;
-  if (!model || K1_PRO_LAYOUT_MODELS.includes(model)) {
-    return {
-      blocks: K1_PRO_BLOCKS,
-      note: model ? null : 'Model unknown — showing the K1 Pro reference layout.',
-    };
-  }
-  return {
-    blocks: K1_PRO_BLOCKS,
-    note: `Layout table for ${model} is not ported yet — showing the K1 Pro reference layout.`,
-  };
-}
 
 function renderKeys(root: HTMLElement): void {
   renderKeysPage(root);
@@ -206,6 +140,22 @@ function renderDevice(root: HTMLElement): void {
   infoCard.body.append(dl);
   root.append(infoCard.card);
 
+  // Rarely-used pages live here instead of the sidebar.
+  const more = card('More options');
+  const moreLinks = el('div', 'home-links');
+  for (const [path, label] of [
+    ['/setting', 'Sleep timer'],
+    ['/config', 'Backup & restore'],
+    ['/basic', 'Keyboard layout info'],
+    ['/rhythm', 'Music-reactive lighting'],
+  ] as const) {
+    const a = el('a', '', label);
+    a.href = `#${path}`;
+    moreLinks.append(a);
+  }
+  more.body.append(moreLinks);
+  root.append(more.card);
+
   // Everything below is diagnostic detail — collapsed by default.
   const adv = el('details', 'advanced');
   adv.append(el('summary', '', 'Technical details'));
@@ -213,14 +163,14 @@ function renderDevice(root: HTMLElement): void {
 
   const rawCard = el('section', 'card');
   rawCard.style.marginBottom = '0';
-  rawCard.append(el('h2', '', 'Raw device data'));
+  rawCard.append(el('h2', '', 'Device identifiers'));
   const rawDl = el('dl', 'kv');
   kv(rawDl, 'Model id', snap.info.catalogModel ?? '—');
-  kv(rawDl, 'Device UUID', snap.info.uuid);
-  kv(rawDl, 'Profile data', `${snap.profile.raw.length} bytes`);
+  kv(rawDl, 'Device ID', snap.info.uuid);
+  kv(rawDl, 'Settings data', `${snap.profile.raw.length} bytes`);
   kv(
     rawDl,
-    'Light mode',
+    'Lighting mode',
     snap.profile.lightMode !== null ? `0x${snap.profile.lightMode.toString(16).padStart(4, '0')}` : '—',
   );
   kv(
@@ -228,7 +178,7 @@ function renderDevice(root: HTMLElement): void {
     'Sleep time',
     snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—',
   );
-  kv(rawDl, 'Light data', `${snap.lightData.length} bytes`);
+  kv(rawDl, 'Lighting data', `${snap.lightData.length} bytes`);
   kv(rawDl, 'Macro data', `${snap.macro.length} bytes`);
   kv(dl, 'HID', `${formatVidPid(app.connected!.device)} · ${app.connected!.device.productName ?? app.connected!.device.manufacturerName ?? ''}`);
   rawCard.append(rawDl);
@@ -236,12 +186,12 @@ function renderDevice(root: HTMLElement): void {
 
   const lightCard = el('section', 'card');
   lightCard.style.marginBottom = '0';
-  lightCard.append(el('h2', '', 'Custom light colours'));
+  lightCard.append(el('h2', '', 'Per-key colours'));
   const grid = el('div', 'lightgrid');
   for (const col of snap.colors) {
     const sw = el('div', 'swatch');
     sw.style.background = `rgb(${col.r},${col.g},${col.b})`;
-    sw.title = `Slot ${col.index} — rgb(${col.r},${col.g},${col.b})`;
+    sw.title = `Key ${col.index} — rgb(${col.r},${col.g},${col.b})`;
     grid.append(sw);
   }
   lightCard.append(grid);
@@ -249,13 +199,13 @@ function renderDevice(root: HTMLElement): void {
 
   const kmCard = el('section', 'card');
   kmCard.style.marginBottom = '0';
-  kmCard.append(el('h2', '', `Key assignments — layer ${app.layer} (raw)`));
-  kmCard.append(el('p', 'hint', 'All 128 key slots, in order.'));
+  kmCard.append(el('h2', '', `Key assignments — layer ${app.layer}`));
+  kmCard.append(el('p', 'hint', 'Every key position, in order.'));
   const kgrid = el('div', 'keygrid');
   const entries = snap.keymaps.get(app.layer) ?? [];
   entries.forEach((k: KeyEntry, i: number) => {
     const cell = el('div', 'key');
-    cell.title = `Slot ${i} — 0x${k.value.toString(16).toUpperCase().padStart(8, '0')}`;
+    cell.title = `Key ${i} — ${k.label || 'unnamed'}`;
     cell.append(el('span', 'key-label', k.label || '·'), el('span', 'key-idx', String(i)));
     kgrid.append(cell);
   });
@@ -264,8 +214,8 @@ function renderDevice(root: HTMLElement): void {
 
   const jsonCard = el('section', 'card');
   jsonCard.style.marginBottom = '0';
-  jsonCard.append(el('h2', '', 'Snapshot JSON'));
-  jsonCard.append(el('p', 'hint', 'Everything readable today, as one JSON document.'));
+  jsonCard.append(el('h2', '', 'Everything as JSON'));
+  jsonCard.append(el('p', 'hint', 'All readable device data as one JSON document — for backups and the omg CLI.'));
   const pre = el('pre', 'sec-log sec-json');
   pre.textContent = snapshotToJson(snap);
   jsonCard.append(pre);
@@ -315,7 +265,6 @@ function renderAdvanced(root: HTMLElement): void {
 // ── Router ─────────────────────────────────────────────────────────────
 
 const renderers: Record<PageId, (root: HTMLElement) => void> = {
-  home: renderHome,
   lighting: renderLighting,
   keys: renderKeys,
   macro: renderMacro,
@@ -355,14 +304,19 @@ export function destroyPages(): void {
 
 function updateNav(): void {
   if (!navEl) return;
-  const page = pageFromHash(location.hash);
+  const navPage = navIdFor(pageFromHash(location.hash));
   navEl.querySelectorAll<HTMLElement>('.nav-item').forEach((a) => {
-    a.classList.toggle('active', a.dataset.page === page);
+    a.classList.toggle('active', a.dataset.page === navPage);
   });
 }
 
 function route(): void {
   const page = pageFromHash(location.hash);
+  // Canonical URL: the keyboard visualizer is the home screen, so empty,
+  // `#/home` and unknown hashes all land on `#/lighting`.
+  if (page === 'lighting' && location.hash !== '#/lighting') {
+    history.replaceState(null, '', '#/lighting');
+  }
   currentPage = page;
   // The macro/advanced views are stateful — tear them down when
   // navigating away so they do not keep a live subscription while

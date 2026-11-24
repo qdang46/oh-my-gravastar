@@ -141,17 +141,12 @@ export class KeyboardView {
       const km = this.data.keymap?.[n];
       const pv = this.data.pending?.get(n);
       const curLabel = km?.label || (km ? '(empty)' : '');
-      el.title =
-        `Key ${n} — ${curLabel || block.name || 'unnamed'}` +
-        (km ? ` · 0x${km.value.toString(16).toUpperCase().padStart(8, '0')}` : '') +
-        (pv !== undefined
-          ? ` → will become 0x${pv.toString(16).toUpperCase().padStart(8, '0')}`
-          : '');
+      el.title = `Key ${n} — ${curLabel || block.name || 'unnamed'}`;
       el.addEventListener('click', () => {
         this.onKeyClick?.(n);
         const shown = pv !== undefined ? keyValueLabelOf(pv) || '(none)' : curLabel;
         this.detail.textContent = km
-          ? `#${n} ${block.name || '(unnamed)'} → ${shown}${pv !== undefined ? ' (unsaved)' : ''}`
+          ? `Key ${n} ${block.name || '(unnamed)'} → ${shown}${pv !== undefined ? ' (unsaved)' : ''}`
           : `${block.name || '(unnamed)'}`;
       });
       this.canvas.append(el);

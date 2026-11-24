@@ -125,12 +125,12 @@ function effectiveValue(layer: number, index: number): number {
   return pendingByLayer.get(layer)?.get(index) ?? committedValue(layer, index);
 }
 
-/** Slot index → physical block (for names in warnings/dialogs). */
+/** Key index → physical block name for warnings/dialogs ('' when unnamed). */
 function blockNameFor(blocks: readonly KeyBlock[], index: number): string {
   for (const b of blocks) {
-    if (b.display && keyIndexOf(b.pos) === index) return b.name || `key #${index}`;
+    if (b.display && keyIndexOf(b.pos) === index) return b.name || '';
   }
-  return `key #${index}`;
+  return '';
 }
 
 // ── Assign / revert ────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ interface PendingChange {
 
 function describeChange(c: PendingChange, blocks: readonly KeyBlock[]): string {
   const name = blockNameFor(blocks, c.index);
-  return `#${c.index} ${name}: ${labelOfValue(c.oldValue) || '(empty)'} → ${labelOfValue(c.newValue) || '(none)'}`;
+  return `Key ${c.index}${name ? ` (${name})` : ''}: ${labelOfValue(c.oldValue) || 'nothing'} → ${labelOfValue(c.newValue) || 'nothing'}`;
 }
 
 /**
@@ -251,7 +251,7 @@ async function writeChanges(changes: ReadonlyMap<number, number>): Promise<void>
       if (m.size === 0) pendingByLayer.delete(layer);
     }
     setStatus(
-      `Saved ${changes.size} key change(s) on layer ${layer} — checked on the keyboard.`,
+      `Saved ${changes.size} key change(s) — checked on the keyboard.`,
     );
   } catch (e) {
     setStatus(`Could not save the key changes: ${e instanceof Error ? e.message : String(e)}`, true);
@@ -272,9 +272,9 @@ async function applyAll(): Promise<void> {
     newValue,
   }));
   const ok = await confirmWrite(
-    `Save ${changes.length} key change(s) to layer ${layer}?`,
+    `Save ${changes.length} key change(s)?`,
     changes.map((c) => describeChange(c, blocks)),
-    'Save & check',
+    'Save to keyboard',
   );
   if (ok) await writeChanges(m);
 }
@@ -286,9 +286,9 @@ async function applyOne(index: number): Promise<void> {
   const { blocks } = blocksForModel();
   const c: PendingChange = { index, oldValue: committedValue(layer, index), newValue };
   const ok = await confirmWrite(
-    `Change ${blockNameFor(blocks, index)} (#${index}) on layer ${layer}?`,
+    `Change key ${index}${blockNameFor(blocks, index) ? ` (${blockNameFor(blocks, index)})` : ''}?`,
     [describeChange(c, blocks)],
-    'Save & check',
+    'Save to keyboard',
   );
   if (ok) await writeChanges(new Map([[index, newValue]]));
 }
@@ -319,7 +319,7 @@ export function renderKeysPage(root: HTMLElement): void {
   root.replaceChildren();
 
   if (!app.connected || !app.snapshot) {
-    const { card: c, body } = card('Keyboard');
+    const { card: c, body } = card('Your keyboard');
     body.append(
       el(
         'p',
@@ -339,7 +339,7 @@ export function renderKeysPage(root: HTMLElement): void {
   }
 
   // ── Keyboard card ──────────────────────────────────────────────────
-  const { card: kc, body: kbody } = card('Keyboard');
+  const { card: kc, body: kbody } = card('Your keyboard');
 
   const toolbar = el('div', 'segment-bar remap-toolbar');
   const layerBar = el('div', 'segment-bar');
@@ -352,7 +352,7 @@ export function renderKeysPage(root: HTMLElement): void {
   toolbar.append(layerBar);
 
   const pendingBadge = el('span', 'chip remap-pending', '');
-  const applyBtn = el('button', 'btn btn-primary remap-apply', 'Apply');
+  const applyBtn = el('button', 'btn btn-primary remap-apply', 'Save');
   applyBtn.type = 'button';
   const discardBtn = el('button', 'btn remap-discard', 'Discard');
   discardBtn.type = 'button';
@@ -370,7 +370,7 @@ export function renderKeysPage(root: HTMLElement): void {
   });
 
   // ── Pool card (vendor bottom "codeList") ───────────────────────────
-  const { card: pc, body: pbody } = card('Key pool');
+  const { card: pc, body: pbody } = card('Pick a new function');
 
   const poolToolbar = el('div', 'pool-toolbar');
   const tabs = el('div', 'pool-tabs segment-bar');
@@ -386,9 +386,9 @@ export function renderKeysPage(root: HTMLElement): void {
   poolToolbar.append(tabs);
 
   const right = el('div', 'pool-toolbar-right');
-  const unassignBtn = el('button', 'btn remap-unassign', 'Unassign');
+  const unassignBtn = el('button', 'btn remap-unassign', 'Do nothing');
   unassignBtn.type = 'button';
-  unassignBtn.title = 'Make the selected key do nothing';
+  unassignBtn.title = 'Make the selected key do nothing when pressed';
   unassignBtn.addEventListener('click', () => {
     if (selected !== null) assignValue(selected, POOL_UNASSIGN.value);
   });
@@ -474,12 +474,12 @@ export function renderKeysPage(root: HTMLElement): void {
     pendingBadge.textContent = count > 0 ? `${count} unsaved` : '';
     pendingBadge.hidden = count === 0;
     applyBtn.disabled = busy || count === 0;
-    applyBtn.textContent = busy ? 'Writing…' : `Apply ${count > 0 ? `(${count})` : ''}`.trim();
+    applyBtn.textContent = busy ? 'Saving…' : `Save${count > 0 ? ` (${count})` : ''}`;
     discardBtn.disabled = busy || count === 0;
 
     // Selected-key info + per-key apply.
     if (selected === null) {
-      selInfo.textContent = 'Click a key on the keyboard to pick a new function.';
+      selInfo.textContent = 'Click a key on the keyboard, then pick what it should do below.';
       selInfo.className = 'pool-selected hint';
       applyOneBtn.disabled = true;
       dupWarn.textContent = '';
@@ -489,7 +489,7 @@ export function renderKeysPage(root: HTMLElement): void {
       const pend = pending?.get(selected);
       selInfo.className = 'pool-selected';
       selInfo.textContent =
-        `#${selected} ${block?.name || '(unnamed)'} — ` +
+        `Key ${selected} (${block?.name || 'unnamed'}) — ` +
         `currently ${labelOfValue(committed) || 'nothing'}` +
         (pend !== undefined
           ? `, will become ${labelOfValue(pend) || 'nothing'}`
@@ -503,7 +503,7 @@ export function renderKeysPage(root: HTMLElement): void {
         dupWarn.textContent =
           dup.length > 0
             ? `Note: ${labelOfValue(pend) || 'that key'} is also assigned to ${dup
-                .map((i) => `#${i}`)
+                .map((i) => `key ${i}`)
                 .join(', ')}.`
             : '';
       } else {

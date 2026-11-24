@@ -20,7 +20,7 @@
  * they are pristine).
  */
 
-import { app, ensureKeymap, refresh, subscribe, setStatus } from './state.ts';
+import { app, connect, ensureKeymap, refresh, subscribe, setStatus } from './state.ts';
 import { K1_PRO_BLOCKS } from './k1pro-layout.ts';
 import { KeyboardView } from './keyboard.ts';
 import {
@@ -93,7 +93,7 @@ class ColorPicker {
     this.root.append(this.canvas);
 
     const hueRow = el('div', 'cp-row');
-    hueRow.append(el('label', 'cp-label', 'Hue'));
+    hueRow.append(el('label', 'cp-label', 'Colour'));
     this.hue = document.createElement('input');
     this.hue.type = 'range';
     this.hue.min = '0';
@@ -104,7 +104,7 @@ class ColorPicker {
     this.root.append(hueRow);
 
     const hexRow = el('div', 'cp-row');
-    hexRow.append(el('label', 'cp-label', 'Hex'));
+    hexRow.append(el('label', 'cp-label', 'Colour code'));
     this.hexInput = document.createElement('input');
     this.hexInput.type = 'text';
     this.hexInput.className = 'cp-hex mono';
@@ -316,7 +316,7 @@ class LightingView {
   private jsonPre!: HTMLElement;
   private applyBtn!: HTMLButtonElement;
   private stepLog!: HTMLElement;
-  private liveDl!: HTMLElement;
+  private liveLine!: HTMLElement;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -336,11 +336,19 @@ class LightingView {
   /** Decorative gradient hint for a mode card (purpose: quick visual
    *  scan of which effects are multi-colour vs single/off). */
   private modeThumbStyle(id: number): string {
-    if (id === 0) return 'linear-gradient(135deg,#26282b,#101314)';
-    if (id === 277 || lightModeInfo(id)?.colorSupport === COLOR_SUPPORT.MULTI) {
+    const info = lightModeInfo(id);
+    if (id === 0 || info?.colorSupport === COLOR_SUPPORT.OFF) {
+      return 'linear-gradient(135deg,#26282b,#101314)';
+    }
+    if (info?.colorSupport === COLOR_SUPPORT.MULTI) {
       return 'linear-gradient(90deg,#ff5f6d,#ffc371,#7bed9f,#70a1ff,#a55eea,#ff5f6d)';
     }
-    return 'linear-gradient(135deg,#3a4146,#22262a)';
+    if (info?.colorSupport === COLOR_SUPPORT.CUSTOM) {
+      return 'linear-gradient(90deg,#c6f54e,#70a1ff,#ff5f6d,#ffc371)';
+    }
+    // Single-colour modes — soft accent tint so they read differently
+    // from the multi-colour rainbow thumbs at a glance.
+    return 'linear-gradient(135deg,rgba(198,245,78,0.4),#26282b)';
   }
 
   private modeLabel(id: number): string {
@@ -351,21 +359,19 @@ class LightingView {
   private build(): void {
     this.root.replaceChildren();
 
-    // Hero — the keyboard itself, vendor LightingEffect puts it on top.
+    // Hero — the keyboard itself is the home screen.
     const hero = el('div', 'kb-hero');
     this.kbHolder = el('div', 'kb-holder');
     hero.append(this.kbHolder);
     this.root.append(hero);
 
-    // Card 1 — live device state (compact readout).
-    const live = card('Current effect');
-    this.liveDl = el('dl', 'kv');
-    live.body.append(this.liveDl);
-    this.root.append(live.card);
-
-    // Card 2 — pick an effect.
-    const fx = card('Choose an effect');
-    fx.body.append(el('p', 'hint', 'Tap an effect to preview it on the keyboard above.'));
+    // Card — pick an effect. This is the whole primary flow.
+    const fx = card('Pick an effect');
+    this.liveLine = el('p', 'hint live-line', '');
+    fx.body.append(this.liveLine);
+    fx.body.append(
+      el('p', 'hint', 'Tap an effect — the keyboard above shows it straight away. Save when it looks right.'),
+    );
     this.modeGrid = el('div', 'mode-grid');
     for (const m of LIGHT_MODES) {
       const b = el('button', 'mode-card');
@@ -382,62 +388,19 @@ class LightingView {
       this.modeGrid.append(b);
     }
     fx.body.append(this.modeGrid);
-
-    const sliders = el('div', 'light-sliders');
-    sliders.append(
-      this.slider('Speed', (range, valEl) => {
-        this.speedRange = range;
-        this.speedVal = valEl;
-      }, (v) => {
-        this.speed = v;
-        this.markDirty();
-      }),
-    );
-    sliders.append(
-      this.slider('Brightness', (range, valEl) => {
-        this.brightRange = range;
-        this.brightVal = valEl;
-      }, (v) => {
-        this.brightness = v;
-        this.markDirty();
-      }),
-    );
-    fx.body.append(sliders);
-
-    // Colour model radios (single-colour modes only).
-    const modelRow = el('div', 'light-row');
-    modelRow.append(el('label', 'cp-label', 'Colour'));
-    this.modelRadios = [];
-    for (const [label, val] of [
-      ['One colour', COLOR_MODEL.MONOCHROME],
-      ['Mixed colours', COLOR_MODEL.MIXING],
-    ] as const) {
-      const lab = el('label', 'cp-radio');
-      const inp = document.createElement('input');
-      inp.type = 'radio';
-      inp.name = 'light-color-model';
-      inp.value = String(val);
-      inp.addEventListener('change', () => {
-        if (inp.checked) {
-          this.colorModel = val;
-          this.markDirty();
-          this.syncPickerTarget();
-        }
-      });
-      lab.append(inp, document.createTextNode(` ${label}`));
-      modelRow.append(lab);
-      this.modelRadios.push(inp);
-    }
-    fx.body.append(modelRow);
     this.root.append(fx.card);
 
-    // Card 3 — colours: presets first, picker second, per-key last.
+    // Card — one-tap colour fills (the "Custom" effect + per-key colours).
     const custom = card('Colours');
     custom.body.append(
-      el('p', 'hint', 'Quick fills for the "custom" effect, or pick any colour by hand.'),
+      el(
+        'p',
+        'hint',
+        'Tap a fill to colour every key at once. These apply to the "Custom" ' +
+          'effect and to individual keys.',
+      ),
     );
 
-    // Preset cards — visual first.
     const presetGrid = el('div', 'preset-grid');
     const presetDefs: { kind: KeysPreset; label: string; hint: string; thumb: string }[] = [
       {
@@ -467,10 +430,9 @@ class LightingView {
       thumb.style.background = p.thumb;
       b.append(thumb, el('span', '', p.label), el('span', 'preset-hint', p.hint));
       b.addEventListener('click', () => {
-        this.presetKind = this.presetKind === p.kind ? '' : p.kind;
-        this.presetBtns.forEach((pb, i) =>
-          pb.classList.toggle('active', i === pi && this.presetKind === p.kind),
-        );
+        this.presetKind = p.kind;
+        this.presetBtns.forEach((pb, i) => pb.classList.toggle('active', i === pi));
+        this.applyPreset();
       });
       this.presetBtns.push(b);
       presetGrid.append(b);
@@ -482,29 +444,90 @@ class LightingView {
     this.presetColor = document.createElement('input');
     this.presetColor.type = 'color';
     this.presetColor.value = '#ff0000';
+    this.presetColor.addEventListener('input', () => {
+      if (this.presetKind) this.applyPreset();
+    });
     presetRow.append(this.presetColor);
     presetRow.append(el('label', 'cp-label', 'To'));
     this.presetTo = document.createElement('input');
     this.presetTo.type = 'color';
     this.presetTo.value = '#0000ff';
+    this.presetTo.addEventListener('input', () => {
+      if (this.presetKind) this.applyPreset();
+    });
     presetRow.append(this.presetTo);
-    const genBtn = el('button', 'btn', 'Apply fill');
-    genBtn.type = 'button';
-    genBtn.addEventListener('click', () => this.applyPreset());
-    const revertBtn = el('button', 'btn', 'Reset to keyboard');
+    const revertBtn = el('button', 'btn', 'Undo fill');
     revertBtn.type = 'button';
-    revertBtn.addEventListener('click', () => this.revertCustom());
-    presetRow.append(genBtn, revertBtn);
+    revertBtn.title = 'Put the saved key colours back';
+    revertBtn.addEventListener('click', () => {
+      this.presetKind = '';
+      this.presetBtns.forEach((pb) => pb.classList.remove('active'));
+      this.revertCustom();
+    });
+    presetRow.append(revertBtn);
     custom.body.append(presetRow);
+    this.root.append(custom.card);
 
-    // Custom colour picker (secondary to presets).
+    // Everything else is one collapsed "More options" section.
+    const adv = el('details', 'advanced');
+    adv.append(el('summary', '', 'More options — speed, brightness, custom colour, per-key'));
+    const advBody = el('div', 'advanced-body');
+
+    const sliders = el('div', 'light-sliders');
+    sliders.append(
+      this.slider('Speed', (range, valEl) => {
+        this.speedRange = range;
+        this.speedVal = valEl;
+      }, (v) => {
+        this.speed = v;
+        this.markDirty();
+      }),
+    );
+    sliders.append(
+      this.slider('Brightness', (range, valEl) => {
+        this.brightRange = range;
+        this.brightVal = valEl;
+      }, (v) => {
+        this.brightness = v;
+        this.markDirty();
+      }),
+    );
+    advBody.append(sliders);
+
+    // Colour model radios (single-colour modes only).
+    const modelRow = el('div', 'light-row');
+    modelRow.append(el('label', 'cp-label', 'Colour style'));
+    this.modelRadios = [];
+    for (const [label, val] of [
+      ['One colour', COLOR_MODEL.MONOCHROME],
+      ['Mixed colours', COLOR_MODEL.MIXING],
+    ] as const) {
+      const lab = el('label', 'cp-radio');
+      const inp = document.createElement('input');
+      inp.type = 'radio';
+      inp.name = 'light-color-model';
+      inp.value = String(val);
+      inp.addEventListener('change', () => {
+        if (inp.checked) {
+          this.colorModel = val;
+          this.markDirty();
+          this.syncPickerTarget();
+        }
+      });
+      lab.append(inp, document.createTextNode(` ${label}`));
+      modelRow.append(lab);
+      this.modelRadios.push(inp);
+    }
+    advBody.append(modelRow);
+
+    // Custom colour picker + per-key grid.
     const pickRow = el('div', 'light-pickrow');
     this.picker = new ColorPicker();
     this.picker.onChange = (c) => this.onPickerColor(c);
     pickRow.append(this.picker.root);
 
     const targetCol = el('div', 'light-target');
-    targetCol.append(el('div', 'cp-label', 'Editing'));
+    targetCol.append(el('div', 'cp-label', 'Colour picker changes'));
     this.targetBtns = [];
     const mkTarget = (label: string, t: PickerTarget): HTMLButtonElement => {
       const b = el('button', 'segment-item', label);
@@ -517,56 +540,34 @@ class LightingView {
       targetCol.append(b);
       return b;
     };
-    mkTarget('Effect colour', { kind: 'effect' });
-    mkTarget(`Key #0`, { kind: 'key', index: 0 });
+    mkTarget('The whole effect', { kind: 'effect' });
+    mkTarget(`Key ${this.selectedSlot ?? 0}`, { kind: 'key', index: 0 });
     pickRow.append(targetCol);
-    custom.body.append(pickRow);
+    advBody.append(pickRow);
 
-    // Per-key colour grid — advanced, collapsed.
-    const adv = el('details', 'advanced');
-    adv.append(el('summary', '', `Individual key colours (${CUSTOM_LIGHT_SLOTS} keys)`));
-    const advBody = el('div', 'advanced-body');
     advBody.append(
       el(
         'p',
         'hint',
-        'Fine-tune the colour of each key. Click a key on the keyboard or a ' +
-          'cell below to choose which one the colour picker edits.',
+        'Fine-tune colours by hand: pick "The whole effect" or a key, then ' +
+          'choose a colour above. Click a key on the keyboard or a square ' +
+          'below to choose which key the picker edits.',
       ),
     );
     this.slotGrid = el('div', 'slotgrid');
     advBody.append(this.slotGrid);
     adv.append(advBody);
-    custom.body.append(adv);
-    this.root.append(custom.card);
+    this.root.append(adv);
 
-    // Card 4 — save.
-    const apply = card('Save to keyboard');
-    const btnRow = el('div', 'light-row');
-    this.applyBtn = el('button', 'apply-btn', 'Save changes');
-    this.applyBtn.type = 'button';
-    this.applyBtn.addEventListener('click', () => void this.confirmAndApply());
-    const resetBtn = el('button', 'btn', 'Undo changes');
-    resetBtn.type = 'button';
-    resetBtn.addEventListener('click', () => {
-      this.dirty = false;
-      this.syncLive(true);
-    });
-    btnRow.append(this.applyBtn, resetBtn);
-    apply.body.append(btnRow);
-    this.stepLog = el('div', 'step-log');
-    apply.body.append(this.stepLog);
-    this.root.append(apply.card);
-
-    // Config JSON — advanced, collapsed (used by the omg CLI).
+    // Settings file (JSON) — for backups and the omg CLI.
     const jsonDetails = el('details', 'advanced');
-    jsonDetails.append(el('summary', '', 'Advanced: config JSON'));
+    jsonDetails.append(el('summary', '', 'Settings file (JSON) — backups & the omg CLI'));
     const jsonBody = el('div', 'advanced-body');
     const jsonRow = el('div', 'light-row');
     const copyBtn = el('button', 'btn', 'Copy');
     copyBtn.type = 'button';
     copyBtn.addEventListener('click', () => {
-      void navigator.clipboard?.writeText(this.configJson()).then(() => setStatus('Config JSON copied.'));
+      void navigator.clipboard?.writeText(this.configJson()).then(() => setStatus('Settings JSON copied.'));
     });
     const dlBtn = el('button', 'btn', 'Download .json');
     dlBtn.type = 'button';
@@ -577,6 +578,24 @@ class LightingView {
     jsonBody.append(this.jsonPre);
     jsonDetails.append(jsonBody);
     this.root.append(jsonDetails);
+
+    // One save bar — always visible, bottom of the page.
+    const bar = el('div', 'light-savebar');
+    const btnRow = el('div', 'light-row light-savebar-row');
+    this.applyBtn = el('button', 'apply-btn light-save', 'Save lighting');
+    this.applyBtn.type = 'button';
+    this.applyBtn.addEventListener('click', () => void this.confirmAndApply());
+    const resetBtn = el('button', 'btn', 'Undo changes');
+    resetBtn.type = 'button';
+    resetBtn.addEventListener('click', () => {
+      this.dirty = false;
+      this.syncLive(true);
+    });
+    btnRow.append(this.applyBtn, resetBtn);
+    bar.append(btnRow);
+    this.stepLog = el('div', 'step-log');
+    bar.append(this.stepLog);
+    this.root.append(bar);
 
     this.renderSlotGrid();
     this.renderKeyboard();
@@ -620,28 +639,16 @@ class LightingView {
     }
     const st = decodeLightState(snap.profile.raw);
     const info = st ? lightModeInfo(st.mode) : undefined;
-    this.liveDl.replaceChildren();
-    const kv = (k: string, v: string): void => {
-      const dt = el('dt', '', k);
-      dt.dataset.k = k.toLowerCase().replace(/\s+/g, '-');
-      this.liveDl.append(dt, el('dd', '', v));
-    };
-    if (st) {
-      const name = info ? this.modeLabel(st.mode) : `Effect ${st.mode} (unknown)`;
-      kv('Effect', name);
-      kv('Speed', String(st.speed));
-      kv('Brightness', String(st.brightness));
-      kv(
-        'Colour style',
-        st.colorModel === COLOR_MODEL.MONOCHROME ? 'One colour' : 'Mixed colours',
-      );
-      const gc = groupColor(snap.lightData, st.mode);
-      kv('Accent colour', gc ? rgbToHex(gc) : '—');
-    } else {
-      kv('Effect', '— (could not read from keyboard)');
-    }
     const nonBlack = snap.colors.filter((c) => c.r || c.g || c.b).length;
-    kv('Per-key colours set', `${nonBlack} of ${snap.colors.length}`);
+    if (st) {
+      const name = info ? this.modeLabel(st.mode) : `effect ${st.mode} (unknown)`;
+      this.liveLine.textContent =
+        `On your keyboard now: ${name} · speed ${st.speed} · ` +
+        `brightness ${st.brightness} · ${nonBlack} key${nonBlack === 1 ? '' : 's'} customised`;
+    } else {
+      this.liveLine.textContent =
+        'On your keyboard now: could not read the current effect.';
+    }
 
     if ((!this.dirty || force) && !this.applying) {
       this.seedFromSnapshot(snap);
@@ -745,7 +752,7 @@ class LightingView {
     const [effectBtn, keyBtn] = this.targetBtns;
     effectBtn!.disabled = !effectOk;
     keyBtn!.disabled = this.customColors.length === 0;
-    keyBtn!.textContent = `Key #${this.selectedSlot ?? 0}`;
+    keyBtn!.textContent = `Key ${this.selectedSlot ?? 0}`;
     if (this.target.kind === 'effect' && !effectOk) {
       this.target = { kind: 'key', index: this.selectedSlot ?? 0 };
     }
@@ -816,7 +823,7 @@ class LightingView {
       cell.type = 'button';
       cell.style.background = `rgb(${c.r},${c.g},${c.b})`;
       cell.classList.toggle('selected', this.selectedSlot === i);
-      cell.title = `#${i} pos=${8 + i * 4} ${rgbToHex(c)}`;
+      cell.title = `Key ${i} — ${rgbToHex(c)}`;
       cell.textContent = String(i);
       cell.addEventListener('click', () => this.selectSlot(i));
       this.slotGrid.append(cell);
@@ -936,7 +943,7 @@ class LightingView {
     const pre = el('pre', 'json-view mono', json);
     modal.append(pre);
     const row = el('div', 'light-row');
-    const yes = el('button', 'apply-btn', 'Apply');
+    const yes = el('button', 'apply-btn', 'Save to keyboard');
     yes.type = 'button';
     const no = el('button', 'segment-item', 'Cancel');
     no.type = 'button';
@@ -1009,37 +1016,37 @@ class LightingView {
       if (customChanged) {
         try {
           await c.session.writeCustomLightColors(this.customColors);
-          log('Per-key colours: saved and checked', 'ok');
+          log('Key colours: saved and checked', 'ok');
         } catch (e) {
           failed = true;
-          log(`Per-key colours: FAILED — ${msg(e)}`, 'err');
+          log(`Key colours: FAILED — ${msg(e)}`, 'err');
         }
       } else {
-        log('Per-key colours: skipped (unchanged)', 'dim');
+        log('Key colours: skipped (unchanged)', 'dim');
       }
       // 2. Effect settings (mode, speed, brightness).
       if (bytesEq(profileBlob, profile.raw)) {
-        log('Effect settings: skipped (unchanged)', 'dim');
+        log('Effect: skipped (unchanged)', 'dim');
       } else {
         try {
           await c.session.writeProfile(profileBlob);
-          log('Effect settings: saved and checked', 'ok');
+          log('Effect: saved and checked', 'ok');
         } catch (e) {
           failed = true;
-          log(`Effect settings: FAILED — ${msg(e)}`, 'err');
+          log(`Effect: FAILED — ${msg(e)}`, 'err');
         }
       }
       // 3. Accent colour for single-colour effects.
       if (newLightBlob) {
         try {
           await c.session.writeLightData(newLightBlob);
-          log('Accent colour: saved and checked', 'ok');
+          log('Effect colour: saved and checked', 'ok');
         } catch (e) {
           failed = true;
-          log(`Accent colour: FAILED — ${msg(e)}`, 'err');
+          log(`Effect colour: FAILED — ${msg(e)}`, 'err');
         }
       } else {
-        log('Accent colour: skipped', 'dim');
+        log('Effect colour: skipped', 'dim');
       }
 
       if (failed) {
@@ -1069,6 +1076,47 @@ function msg(e: unknown): string {
 
 // ── Page entry ────────────────────────────────────────────────────────
 
+/**
+ * The old Home page folded into here: the connect prompt + first-steps
+ * guidance is the lighting page's empty state.
+ */
+function renderConnectPrompt(root: HTMLElement): void {
+  const hero = el('div', 'home-hero');
+  hero.append(el('h1', 'home-title', 'Set up your GravaStar keyboard'));
+  hero.append(
+    el(
+      'p',
+      'home-note',
+      'Change colours and effects, remap keys, record macros — all from ' +
+        'your browser. Nothing is installed and nothing leaves your computer.',
+    ),
+  );
+  const btn = el('button', 'home-connect', 'Connect keyboard');
+  btn.type = 'button';
+  btn.disabled = app.busy;
+  btn.addEventListener('click', () => void connect());
+  hero.append(btn);
+
+  const steps = el('ol', 'home-steps');
+  for (const [n, t] of [
+    ['1', 'Plug the keyboard into your computer with a USB cable.'],
+    ['2', 'Press "Connect keyboard" and pick it in the browser window.'],
+    ['3', 'Pick an effect below — the keyboard shows it live.'],
+  ] as const) {
+    const li = el('li');
+    li.append(el('span', 'num', n), el('span', '', t));
+    steps.append(li);
+  }
+  hero.append(steps);
+
+  const needs = el('p', 'hint');
+  needs.textContent =
+    'Works in Chrome or Edge on a computer (not phones or Firefox). ' +
+    'Supported: GravaStar K1 / K1 Pro / K98 series over USB cable.';
+  hero.append(needs);
+  root.append(hero);
+}
+
 let view: LightingView | null = null;
 
 /** Tear down the lighting view (called by the router on destroy). */
@@ -1083,16 +1131,14 @@ export function renderLightingPage(root: HTMLElement): void {
     view?.destroy();
     view = null;
     root.replaceChildren();
-    const { card: c, body } = card('Lighting');
-    body.append(
-      el(
-        'p',
-        'coming-soon',
-        'Connect a keyboard to configure lighting — effect modes, speed/' +
-          'brightness, colours and per-key custom colours.',
-      ),
-    );
-    root.append(c);
+    if (app.connected) {
+      // Connected but the first read is still in flight.
+      const c = card('Lighting');
+      c.body.append(el('p', 'hint', 'Reading your keyboard…'));
+      root.append(c.card);
+      return;
+    }
+    renderConnectPrompt(root);
     return;
   }
   if (!view) {
