@@ -215,12 +215,18 @@ impl SpectrumViz {
             // Contrast curve: quiet bands drop toward black instead of
             // hovering at a uniform dim glow — this is what makes some
             // keys dark while others carry the spectrum.
-            v = v.powf(1.6);
-            v += bands.bass * 0.10; // bass pulse lifts everything slightly
+            v = v.powf(2.0);
+            v += bands.bass * 0.05; // bass pulse lifts everything slightly
             // Configurable background floor, gated by level so silence
             // still renders black (spec: "background brightness").
             v += self.params.background * bands.level.clamp(0.0, 1.0);
-            v = (v * self.params.brightness + self.flash * 0.25 * (1.0 - x)).clamp(0.0, 1.0);
+            // Beat flash must respect params.brightness — BeatViz runs
+            // this visualiser at ~6% brightness as ambient base, and an
+            // unscaled flash term would leak a full-field glow for ~1 s
+            // after every beat (the "all keys lit" bug).
+            v = (v * self.params.brightness
+                + self.flash * 0.25 * self.params.brightness * (1.0 - x))
+            .clamp(0.0, 1.0);
 
             // Frequency-mapped hue + slow drift.
             let hue = HUE_LOW + (HUE_HIGH - HUE_LOW) * x + t * self.params.hue_speed * 0.15;
@@ -270,19 +276,22 @@ struct Impact {
     seq: u32,
 }
 
-/// How long each impact kind stays alive, in frames.
+/// How long each impact kind stays alive, in 30 fps reference frames.
+/// Kept short on purpose: at 140 BPM beats arrive every ~13 frames, so
+/// a 55-frame kick ring overlaps 3+ later kicks and the whole board
+/// ends up lit — the "all keys on" failure mode.
 fn impact_ttl(kind: BeatKind) -> u32 {
     match kind {
-        BeatKind::Kick => 55,
-        BeatKind::Snare => 40,
-        BeatKind::HiHat => 8,
-        BeatKind::Generic => 25,
+        BeatKind::Kick => 20,
+        BeatKind::Snare => 18,
+        BeatKind::HiHat => 5,
+        BeatKind::Generic => 14,
     }
 }
 
 /// Hard cap on concurrent impacts (Hypercolor MAX_WAVES) — guards against
 /// runaway onset detection stacking rings every refractory interval.
-const MAX_IMPACTS: usize = 12;
+const MAX_IMPACTS: usize = 8;
 
 /// Stateful beat-motion renderer — call [`BeatViz::frame`] per LED frame.
 pub struct BeatViz {
@@ -302,7 +311,7 @@ impl BeatViz {
         // Keep the ambient spectrum very dim — the point of this
         // visualiser is that onsets/impacts are the bright signal.
         let ambient = FrameParams {
-            brightness: params.brightness * 0.12,
+            brightness: params.brightness * 0.025,
             ..params
         };
         Self {
@@ -394,14 +403,17 @@ impl BeatViz {
                 let dcy = self.params.decay.clamp(0.25, 4.0);
                 let s = (im.strength
                     * self.params.brightness
-                    * 1.8
+                    * 1.5
                     * self.params.beat_intensity)
                 .min(1.0)
                     * ramp;
                 let (r, g, b) = match im.kind {
                     BeatKind::Kick => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
-                        let radius = 0.035 * age;
+                        // Ring crosses the board in ~0.65 s — long
+                        // enough to read as a wave, short enough that
+                        // consecutive kicks don't stack into a lit field.
+                        let radius = 0.05 * age;
                         // Stronger kicks throw a wider ring — beat energy
                         // drives ring *width*, not a flat brightness add
                         // (Hypercolor audio_pulse lesson: flat adds read
@@ -411,9 +423,9 @@ impl BeatViz {
                         // Bright core at the impact point on the first
                         // ~0.2 s — the ring alone leaves the centre dark.
                         let core = (-d / 0.10).exp() * (-age * dcy / 6.0).exp();
-                        let env = (-age * dcy / 24.0).exp();
+                        let env = (-age * dcy / 9.0).exp();
                         // Rings dim as they spread (Hypercolor age_fade).
-                        let spread_fade = (1.0 - radius * 0.5).clamp(0.0, 1.0);
+                        let spread_fade = (1.0 - radius * 0.7).clamp(0.0, 1.0);
                         let i = (s * (ring * spread_fade + core * 0.8) * env).min(1.0);
                         (i, i * 0.72, i * 0.30)
                     }
@@ -421,24 +433,24 @@ impl BeatViz {
                         let p = im.dir * (0.045 * age - 0.15);
                         let band = (-((x - p).powi(2)) / (2.0 * 0.05f32.powi(2))).exp();
                         let wake = ((p - x) * im.dir).max(0.0);
-                        let trail = (-wake / 0.28).exp() * 0.35;
-                        let env = (-age * dcy / 18.0).exp();
+                        let trail = (-wake / 0.22).exp() * 0.3;
+                        let env = (-age * dcy / 8.0).exp();
                         let i = (s * (band + trail) * env).min(1.0);
                         (i * 0.35, i * 0.75, i)
                     }
                     BeatKind::HiHat => {
-                        // ~25% of keys spark per hat, brief and dim.
+                        // ~15% of keys spark per hat, brief and dim.
                         let h = hash01(k as u32 ^ im.seq.wrapping_mul(0x85EBCA6B));
-                        if h > 0.25 {
+                        if h > 0.15 {
                             continue;
                         }
-                        let i = s * (-age * dcy / 4.0).exp() * (0.4 + 0.6 * h);
+                        let i = s * (-age * dcy / 2.5).exp() * (0.3 + 0.7 * h);
                         (i * 0.75, i * 0.45, i)
                     }
                     BeatKind::Generic => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
                         let i =
-                            (s * (-d / 0.14).exp() * (-age * dcy / 12.0).exp()).min(1.0);
+                            (s * (-d / 0.12).exp() * (-age * dcy / 7.0).exp()).min(1.0);
                         (i, i * 0.9, i * 0.7)
                     }
                 };
@@ -452,29 +464,35 @@ impl BeatViz {
             // Per-key x-delay makes the crest sweep the board; gated by
             // level so silence stays dark.
             if bands.bpm > 1.0 {
+                // Narrow travelling crest, not a full-field wash: a
+                // bright band ~20% of the width sweeps left→right once
+                // per beat — this is the visible "keys jump on the
+                // beat" layer. phase_x ∈ [0,1) per key.
                 let phase_x = (bands.beat_phase - x * 0.15).rem_euclid(1.0);
-                let env = (1.0 - phase_x) * (1.0 - phase_x);
-                let bounce = env * gate * 0.22 * self.params.brightness * bi;
+                let crest = (-((phase_x - 0.2) / 0.13).powi(2)).exp();
+                let bounce = crest * gate * 0.20 * self.params.brightness * bi;
                 add[0] += bounce;
                 add[1] += bounce * 0.72;
                 add[2] += bounce * 0.40;
             }
             // Bass wash: continuous warm presence so the whole field
             // breathes with the low end between onset impacts.
-            let wash = bands.bass * bands.agc.min(2.0) * 0.08 * self.params.brightness;
+            let wash = bands.bass * bands.agc.min(2.0) * 0.015 * self.params.brightness;
             add[0] += wash;
             add[1] += wash * 0.55;
             add[2] += wash * 0.25;
             add[0] += bg;
             add[1] += bg * 0.72;
             add[2] += bg * 0.40;
+            // Beat punch: additive warm lift on every key for ~200 ms
+            // after each beat (spec: "bass kicks = visible bursts").
+            // Additive, not multiplicative — the ambient base is near
+            // black between beats so a multiplier would do nothing.
+            let punch = bands.beat_pulse * 0.10 * bi * gate;
+            let punch_rgb = [punch, punch * 0.78, punch * 0.45];
             for c in 0..3 {
-                // Beat thump: the whole field lifts on each detected
-                // beat — the "keyboard punches" layer, scaled by the
-                // beat-intensity param.
-                let thump = 1.0 + bands.beat_pulse * 0.4 * bi;
-                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate * thump;
-                let v = (base_v + add[c]).clamp(0.0, 1.0);
+                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate;
+                let v = (base_v + add[c] + punch_rgb[c]).clamp(0.0, 1.0);
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
             }
         }
@@ -700,6 +718,70 @@ mod tests {
             last = v.frame(&quiet, i as f32 * 0.03);
         }
         assert!(last.iter().all(|&x| x == 0), "impact should fully decay");
+    }
+
+    #[test]
+    fn beat_frames_contrast_against_quiet_field() {
+        // Spec acceptance: keys dim between beats, burst on beat.
+        // Feed a loud continuous spectrum (ambient would light the
+        // whole field if unbalanced) then a beat frame and compare
+        // mean brightness — the beat frame must be clearly brighter,
+        // and a quiet frame must be near-black.
+        use crate::dsp::BeatEvent;
+        let mut v = BeatViz::new(FrameParams::default());
+        let loud = Bands {
+            spectrum: [0.6; SPECTRUM_BINS],
+            bass: 0.7,
+            mid: 0.5,
+            treble: 0.4,
+            level: 0.7,
+            bpm: 120.0,
+            beat_phase: 0.3,
+            beat_pulse: 0.9,
+            ..Bands::default()
+        };
+        let quiet = Bands {
+            spectrum: [0.02; SPECTRUM_BINS],
+            level: 0.05,
+            ..Bands::default()
+        };
+        let mean = |f: &[u8; FRAME_BYTES]| {
+            f.iter().map(|&x| x as u32).sum::<u32>() as f32 / (FRAME_BYTES as f32 * 255.0)
+        };
+        let quiet_frame = v.frame(&quiet, 1.0);
+        let mut beat_bands = loud.clone();
+        beat_bands.events = vec![BeatEvent {
+            kind: BeatKind::Kick,
+            strength: 1.0,
+        }];
+        let beat_frame = v.frame(&beat_bands, 1.1);
+        // Between-beats frame during the SAME loud music: no pulse,
+        // crest mid-sweep — must stay well below the beat frame or
+        // the keyboard reads as "always lit".
+        let mut between = loud.clone();
+        between.beat_pulse = 0.0;
+        between.beat_phase = 0.9; // crest far away
+        // Let the just-spawned kick impact decay (~0.5 s) so the
+        // between-beat measurement isn't contaminated by it.
+        let mut between_frame = [0u8; FRAME_BYTES];
+        for i in 0..8 {
+            between_frame = v.frame(&between, 1.2 + i as f32 * 0.1);
+        }
+        let between_mean = mean(&between_frame);
+        let quiet_mean = mean(&quiet_frame);
+        let beat_mean = mean(&beat_frame);
+        assert!(
+            quiet_mean < 0.15,
+            "quiet field should be near-black, got {quiet_mean}"
+        );
+        assert!(
+            between_mean < beat_mean * 0.6,
+            "between-beat field should be dimmer than beat: {between_mean} vs {beat_mean}"
+        );
+        assert!(
+            beat_mean > quiet_mean * 2.0,
+            "beat should clearly outshine quiet field: {beat_mean} vs {quiet_mean}"
+        );
     }
 
     #[test]

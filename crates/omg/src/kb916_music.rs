@@ -374,6 +374,15 @@ pub fn cmd(
             bands = b;
         }
         let frame = viz.frame(&bands, started.elapsed().as_secs_f32());
+        if std::env::var("OMG_DEBUG_FRAMES").is_ok() && sent % 20 == 0 {
+            let mean = frame.iter().map(|&b| b as u32).sum::<u32>() as f32
+                / (frame.len() as f32 * 255.0);
+            let lit = frame.iter().filter(|&&b| b > 24).count();
+            eprintln!(
+                "  [frame {sent}] mean={mean:.3} lit_bytes={lit} level={:.2} bass={:.2} beat_pulse={:.2} bpm={:.0}",
+                bands.level, bands.bass, bands.beat_pulse, bands.bpm
+            );
+        }
         if let Err(e) = kb.write_gif_frame(&frame) {
             stream_error = Some(format!("{e:#}"));
             break;
