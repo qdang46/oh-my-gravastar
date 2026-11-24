@@ -554,7 +554,9 @@ impl PulseViz {
         let target = match self.mode {
             // dsp's decaying beat pulse, snapped to 1 on a fresh beat.
             PulseMode::Beat => bands.beat_pulse.max(if bands.beat { 1.0 } else { 0.0 }),
-            PulseMode::Bass => (bands.bass * bands.agc).clamp(0.0, 1.0),
+            // Vendor PulseLayer: bass^1.3 — kicks punch through harder
+            // than a linear bass read (aula-f75-macos Effects.swift).
+            PulseMode::Bass => (bands.bass * bands.agc).clamp(0.0, 1.0).powf(1.3),
             PulseMode::Ambient => bands.level.clamp(0.0, 1.0),
         };
         // env lerps toward the drive: fast rise with --attack, decay
@@ -565,7 +567,9 @@ impl PulseViz {
             (0.35 * self.params.decay).min(0.98)
         };
         self.env += k * (target - self.env);
-        let drive = self.env;
+        // Hard gate (vendor PulseLayer): below ~2% the whole field
+        // renders black — "keys off between beats", not dim glow.
+        let drive = if self.env > 0.02 { self.env } else { 0.0 };
         let gate = bands.level.clamp(0.0, 1.0);
         let v = ((drive * self.params.beat_intensity
             + self.params.background * gate)
