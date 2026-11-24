@@ -69,7 +69,7 @@ All gated by capability registry; **blocked-by-hardware** for verification.
 | *(new)* `agent-validator` | validator: schema+capability+policy+conflicts | `ak2`, `sid` | planner may emit, validator decides |
 | `7js` | NL→plan assistant + "Explain my keyboard" | `ak2`, `zlb` | rule-based first, P4 |
 | *(new)* `simulator` | config simulator (preview effects without write) | `ak2` | differentiator; agent foundation |
-| *(new)* `agent-docs` | `docs/agent-api.md` + MCP tool manifest | `ak2` | versioned op schema |
+| `oe4` | `docs/agent-api.md` (op vocabulary, lifecycle, policy, examples) | `ak2` | **done** — schema v1 documented from `action-schema.ts`; MCP tool manifest still pending |
 
 ## Phase 5 — Advanced Product (P2)
 
