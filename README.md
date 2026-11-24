@@ -114,6 +114,27 @@ omg probe --deep                      # adds the SparkPlayJoy travel-matrix read
 omg probe --device <selector>         # probe one device
 ```
 
+### Profile export / import
+
+`omg profile` moves settings between machines as a portable JSON document
+(schema v1): identity plus every readable setting — HE keyboards get
+info/profiles/polling/OS/lighting/palette/keymap/per-key performance, mice
+the full decoded config, khub916 the keymap/profile/power/light state,
+SparkPlayJoy the sync/scale/maps (read-only).
+
+```sh
+omg profile export backup.json         # all connected GravaStar devices
+omg profile export backup.json --full  # + khub916 light-data/macro hex blobs
+omg profile import backup.json --dry-run   # print planned changes, write nothing
+omg profile import backup.json --yes       # back up, then apply + verify
+```
+
+Import matches devices by protocol + VID/PID + usage page, snapshots the
+current state to `~/.local/share/oh-my-gravastar/backups/<utc-ts>/` before
+writing, and verifies every change by read-back. khub916 and SparkPlayJoy
+are export-only for now (khub916 writes are hardware-unverified;
+SparkPlayJoy has no write path).
+
 ### JSON output
 
 Every data-emitting command accepts `--json` (global flag, any position):

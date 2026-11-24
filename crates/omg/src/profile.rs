@@ -168,7 +168,7 @@ pub fn validate_profile(v: &Value) -> Result<()> {
 
 // ── Small JSON helpers ─────────────────────────────────────────────────
 
-fn u64_at<'a>(v: &'a Value, key: &str) -> Result<u64> {
+fn u64_at(v: &Value, key: &str) -> Result<u64> {
     v.get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| anyhow!("missing or non-integer field '{key}'"))
@@ -243,11 +243,21 @@ pub fn utc_stamp() -> String {
     utc_now().replace(['-', ':'], "")
 }
 
-/// Best-effort host name for the export header.
+/// Best-effort host name for the export header. HOSTNAME is often a
+/// non-exported shell variable, so fall back to the `hostname` command.
 pub fn host_name() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "unknown".to_string())
+    if let Ok(h) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 // ── Export: per-protocol state capture ─────────────────────────────────
@@ -294,23 +304,20 @@ pub fn he_state(kb: &mut he::HeKeyboard) -> Result<Value> {
     );
     st.insert(
         "os".into(),
-        sec(kb.system().map(|v| {
-            json!({ "os": if v == 0 { "windows" } else { "macos" }, "os_id": v })
-        })),
+        sec(kb
+            .system()
+            .map(|v| json!({ "os": if v == 0 { "windows" } else { "macos" }, "os_id": v }))),
     );
-    st.insert(
-        "rt_precision_mm".into(),
-        sec(kb.rt_precision()),
-    );
-    st.insert(
-        "lighting_sleep_minutes".into(),
-        sec(kb.lighting_sleep()),
-    );
+    st.insert("rt_precision_mm".into(), sec(kb.rt_precision()));
+    st.insert("lighting_sleep_minutes".into(), sec(kb.lighting_sleep()));
 
     let areas = match kb.lighting_areas() {
         Ok(a) => a,
         Err(e) => {
-            st.insert("lighting_areas".into(), json!({ "error": format!("{e:#}") }));
+            st.insert(
+                "lighting_areas".into(),
+                json!({ "error": format!("{e:#}") }),
+            );
             st.insert("lighting".into(), Value::Null);
             // Geometry/perf still work without the zone list.
             let slots = match kb.key_slots() {
@@ -328,14 +335,19 @@ pub fn he_state(kb: &mut he::HeKeyboard) -> Result<Value> {
     let mut lighting = Vec::new();
     for a in &areas {
         let base = sec(kb.lighting(a.index).map(|l| light_json(&l)));
-        let palette = sec(kb.palette(a.index).map(|p| {
-            p.iter().map(rgb_hex).collect::<Vec<_>>()
-        }));
-        lighting.push(json!({ "area": a.index, "effects": a.count, "lighting": base, "palette": palette }));
+        let palette = sec(kb
+            .palette(a.index)
+            .map(|p| p.iter().map(rgb_hex).collect::<Vec<_>>()));
+        lighting.push(
+            json!({ "area": a.index, "effects": a.count, "lighting": base, "palette": palette }),
+        );
     }
     st.insert(
         "lighting_areas".into(),
-        json!(areas.iter().map(|a| json!({"index": a.index, "effects": a.count})).collect::<Vec<_>>()),
+        json!(areas
+            .iter()
+            .map(|a| json!({"index": a.index, "effects": a.count}))
+            .collect::<Vec<_>>()),
     );
     st.insert("lighting".into(), Value::Array(lighting));
 
@@ -394,7 +406,7 @@ fn he_geometry_state(
 
     // Per-key performance for every physical slot — the point of a backup.
     let mut perf = Vec::with_capacity(slots.len());
-    for s in &slots {
+    for s in slots {
         match kb.key_perf(s.row, s.col) {
             Ok(p) => perf.push(json!({
                 "row": s.row, "col": s.col,
@@ -464,9 +476,9 @@ pub fn mouse_state(m: &mut pm::CompxMouse) -> Result<Value> {
     // identify() also caches the sensor for clamping; config does not need it.
     let config = m.read_config()?;
     let battery = sec(m.battery());
-    let firmware = sec(m.firmware().map(|(mouse, dongle)| {
-        json!({ "mouse": mouse, "receiver": dongle })
-    }));
+    let firmware = sec(m
+        .firmware()
+        .map(|(mouse, dongle)| json!({ "mouse": mouse, "receiver": dongle })));
     Ok(json!({
         "identity": identity,
         "config": serde_json::to_value(&config)?,
@@ -485,9 +497,9 @@ pub fn khub916_state(kb: &mut khub::Khub916, full: bool) -> Result<Value> {
     for arg in 0..8u8 {
         keymap.insert(
             arg.to_string(),
-            sec(kb.key_values(arg).map(|vs| {
-                vs.iter().map(|&v| hex_u32(v)).collect::<Vec<_>>()
-            })),
+            sec(kb
+                .key_values(arg)
+                .map(|vs| vs.iter().map(|&v| hex_u32(v)).collect::<Vec<_>>())),
         );
     }
     st.insert("keymap".into(), Value::Object(keymap));
@@ -506,8 +518,14 @@ pub fn khub916_state(kb: &mut khub::Khub916, full: bool) -> Result<Value> {
     st.insert("power".into(), sec(kb.power()));
     st.insert("light_colors".into(), sec(kb.custom_light_colors()));
     if full {
-        st.insert("light_data_hex".into(), sec(kb.light_color_data().map(hex_bytes)));
-        st.insert("macro_hex".into(), sec(kb.macro_region().map(hex_bytes)));
+        st.insert(
+            "light_data_hex".into(),
+            sec(kb.light_color_data().map(|b| hex_bytes(&b))),
+        );
+        st.insert(
+            "macro_hex".into(),
+            sec(kb.macro_region().map(|b| hex_bytes(&b))),
+        );
     }
     Ok(Value::Object(st))
 }
@@ -651,7 +669,11 @@ pub fn mouse_changes(current: &pm::MouseConfig, want: &pm::MouseConfig) -> Vec<S
             out.push(format!("{name}: {a} -> {b}"));
         }
     };
-    diff("report_rate", format!("{}", current.report_rate), format!("{}", want.report_rate));
+    diff(
+        "report_rate",
+        format!("{}", current.report_rate),
+        format!("{}", want.report_rate),
+    );
     diff(
         "stage_count",
         format!("{}", current.stage_count),
@@ -714,8 +736,10 @@ pub fn mouse_changes(current: &pm::MouseConfig, want: &pm::MouseConfig) -> Vec<S
         if current.buttons[i] != want.buttons[i] {
             out.push(format!(
                 "button[{i}]: kind={} param=0x{:04x} -> kind={} param=0x{:04x}",
-                current.buttons[i].kind, current.buttons[i].param,
-                want.buttons[i].kind, want.buttons[i].param,
+                current.buttons[i].kind,
+                current.buttons[i].param,
+                want.buttons[i].kind,
+                want.buttons[i].param,
             ));
         }
     }
@@ -737,7 +761,8 @@ pub fn mouse_validate(want: &pm::MouseConfig, id: &pm::Identity) -> Vec<String> 
     if !pm::REPORT_RATES.contains(&want.report_rate) {
         problems.push(format!(
             "report_rate {} Hz is not a valid rate ({:?})",
-            want.report_rate, pm::REPORT_RATES
+            want.report_rate,
+            pm::REPORT_RATES
         ));
     } else if want.report_rate > id.max_rate {
         problems.push(format!(
@@ -762,9 +787,7 @@ pub fn mouse_validate(want: &pm::MouseConfig, id: &pm::Identity) -> Vec<String> 
     if !id.sensor.lod.iter().any(|(v, _)| *v == want.lod) {
         problems.push(format!(
             "lod {} is not valid for {} (valid: {:?})",
-            want.lod,
-            id.sensor.name,
-            id.sensor.lod
+            want.lod, id.sensor.name, id.sensor.lod
         ));
     }
     if want.debounce > 15 {
@@ -773,11 +796,15 @@ pub fn mouse_validate(want: &pm::MouseConfig, id: &pm::Identity) -> Vec<String> 
     if !pm::SLEEP_TIMES.contains(&want.sleep) {
         problems.push(format!(
             "sleep {} is not a valid timeout (valid raw values: {:?})",
-            want.sleep, pm::SLEEP_TIMES
+            want.sleep,
+            pm::SLEEP_TIMES
         ));
     }
     if want.sensor_mode > 1 {
-        problems.push(format!("sensor_mode {} out of range 0..=1", want.sensor_mode));
+        problems.push(format!(
+            "sensor_mode {} out of range 0..=1",
+            want.sensor_mode
+        ));
     }
     if want.light.speed > 9 || want.light.brightness > 9 {
         problems.push("light speed/brightness must be 0..=9".to_string());
@@ -846,7 +873,11 @@ impl HeWrite {
             HeWrite::Polling(id) => format!("polling -> {} Hz", rate_hz(*id)),
             HeWrite::Os(v) => format!("os -> {}", if *v == 0 { "windows" } else { "macos" }),
             HeWrite::LightSleep(m) => format!("lighting sleep -> {m} min"),
-            HeWrite::Lighting { area, base, palette } => format!(
+            HeWrite::Lighting {
+                area,
+                base,
+                palette,
+            } => format!(
                 "lighting area {area}: on={} mode={} brightness={} speed={} dir={} color={}{}",
                 base.on,
                 base.mode,
@@ -858,7 +889,11 @@ impl HeWrite {
             ),
             HeWrite::Perf { row, col, perf } => format!(
                 "perf r{row} c{col}: mode={} actuation={:.3}mm",
-                if perf.mode == he::MODE_RAPID { "rt" } else { "fixed" },
+                if perf.mode == he::MODE_RAPID {
+                    "rt"
+                } else {
+                    "fixed"
+                },
                 if perf.mode == he::MODE_RAPID {
                     perf.rt_first_touch
                 } else {
@@ -933,7 +968,9 @@ pub fn he_plan(kb: &mut he::HeKeyboard, state: &Value) -> Result<(Vec<HeWrite>, 
                 None => continue,
             };
             if entry.get("lighting").and_then(|l| l.get("error")).is_some() {
-                notes.push(format!("lighting area {area} unreadable at export; skipped"));
+                notes.push(format!(
+                    "lighting area {area} unreadable at export; skipped"
+                ));
                 continue;
             }
             let l = match entry.get("lighting") {
@@ -952,7 +989,7 @@ pub fn he_plan(kb: &mut he::HeKeyboard, state: &Value) -> Result<(Vec<HeWrite>, 
                     let mut p = Vec::with_capacity(cols.len());
                     let mut ok = true;
                     for c in cols {
-                        match c.as_str().and_then(|s| parse_hex_color(s)) {
+                        match c.as_str().and_then(parse_hex_color) {
                             Some(rgb) => p.push(rgb),
                             None => {
                                 notes.push(format!(
@@ -999,7 +1036,11 @@ pub fn he_plan(kb: &mut he::HeKeyboard, state: &Value) -> Result<(Vec<HeWrite>, 
                 (Some(r), Some(c)) => (r as u8, c as u8),
                 _ => continue,
             };
-            let want = match entry.get("perf").ok_or_else(|| anyhow!("missing perf")).and_then(|p| perf_from_json(p)) {
+            let want = match entry
+                .get("perf")
+                .ok_or_else(|| anyhow!("missing perf"))
+                .and_then(perf_from_json)
+            {
                 Ok(p) => p,
                 Err(e) => {
                     notes.push(format!("perf r{row} c{col}: {e:#}; skipped"));
@@ -1008,14 +1049,22 @@ pub fn he_plan(kb: &mut he::HeKeyboard, state: &Value) -> Result<(Vec<HeWrite>, 
             };
             match kb.key_perf(row, col) {
                 Ok(current) if current == want => {}
-                Ok(_) => writes.push(HeWrite::Perf { row, col, perf: want }),
+                Ok(_) => writes.push(HeWrite::Perf {
+                    row,
+                    col,
+                    perf: want,
+                }),
                 Err(e) => notes.push(format!("perf r{row} c{col}: read failed: {e:#}; skipped")),
             }
         }
     }
 
     // Sections the v2 proto API cannot write back.
-    if state.get("keymap").and_then(Value::as_array).is_some_and(|k| !k.is_empty()) {
+    if state
+        .get("keymap")
+        .and_then(Value::as_array)
+        .is_some_and(|k| !k.is_empty())
+    {
         notes.push(
             "keymap captured but not applied: the proto has no keymap write API (03 02/03 04 are documented but unimplemented)"
                 .into(),
@@ -1052,7 +1101,10 @@ fn perf_from_json(v: &Value) -> Result<he::KeyPerf> {
     let dz = |key: &str| -> Result<f32> {
         let x = f64_at(v, key)? as f32;
         if !(0.0..=omg_model::DEADZONE_MAX).contains(&x) {
-            bail!("perf.{key} {x} out of range 0..={:.1} mm", omg_model::DEADZONE_MAX);
+            bail!(
+                "perf.{key} {x} out of range 0..={:.1} mm",
+                omg_model::DEADZONE_MAX
+            );
         }
         Ok(x)
     };
@@ -1167,7 +1219,11 @@ pub fn he_apply(kb: &mut he::HeKeyboard, writes: &[HeWrite]) -> Result<Vec<Strin
                     format!("{}: FAILED (read back {actual})", w.describe())
                 }
             }
-            HeWrite::Lighting { area, base, palette } => {
+            HeWrite::Lighting {
+                area,
+                base,
+                palette,
+            } => {
                 kb.set_lighting(*area, base)?;
                 let mut ok = kb.lighting(*area).map(|l| l == *base).unwrap_or(false);
                 if let Some(p) = palette {
@@ -1210,7 +1266,7 @@ pub fn he_apply(kb: &mut he::HeKeyboard, writes: &[HeWrite]) -> Result<Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use omg_hid::Link;
     use std::time::Duration;
 
     // ── Schema validation ─────────────────────────────────────────────
@@ -1239,7 +1295,10 @@ mod tests {
     fn schema_rejects_wrong_version() {
         let mut d = valid_doc();
         d["schema"] = json!(2);
-        assert!(validate_profile(&d).unwrap_err().to_string().contains("schema 2"));
+        assert!(validate_profile(&d)
+            .unwrap_err()
+            .to_string()
+            .contains("schema 2"));
         d["schema"] = json!("1");
         assert!(validate_profile(&d).is_err());
     }
@@ -1350,9 +1409,15 @@ mod tests {
             light_off_moving: false,
             sensor_mode: 1,
             buttons: [
-                pm::Button { kind: 1, param: 0x0100 },
+                pm::Button {
+                    kind: 1,
+                    param: 0x0100,
+                },
                 pm::Button::default(),
-                pm::Button { kind: 2, param: 0x0100 },
+                pm::Button {
+                    kind: 2,
+                    param: 0x0100,
+                },
                 pm::Button::default(),
                 pm::Button::default(),
                 pm::Button::default(),
@@ -1454,12 +1519,21 @@ mod tests {
             let mut resp = payload[..7].to_vec();
             match cmd {
                 // device info (130): uuid K1 Pro + version + screen 0
-                130 => resp.extend_from_slice(&[
-                    0x03, 0x00, 0x00, 0x00, 0x01, 0x97, 0x01, 0x00, 0x00,
-                ]),
+                130 => {
+                    resp.extend_from_slice(&[0x03, 0x00, 0x00, 0x00, 0x01, 0x97, 0x01, 0x00, 0x00])
+                }
                 // keymap read (131): 8 u32 BE values
                 131 => {
-                    for v in [0x29u32, 0x35, 0x2B, 0x39, 0x0001_0004, 0x0D00_0000, 0, 0xDEAD_BEEF] {
+                    for v in [
+                        0x29u32,
+                        0x35,
+                        0x2B,
+                        0x39,
+                        0x0001_0004,
+                        0x0D00_0000,
+                        0,
+                        0xDEAD_BEEF,
+                    ] {
                         resp.extend_from_slice(&v.to_be_bytes());
                     }
                 }

@@ -18,6 +18,8 @@ use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
+mod profile;
+
 #[derive(Parser)]
 #[command(
     name = "omg",
@@ -70,6 +72,43 @@ enum Commands {
     Mouse {
         #[command(subcommand)]
         command: MouseCommands,
+    },
+    /// Unified profile export/import (JSON schema v1).
+    /// Export captures every readable setting of all connected GravaStar
+    /// devices (or the one selected by `--device`); import validates the
+    /// file, matches devices by protocol + VID/PID, backs up the current
+    /// state, then applies writes. khub916 and sparkplayjoy are export-only.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// Export readable device state to a JSON profile file.
+    /// `--full` adds the large raw blobs (khub916 per-mode light data and
+    /// macro region as hex).
+    Export {
+        /// Output JSON file.
+        file: String,
+        /// Include large raw blobs (khub916 light-data/macro hex).
+        #[arg(long)]
+        full: bool,
+    },
+    /// Import a profile file. `--dry-run` prints the planned changes
+    /// without writing; real writes require `--yes` (same contract as
+    /// every other write command, docs/plan.md §2).
+    Import {
+        /// Profile JSON file produced by `omg profile export`.
+        file: String,
+        /// Print planned changes only; nothing is sent to any device.
+        #[arg(long, conflicts_with = "yes")]
+        dry_run: bool,
+        /// Confirm the writes. Without it (and without --dry-run) the
+        /// command refuses before any bytes are sent.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -261,6 +300,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Kb { command } => cmd_kb(cli, command),
         Commands::Kb916 { command } => cmd_kb916(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
+        Commands::Profile { command } => cmd_profile(cli, command),
     }
 }
 
@@ -3093,6 +3133,424 @@ fn print_hex_dump(bytes: &[u8]) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
         println!("  {:04x}: {}", i * 16, hex.join(" "));
     }
+}
+
+// ── profile export / import (F7) ──────────────────────────────────────
+
+fn cmd_profile(cli: &Cli, command: &ProfileCommands) -> Result<ExitCode> {
+    match command {
+        ProfileCommands::Export { file, full } => cmd_profile_export(cli, file, *full),
+        ProfileCommands::Import { file, dry_run, yes } => {
+            cmd_profile_import(cli, file, *dry_run, *yes)
+        }
+    }
+}
+
+/// Capture the full readable state of one device as the `state` object of
+/// a profile entry. Opens the protocol session itself; per-section read
+/// failures are captured inside the state (`{"error": …}`), only a failure
+/// to open the device or a protocol-level abort propagates.
+fn capture_state(d: &DeviceInfo, full: bool) -> Result<serde_json::Value> {
+    match d.kind {
+        DeviceKind::HeKeyboardV2 => {
+            let link = d.open_link()?;
+            profile::he_state(&mut he::HeKeyboard::new(Box::new(link)))
+        }
+        DeviceKind::CompxMouse => {
+            let link = d.open_link()?;
+            profile::mouse_state(&mut pm::CompxMouse::new(Box::new(link)))
+        }
+        DeviceKind::Khub916Wired => {
+            let mut link = d.open_link()?;
+            let report_id = khub::probe_report_id(&mut link)?;
+            profile::khub916_state(&mut khub::Khub916::new(Box::new(link), report_id), full)
+        }
+        DeviceKind::Khub916Wireless => {
+            bail!("916_wireLess transport is not implemented (docs/protocol-khub916.md §3/§7)")
+        }
+        DeviceKind::SparkPlayJoy => {
+            let link = d.open_link()?;
+            profile::spark_state(&mut spj::SparkPlayJoy::new(Box::new(link)))
+        }
+    }
+}
+
+/// One `devices[]` entry of an export document. Never fails: read errors
+/// land in the entry's `"error"` field so one bad device does not lose the
+/// rest of the backup.
+fn export_device_entry(d: &DeviceInfo, full: bool) -> serde_json::Value {
+    let mut e = json!({
+        "protocol": profile::protocol_of(d.kind),
+        "vid": d.vid,
+        "pid": d.pid,
+        "usage_page": d.usage_page,
+        "usage": d.usage,
+        "model": d.product,
+        "profiles": [],
+    });
+    if d.kind == DeviceKind::Khub916Wireless {
+        e["note"] = json!(
+            "916_wireLess transport is not implemented yet (docs/protocol-khub916.md §3/§7); export skipped"
+        );
+        return e;
+    }
+    match capture_state(d, full) {
+        Ok(state) => {
+            e["profiles"] = json!([{ "name": "current", "state": state }]);
+        }
+        Err(err) => {
+            e["error"] = json!(format!("{err:#}"));
+        }
+    }
+    e
+}
+
+fn cmd_profile_export(cli: &Cli, file: &str, full: bool) -> Result<ExitCode> {
+    let devices = find_devices()?;
+    let targets: Vec<DeviceInfo> = if let Some(sel) = cli.device.as_deref() {
+        match select_device(&devices, Some(sel))? {
+            Some(d) => vec![d.clone()],
+            None => {
+                println!("no GravaStar device matched --device");
+                return Ok(no_device());
+            }
+        }
+    } else {
+        devices
+    };
+    if targets.is_empty() {
+        println!("no GravaStar device connected");
+        return Ok(no_device());
+    }
+    let entries: Vec<serde_json::Value> = targets
+        .iter()
+        .map(|d| export_device_entry(d, full))
+        .collect();
+    let doc = json!({
+        "schema": profile::SCHEMA_VERSION,
+        "exported_at": profile::utc_now(),
+        "host": profile::host_name(),
+        "devices": entries,
+    });
+    let path = std::path::Path::new(file);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&doc)? + "\n")?;
+
+    if cli.json {
+        let summary: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                json!({
+                    "protocol": e["protocol"],
+                    "vid_pid": format!(
+                        "{:04X}:{:04X}",
+                        e["vid"].as_u64().unwrap_or(0) as u16,
+                        e["pid"].as_u64().unwrap_or(0) as u16
+                    ),
+                    "profiles": e["profiles"].as_array().map(|p| p.len()).unwrap_or(0),
+                    "error": e.get("error"),
+                    "note": e.get("note"),
+                })
+            })
+            .collect();
+        print_json(&json!({ "file": file, "devices": summary }))?;
+    } else {
+        for e in &entries {
+            let vid_pid = format!(
+                "{:04X}:{:04X}",
+                e["vid"].as_u64().unwrap_or(0) as u16,
+                e["pid"].as_u64().unwrap_or(0) as u16
+            );
+            println!("{}  {}", vid_pid, e["protocol"].as_str().unwrap_or("?"));
+            if let Some(err) = e.get("error").and_then(|x| x.as_str()) {
+                println!("    error: {err}");
+            } else if let Some(note) = e.get("note").and_then(|x| x.as_str()) {
+                println!("    note: {note}");
+            } else {
+                println!(
+                    "    {} profile(s) captured",
+                    e["profiles"].as_array().map(|p| p.len()).unwrap_or(0)
+                );
+            }
+        }
+        println!("wrote {file}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Directory for pre-import backups, created lazily on the first write:
+/// `~/.local/share/oh-my-gravastar/backups/<utc-ts>/`.
+fn backup_dir_slot() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    home.join(".local")
+        .join("share")
+        .join("oh-my-gravastar")
+        .join("backups")
+        .join(profile::utc_stamp())
+}
+
+/// Snapshot the device's current readable state into the backup directory
+/// BEFORE any write. Reuses the export path so the backup is the same
+/// schema v1 document.
+fn backup_device(
+    d: &DeviceInfo,
+    backup_dir: &mut Option<std::path::PathBuf>,
+) -> Result<std::path::PathBuf> {
+    if backup_dir.is_none() {
+        *backup_dir = Some(backup_dir_slot());
+    }
+    let dir = backup_dir.as_ref().expect("set above");
+    std::fs::create_dir_all(dir)?;
+    let entry = export_device_entry(d, false);
+    let doc = json!({
+        "schema": profile::SCHEMA_VERSION,
+        "exported_at": profile::utc_now(),
+        "host": profile::host_name(),
+        "purpose": "pre-import backup",
+        "devices": [entry],
+    });
+    let name = format!(
+        "export-{:04x}-{:04x}-{:04x}.json",
+        d.vid, d.pid, d.usage_page
+    );
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")?;
+    Ok(path)
+}
+
+/// Import one `devices[]` entry: match, plan, (optionally) back up and
+/// apply. Returns the per-device report object.
+fn import_entry(
+    entry: &serde_json::Value,
+    candidates: &[DeviceInfo],
+    dry_run: bool,
+    backup_dir: &mut Option<std::path::PathBuf>,
+) -> Result<serde_json::Value> {
+    let protocol = entry["protocol"].as_str().unwrap_or("?");
+    let vid = entry["vid"].as_u64().unwrap_or(0) as u16;
+    let pid = entry["pid"].as_u64().unwrap_or(0) as u16;
+    let label = format!("{vid:04X}:{pid:04X} {protocol}");
+
+    let Some(d) = candidates
+        .iter()
+        .find(|d| profile::device_matches_entry(d.kind, d.vid, d.pid, d.usage_page, entry))
+    else {
+        return Ok(json!({
+            "device": label,
+            "status": "error",
+            "error": "no matching GravaStar device connected",
+        }));
+    };
+    let device_label = format!("{} {}", d.vid_pid(), d.kind.label());
+
+    // Pick the profile state: "current" if present, else the first entry.
+    let profiles = entry.get("profiles").and_then(|p| p.as_array());
+    let state = profiles.and_then(|ps| {
+        ps.iter()
+            .find(|p| p.get("name").and_then(|n| n.as_str()) == Some("current"))
+            .or_else(|| ps.first())
+    });
+    let Some(state) = state.and_then(|p| p.get("state")) else {
+        return Ok(json!({
+            "device": device_label,
+            "status": "skipped",
+            "reason": "no profiles in file entry",
+        }));
+    };
+
+    match d.kind {
+        DeviceKind::Khub916Wired | DeviceKind::Khub916Wireless => Ok(json!({
+            "device": device_label,
+            "status": "skipped",
+            "reason": profile::KHUB916_WRITE_SKIP,
+        })),
+        DeviceKind::SparkPlayJoy => Ok(json!({
+            "device": device_label,
+            "status": "skipped",
+            "reason": profile::SPARK_WRITE_SKIP,
+        })),
+        DeviceKind::CompxMouse => import_mouse(d, state, dry_run, backup_dir, &device_label),
+        DeviceKind::HeKeyboardV2 => import_he(d, state, dry_run, backup_dir, &device_label),
+    }
+}
+
+fn import_mouse(
+    d: &DeviceInfo,
+    state: &serde_json::Value,
+    dry_run: bool,
+    backup_dir: &mut Option<std::path::PathBuf>,
+    label: &str,
+) -> Result<serde_json::Value> {
+    let link = d.open_link()?;
+    let mut m = pm::CompxMouse::new(Box::new(link));
+    m.identify()?;
+    let id = m.identity.expect("identify ran");
+    let want = profile::mouse_config_from_json(state)?;
+    let problems = profile::mouse_validate(&want, &id);
+    if !problems.is_empty() {
+        return Ok(json!({
+            "device": label,
+            "status": "error",
+            "error": format!("profile rejected by validation: {}", problems.join("; ")),
+        }));
+    }
+    let current = m.read_config()?;
+    let changes = profile::mouse_changes(&current, &want);
+    if dry_run {
+        return Ok(json!({
+            "device": label,
+            "status": "dry-run",
+            "changes": changes,
+        }));
+    }
+    if changes.is_empty() {
+        return Ok(json!({
+            "device": label,
+            "status": "unchanged",
+            "verified": true,
+        }));
+    }
+    let backup = backup_device(d, backup_dir)?;
+    profile::mouse_apply(&mut m, &want)?;
+    let mismatches = profile::mouse_verify(&mut m, &want)?;
+    let verified = mismatches.is_empty();
+    Ok(json!({
+        "device": label,
+        "status": "applied",
+        "backup": backup,
+        "changes": changes,
+        "verified": verified,
+        "mismatches": mismatches,
+    }))
+}
+
+fn import_he(
+    d: &DeviceInfo,
+    state: &serde_json::Value,
+    dry_run: bool,
+    backup_dir: &mut Option<std::path::PathBuf>,
+    label: &str,
+) -> Result<serde_json::Value> {
+    let link = d.open_link()?;
+    let mut kb = he::HeKeyboard::new(Box::new(link));
+    let (writes, notes) = profile::he_plan(&mut kb, state)?;
+    if dry_run {
+        return Ok(json!({
+            "device": label,
+            "status": "dry-run",
+            "changes": writes.iter().map(|w| w.describe()).collect::<Vec<_>>(),
+            "notes": notes,
+        }));
+    }
+    if writes.is_empty() {
+        return Ok(json!({
+            "device": label,
+            "status": "unchanged",
+            "notes": notes,
+            "verified": true,
+        }));
+    }
+    let backup = backup_device(d, backup_dir)?;
+    let results = profile::he_apply(&mut kb, &writes)?;
+    let failed = results.iter().filter(|r| r.contains("FAILED")).count();
+    Ok(json!({
+        "device": label,
+        "status": "applied",
+        "backup": backup,
+        "changes": results,
+        "notes": notes,
+        "verified": failed == 0,
+    }))
+}
+
+fn cmd_profile_import(cli: &Cli, file: &str, dry_run: bool, yes: bool) -> Result<ExitCode> {
+    if !dry_run && !yes {
+        bail!(
+            "refusing to write without --yes (docs/plan.md §2: writes are opt-in); \
+             use --dry-run to preview the planned changes"
+        );
+    }
+    let doc = profile::load_profile(std::path::Path::new(file))?;
+    let connected = find_devices()?;
+    let candidates: Vec<DeviceInfo> = if let Some(sel) = cli.device.as_deref() {
+        connected
+            .iter()
+            .filter(|d| device_matches(d, sel))
+            .cloned()
+            .collect()
+    } else {
+        connected
+    };
+    let mut backup_dir: Option<std::path::PathBuf> = None;
+    let mut reports = Vec::new();
+    let mut any_error = false;
+    for entry in doc["devices"].as_array().expect("validated") {
+        let report = match import_entry(entry, &candidates, dry_run, &mut backup_dir) {
+            Ok(r) => r,
+            Err(e) => json!({
+                "device": entry["protocol"].as_str().unwrap_or("?"),
+                "status": "error",
+                "error": format!("{e:#}"),
+            }),
+        };
+        if report["status"].as_str() == Some("error") {
+            any_error = true;
+        }
+        reports.push(report);
+    }
+
+    if cli.json {
+        print_json(&json!({ "file": file, "dry_run": dry_run, "results": reports }))?;
+    } else {
+        for r in &reports {
+            let device = r["device"].as_str().unwrap_or("?");
+            let status = r["status"].as_str().unwrap_or("?");
+            println!("{device}: {status}");
+            if let Some(reason) = r["reason"].as_str() {
+                println!("    {reason}");
+            }
+            if let Some(err) = r["error"].as_str() {
+                println!("    error: {err}");
+            }
+            if let Some(backup) = r["backup"].as_str() {
+                println!("    backup: {backup}");
+            }
+            if let Some(changes) = r["changes"].as_array() {
+                if changes.is_empty() {
+                    println!("    no changes");
+                } else {
+                    for c in changes {
+                        println!("    {}", c.as_str().unwrap_or("?"));
+                    }
+                }
+            }
+            if let Some(notes) = r["notes"].as_array() {
+                for n in notes {
+                    println!("    note: {}", n.as_str().unwrap_or("?"));
+                }
+            }
+            if let Some(v) = r["verified"].as_bool() {
+                println!("    verified: {v}");
+            }
+            if let Some(mm) = r["mismatches"].as_array() {
+                for m in mm {
+                    println!("    mismatch: {}", m.as_str().unwrap_or("?"));
+                }
+            }
+        }
+    }
+    Ok(if any_error {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 // ── device selection ───────────────────────────────────────────────────
