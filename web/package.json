@@ -8,8 +8,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "smoke": "node scripts/smoke.ts && node scripts/smoke-core.ts",
-    "test": "node scripts/test-safety.ts"
+    "smoke": "node scripts/smoke.ts && node scripts/smoke-core.ts && node scripts/smoke-scenes.ts",
+    "test": "node scripts/test-safety.ts && node scripts/test-agent.ts"
   },
   "devDependencies": {
     "typescript": "^5.9.0",
