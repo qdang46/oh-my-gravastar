@@ -35,7 +35,6 @@ import {
   type MacroStep,
 } from './proto/macro916.ts';
 import { KEYMAP_ENTRIES, decodeKeyValue, keyValueLabel } from './proto/khub916.ts';
-import { t } from './i18n.ts';
 
 // ── DOM helpers (same style as pages.ts) ────────────────────────────────
 
@@ -117,10 +116,10 @@ export class MacroPage {
     this.el.replaceChildren();
     if (!app.connected || !app.snapshot) {
       const c = el('section', 'card');
-      c.append(el('h2', '', t('macro.title')));
+      c.append(el('h2', '', 'Macro'));
       const body = el('div', 'card-body');
       body.append(
-        el('p', 'hint', t('macro.connectBlurb')),
+        el('p', 'hint', 'Connect a keyboard to manage its saved macros.'),
       );
       c.append(body);
       this.el.append(c);
@@ -134,22 +133,23 @@ export class MacroPage {
   private renderList(): void {
     const entries = this.entries();
     const c = el('section', 'card');
-    c.append(el('h2', '', t('macro.count', { n: entries.length })));
+    c.append(el('h2', '', `Macros (${entries.length})`));
     const body = el('div', 'card-body');
     body.append(
       el(
         'p',
         'hint',
-        t('macro.storageHint', { free: this.freeBytes(), total: MACRO_REGION_BYTES }),
+        `About ${this.freeBytes()} of ${MACRO_REGION_BYTES} bytes of macro storage is free. ` +
+          'Saving writes the whole list to the keyboard and checks it was stored correctly.',
       ),
     );
 
     if (entries.length === 0) {
-      body.append(el('p', 'hint', t('macro.empty')));
+      body.append(el('p', 'hint', 'No macros stored on the device yet.'));
     } else {
       const table = el('table', 'macro-table');
       const head = el('tr');
-      for (const h of ['#', t('macro.colName'), t('macro.colSteps'), '']) head.append(el('th', '', h));
+      for (const h of ['#', 'Name', 'Steps', '']) head.append(el('th', '', h));
       const thead = el('thead');
       thead.append(head);
       table.append(thead);
@@ -163,10 +163,10 @@ export class MacroPage {
           el('td', 'mono', String(e.steps.length)),
         );
         const actions = el('td', 'macro-row-actions');
-        const edit = btn(this.selected === i && this.draft ? t('macro.editing') : t('macro.edit'));
+        const edit = btn(this.selected === i && this.draft ? 'Editing' : 'Edit');
         edit.disabled = this.busy;
         edit.addEventListener('click', () => this.select(i));
-        const del = btn(t('macro.delete'));
+        const del = btn('Delete');
         del.disabled = this.busy;
         del.addEventListener('click', () => void this.deleteMacro(i));
         actions.append(edit, del);
@@ -177,7 +177,7 @@ export class MacroPage {
       body.append(table);
     }
 
-    const add = btn(t('macro.new'));
+    const add = btn('+ New macro');
     add.disabled = this.busy;
     add.addEventListener('click', () => this.newMacro());
     body.append(add);
@@ -187,11 +187,11 @@ export class MacroPage {
 
   private renderEditor(): void {
     const c = el('section', 'card');
-    c.append(el('h2', '', t('macro.editor')));
+    c.append(el('h2', '', 'Macro editor'));
     const body = el('div', 'card-body');
 
     if (this.selected === null || !this.draft) {
-      body.append(el('p', 'hint', t('macro.editorEmpty')));
+      body.append(el('p', 'hint', 'Select a macro above, or create a new one, to edit its steps.'));
       c.append(body);
       this.el.append(c);
       return;
@@ -203,8 +203,10 @@ export class MacroPage {
       el(
         'p',
         'hint',
-        `${isNew ? t('macro.newN', { n: this.selected }) : t('macro.editingN', { n: this.selected })} — ` +
-          t('macro.editorHint', { max: MAX_STEP_DURATION.toLocaleString() }),
+        `${isNew ? `New macro #${this.selected}` : `Editing macro #${this.selected}`} — ` +
+          'each step is a key press or release with a delay in milliseconds ' +
+          `(up to ${MAX_STEP_DURATION.toLocaleString()}). ` +
+          'Changes are only sent to the keyboard when you save.',
       ),
     );
 
@@ -220,14 +222,14 @@ export class MacroPage {
         this.dirty = true;
       }
     });
-    body.append(field(t('macro.name'), nameInput));
+    body.append(field('Name', nameInput));
 
     // Steps table.
     const stepsWrap = el('div', 'macro-steps');
     body.append(stepsWrap);
     this.renderSteps(stepsWrap);
 
-    const addStep = btn(t('macro.newStep'));
+    const addStep = btn('+ Add step');
     addStep.disabled = this.busy;
     addStep.addEventListener('click', () => {
       if (!this.draft) return;
@@ -238,10 +240,13 @@ export class MacroPage {
     body.append(addStep);
 
     // JSON import (docs/macro-schema.md) — handy for porting CLI macros.
-    const importBtn = btn(t('macro.importJson'));
+    const importBtn = btn('Import steps JSON…');
     importBtn.disabled = this.busy;
     importBtn.addEventListener('click', () => {
-      const text = window.prompt(t('macro.importPrompt'));
+      const text = window.prompt(
+        'Paste steps JSON — a [{"action":"down","key":"KeyA","delay_ms":8}, …] array ' +
+          'or {"name":"…","steps":[…]} (docs/macro-schema.md):',
+      );
       if (text === null || !this.draft) return;
       try {
         const parsed = parseStepsJson(text);
@@ -250,20 +255,20 @@ export class MacroPage {
         nameInput.value = this.draft.name;
         this.dirty = true;
         this.renderSteps(stepsWrap);
-        setStatus(t('macro.imported', { n: parsed.steps.length }));
+        setStatus(`Imported ${parsed.steps.length} step(s) — press Save to send them to the keyboard.`);
       } catch (e) {
-        setStatus(t('macro.importFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
+        setStatus(`That JSON was not understood: ${e instanceof Error ? e.message : String(e)}`, true);
       }
     });
     body.append(importBtn);
 
     // Save row.
     const saveRow = el('div', 'macro-save-row');
-    const save = btn(this.dirty ? t('macro.saveBtn') : t('macro.saveBtnClean'), t('macro.saveHint'));
+    const save = btn(this.dirty ? 'Save macro to keyboard' : 'Save macro (no changes)', 'Saves all macros to the keyboard');
     save.classList.add('primary');
     save.disabled = this.busy || this.draft.steps.length === 0;
     save.addEventListener('click', () => void this.saveMacro());
-    const discard = btn(t('macro.discard'));
+    const discard = btn('Discard edits');
     discard.disabled = this.busy || !this.dirty;
     discard.addEventListener('click', () => {
       if (this.selected !== null && this.selected < entries.length) {
@@ -289,7 +294,7 @@ export class MacroPage {
     if (!draft) return;
     const table = el('table', 'macro-table macro-steps-table');
     const head = el('tr');
-    for (const h of ['#', t('macro.colAction'), t('common.key'), t('macro.colKind'), t('macro.colDelay'), '']) {
+    for (const h of ['#', 'Action', 'Key', 'Kind', 'Delay (ms)', '']) {
       head.append(el('th', '', h));
     }
     const thead = el('thead');
@@ -304,8 +309,8 @@ export class MacroPage {
       // Action: down/up (the vendor recorder's press/release).
       const action = el('select', 'macro-select') as HTMLSelectElement;
       for (const [v, label] of [
-        ['0', t('macro.press')],
-        ['1', t('macro.release')],
+        ['0', 'Press'],
+        ['1', 'Release'],
       ] as const) {
         const o = el('option', '', label);
         o.value = v;
@@ -326,7 +331,7 @@ export class MacroPage {
       const keySel = el('select', 'macro-select macro-key-select') as HTMLSelectElement;
       const named = macroStepName(step);
       if (named === null) {
-        const o = el('option', '', t('macro.unknownKey', { u: step.usage }));
+        const o = el('option', '', `Unknown key (code ${step.usage})`);
         o.value = `u${step.usage}`;
         keySel.append(o);
       }
@@ -389,7 +394,7 @@ export class MacroPage {
           this.dirty = true;
         } else {
           delay.value = String(step.delayMs);
-          setStatus(t('macro.badDelay', { max: MAX_STEP_DURATION }), true);
+          setStatus(`Delay must be a whole number of milliseconds between 0 and ${MAX_STEP_DURATION}`, true);
         }
       });
       const tdDelay = el('td');
@@ -398,21 +403,21 @@ export class MacroPage {
 
       // Row actions: reorder + remove.
       const actions = el('td', 'macro-row-actions');
-      const up = btn('↑', t('macro.moveUp'));
+      const up = btn('↑', 'Move step up');
       up.disabled = this.busy || i === 0;
       up.addEventListener('click', () => {
         draft.steps.splice(i - 1, 0, draft.steps.splice(i, 1)[0]!);
         this.dirty = true;
         this.renderSteps(wrap);
       });
-      const downBtn = btn('↓', t('macro.moveDown'));
+      const downBtn = btn('↓', 'Move step down');
       downBtn.disabled = this.busy || i === draft.steps.length - 1;
       downBtn.addEventListener('click', () => {
         draft.steps.splice(i + 1, 0, draft.steps.splice(i, 1)[0]!);
         this.dirty = true;
         this.renderSteps(wrap);
       });
-      const del = btn('✕', t('macro.removeStep'));
+      const del = btn('✕', 'Remove step');
       del.disabled = this.busy;
       del.addEventListener('click', () => {
         draft.steps.splice(i, 1);
@@ -430,12 +435,12 @@ export class MacroPage {
   private fillKindSelect(sel: HTMLSelectElement, step: MacroStep): void {
     sel.replaceChildren();
     const opts: [string, string][] = [
-      ['key', t('macro.kindKey')],
-      ['modifier', t('macro.kindModifier')],
-      ['mouse', t('macro.kindMouse')],
+      ['key', 'Key'],
+      ['modifier', 'Modifier'],
+      ['mouse', 'Mouse'],
     ];
     if (typeof step.kind === 'number') {
-      opts.push(['other', t('macro.kindOther')]);
+      opts.push(['other', 'Other (advanced)']);
     }
     for (const [v, label] of opts) {
       const o = el('option', '', label);
@@ -454,11 +459,18 @@ export class MacroPage {
   private renderBind(): void {
     const entries = this.entries();
     const c = el('section', 'card');
-    c.append(el('h2', '', t('macro.bindTitle')));
+    c.append(el('h2', '', 'Bind to a key'));
     const body = el('div', 'card-body');
-    body.append(el('p', 'hint', t('macro.bindHint')));
+    body.append(
+      el(
+        'p',
+        'hint',
+        'Assigns a saved macro to one key on a chosen layer. ' +
+          'The macro must be saved on the keyboard first.',
+      ),
+    );
     if (entries.length === 0) {
-      body.append(el('p', 'hint', t('macro.bindEmpty')));
+      body.append(el('p', 'hint', 'No macros stored — save one first.'));
       c.append(body);
       this.el.append(c);
       return;
@@ -468,7 +480,7 @@ export class MacroPage {
 
     const macroSel = el('select', 'macro-select') as HTMLSelectElement;
     entries.forEach((e, i) => {
-      const o = el('option', '', `[${i}] ${e.name || t('macro.unnamedEntry')} — ${t('macro.stepsCount', { n: e.steps.length })}`);
+      const o = el('option', '', `[${i}] ${e.name || '(unnamed)'} — ${e.steps.length} steps`);
       o.value = String(i);
       macroSel.append(o);
     });
@@ -476,7 +488,7 @@ export class MacroPage {
     if (this.selected !== null && this.selected < entries.length) {
       macroSel.value = String(this.selected);
     }
-    row.append(field(t('macro.macroSel'), macroSel));
+    row.append(field('Macro', macroSel));
 
     const slotInput = el('input', 'macro-num') as HTMLInputElement;
     slotInput.type = 'number';
@@ -484,21 +496,21 @@ export class MacroPage {
     slotInput.max = String(KEYMAP_ENTRIES - 1);
     slotInput.value = '0';
     slotInput.placeholder = '0–127';
-    row.append(field(t('common.keySlot'), slotInput));
+    row.append(field('Key slot', slotInput));
 
     const layerSel = el('select', 'macro-select') as HTMLSelectElement;
     for (let l = 0; l < 4; l++) {
-      const o = el('option', '', t('common.layer', { n: l }));
+      const o = el('option', '', `Layer ${l}`);
       o.value = String(l);
       layerSel.append(o);
     }
     layerSel.value = String(app.layer);
-    row.append(field(t('macro.layer'), layerSel));
+    row.append(field('Layer', layerSel));
     body.append(row);
 
     // Rarely needed — the defaults (type 1, loop 1) cover normal macros.
     const adv = el('details', 'advanced');
-    adv.append(el('summary', '', t('macro.advanced')));
+    adv.append(el('summary', '', 'Advanced'));
     const advBody = el('div', 'advanced-body');
     const advRow = el('div', 'macro-bind-row');
 
@@ -507,29 +519,31 @@ export class MacroPage {
     typeInput.min = '1';
     typeInput.max = '255';
     typeInput.value = '1';
-    advRow.append(field(t('macro.macroType'), typeInput));
+    advRow.append(field('Macro type', typeInput));
 
     const loopInput = el('input', 'macro-num') as HTMLInputElement;
     loopInput.type = 'number';
     loopInput.min = '1';
     loopInput.max = '255';
     loopInput.value = '1';
-    advRow.append(field(t('macro.loopCount'), loopInput));
+    advRow.append(field('Loop count', loopInput));
     advBody.append(advRow);
     adv.append(advBody);
     body.append(adv);
 
     const btnRow = el('div', 'macro-save-row');
-    const bind = btn(t('macro.assign'));
+    const bind = btn('Assign macro to key');
     bind.classList.add('primary');
     bind.disabled = this.busy;
     bind.addEventListener('click', () => void this.bind(macroSel, slotInput, layerSel, typeInput, loopInput, false));
-    const unbind = btn(t('macro.clearKey'));
+    const unbind = btn('Clear this key');
     unbind.disabled = this.busy;
     unbind.addEventListener('click', () => void this.bind(macroSel, slotInput, layerSel, typeInput, loopInput, true));
     btnRow.append(bind, unbind);
     body.append(btnRow);
-    body.append(el('p', 'hint', t('macro.slotHint')));
+    body.append(
+      el('p', 'hint', 'Key slots are numbered 0–127; pick the slot for the key you want to change.'),
+    );
 
     c.append(body);
     this.el.append(c);
@@ -563,7 +577,7 @@ export class MacroPage {
     if (this.busy || !app.connected || !app.snapshot || this.selected === null || !this.draft) return;
     const draft = this.draft;
     if (draft.steps.length === 0) {
-      setStatus(t('macro.needsStep'), true);
+      setStatus('A macro needs at least one step. To remove a macro, use Delete instead.', true);
       return;
     }
     const entries = this.entries();
@@ -576,7 +590,7 @@ export class MacroPage {
       const free = this.freeBytes();
       if (needed > free) {
         setStatus(
-          t('macro.noSpace', { name: draft.name, need: needed, free }),
+          `Not enough macro storage: '${draft.name}' needs about ${needed} bytes but only about ${free} are free — delete unused macros first.`,
           true,
         );
         return;
@@ -592,14 +606,14 @@ export class MacroPage {
     try {
       region = buildMacroRegion(next);
     } catch (e) {
-      setStatus(t('macro.prepareFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
+      setStatus(`Could not prepare the macro data: ${e instanceof Error ? e.message : String(e)}`, true);
       return;
     }
 
     const desc = isNew
-      ? t('macro.createDesc', { name: entry.name, n: entry.steps.length })
-      : t('macro.replaceDesc', { old: entries[slot]?.name ?? '', name: entry.name, n: entry.steps.length });
-    if (!window.confirm(`${desc}\n\n${t('macro.saveAllQ')}`)) {
+      ? `Create new macro "${entry.name}" with ${entry.steps.length} step(s)`
+      : `Replace macro "${entries[slot]?.name ?? ''}" with "${entry.name}" (${entry.steps.length} step(s))`;
+    if (!window.confirm(`${desc}\n\nSave all macros to the keyboard?`)) {
       return;
     }
 
@@ -611,10 +625,10 @@ export class MacroPage {
       app.snapshot.macro = padMacroRegion(region);
       this.dirty = false;
       this.selected = slot;
-      setStatus(t('macro.savedOk', { desc }));
+      setStatus(`${desc} — saved and checked on the keyboard.`);
       emit();
     } catch (e) {
-      setStatus(t('macro.saveFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
+      setStatus(`Could not save the macro: ${e instanceof Error ? e.message : String(e)}`, true);
       // Re-read in case the write partially landed.
       try {
         app.snapshot.macro = await app.connected.session.macroRegion();
@@ -642,11 +656,14 @@ export class MacroPage {
     try {
       region = next.length === 0 ? new Uint8Array(4) : buildMacroRegion(next);
     } catch (err) {
-      setStatus(t('macro.prepareFailed', { msg: err instanceof Error ? err.message : String(err) }), true);
+      setStatus(`Could not prepare the macro data: ${err instanceof Error ? err.message : String(err)}`, true);
       return;
     }
     if (
-      !window.confirm(t('macro.deleteQ', { name: e.name, n: e.steps.length }))
+      !window.confirm(
+        `Delete macro "${e.name}" (${e.steps.length} step(s))?\n\n` +
+          'This removes it from the keyboard. Keys already assigned to it will stop working.',
+      )
     ) {
       return;
     }
@@ -662,10 +679,10 @@ export class MacroPage {
       } else if (this.selected !== null && this.selected > i) {
         this.selected -= 1;
       }
-      setStatus(t('macro.deleted', { name: e.name }));
+      setStatus(`Deleted macro "${e.name}" — saved and checked on the keyboard.`);
       emit();
     } catch (err) {
-      setStatus(t('macro.deleteFailed', { msg: err instanceof Error ? err.message : String(err) }), true);
+      setStatus(`Could not delete the macro: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       this.busy = false;
       this.render();
@@ -685,7 +702,7 @@ export class MacroPage {
     const slot = Number(slotInput.value);
     const layer = Number(layerSel.value);
     if (!Number.isInteger(slot) || slot < 0 || slot >= KEYMAP_ENTRIES) {
-      setStatus(t('macro.badSlot', { max: KEYMAP_ENTRIES - 1 }), true);
+      setStatus(`Key slot must be an integer 0..${KEYMAP_ENTRIES - 1}`, true);
       return;
     }
     const arg = (layer & 3); // system bit stays 0 in this UI
@@ -694,11 +711,11 @@ export class MacroPage {
     const loopCount = unbind ? 1 : Number(loopInput.value);
     if (!unbind) {
       if (!Number.isInteger(macroType) || macroType < 1 || macroType > 255) {
-        setStatus(t('macro.badType'), true);
+        setStatus('Macro type must be an integer 1..255', true);
         return;
       }
       if (!Number.isInteger(loopCount) || loopCount < 1 || loopCount > 255) {
-        setStatus(t('macro.badLoop'), true);
+        setStatus('Loop count must be an integer ≥ 1', true);
         return;
       }
     }
@@ -707,21 +724,21 @@ export class MacroPage {
     const oldLabel = async (): Promise<string> => {
       const cached = app.snapshot?.keymaps.get(arg);
       const kv = cached?.[slot]?.label ?? (await this.slotLabel(arg, slot));
-      return kv || t('common.empty');
+      return kv || 'empty';
     };
 
-    const before = await oldLabel().catch(() => t('common.unknown'));
+    const before = await oldLabel().catch(() => 'unknown');
     const desc = unbind
-      ? t('macro.clearDesc', { slot, layer, before })
-      : t('macro.assignDesc', { i: index, slot, layer, before });
-    if (!window.confirm(`${desc}\n\n${t('macro.saveChangeQ')}`)) return;
+      ? `Clear key slot ${slot} on layer ${layer} (currently ${before})`
+      : `Assign macro[${index}] to key slot ${slot} on layer ${layer} (currently ${before})`;
+    if (!window.confirm(`${desc}\n\nSave this change to the keyboard?`)) return;
 
     this.busy = true;
     this.render();
     try {
       const values = await app.connected.session.keyValues(arg);
       if (slot >= values.length) {
-        throw new Error(t('macro.slotRange', { slot, n: values.length }));
+        throw new Error(`key slot ${slot} is out of range — the keymap only has ${values.length} entries`);
       }
       const nextVals = values.slice();
       while (nextVals.length < KEYMAP_ENTRIES) nextVals.push(0);
@@ -733,12 +750,12 @@ export class MacroPage {
       const macroName = unbind ? '' : (this.entries()[index]?.name ?? `#${index}`);
       setStatus(
         unbind
-          ? t('macro.slotCleared', { slot })
-          : t('macro.slotRuns', { slot, name: macroName }),
+          ? `Key slot ${slot} cleared — checked on the keyboard.`
+          : `Key slot ${slot} now runs macro "${macroName}" — checked on the keyboard.`,
       );
       emit();
     } catch (e) {
-      setStatus(t('macro.keySaveFailed', { msg: e instanceof Error ? e.message : String(e) }), true);
+      setStatus(`Could not save the key change: ${e instanceof Error ? e.message : String(e)}`, true);
     } finally {
       this.busy = false;
       this.render();

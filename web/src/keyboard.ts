@@ -16,7 +16,6 @@
 import { keyIndexOf, layoutBounds, type KeyBlock } from './k1pro-layout.ts';
 import type { KeyEntry } from './state.ts';
 import { keyValueLabelOf, type LightColor } from './proto/khub916.ts';
-import { t } from './i18n.ts';
 
 /** Vendor luminance threshold: >128 → black text, else white. */
 function luminance(r: number, g: number, b: number): number {
@@ -89,7 +88,7 @@ export class KeyboardView {
     // A pending remap shows the value it will become (vendor marks the
     // key `replaced` and swaps the name immediately on pick).
     const pending = this.data.pending?.get(n);
-    if (pending !== undefined) return keyValueLabelOf(pending) || t('common.noneShort');
+    if (pending !== undefined) return keyValueLabelOf(pending) || '(none)';
     const km = this.data.keymap;
     if (km) {
       const entry = km[n];
@@ -141,20 +140,19 @@ export class KeyboardView {
 
       const km = this.data.keymap?.[n];
       const pv = this.data.pending?.get(n);
-      const curLabel = km?.label || (km ? t('common.empty') : '');
-      const name = block.name || t('common.unnamed');
+      const curLabel = km?.label || (km ? '(empty)' : '');
       el.title =
-        t('kb.keyTitle', { n, label: curLabel || name }) +
+        `Key ${n} — ${curLabel || block.name || 'unnamed'}` +
         (km ? ` · 0x${km.value.toString(16).toUpperCase().padStart(8, '0')}` : '') +
         (pv !== undefined
-          ? ` ${t('kb.willBecome', { hex: pv.toString(16).toUpperCase().padStart(8, '0') })}`
+          ? ` → will become 0x${pv.toString(16).toUpperCase().padStart(8, '0')}`
           : '');
       el.addEventListener('click', () => {
         this.onKeyClick?.(n);
-        const shown = pv !== undefined ? keyValueLabelOf(pv) || t('common.noneShort') : curLabel;
+        const shown = pv !== undefined ? keyValueLabelOf(pv) || '(none)' : curLabel;
         this.detail.textContent = km
-          ? `#${n} ${name} → ${shown}${pv !== undefined ? ` ${t('kb.unsaved')}` : ''}`
-          : name;
+          ? `#${n} ${block.name || '(unnamed)'} → ${shown}${pv !== undefined ? ' (unsaved)' : ''}`
+          : `${block.name || '(unnamed)'}`;
       });
       this.canvas.append(el);
     }

@@ -24,7 +24,6 @@ import {
   type PowerInfo,
   type ProfileInfo,
 } from './proto/khub916.ts';
-import { t } from './i18n.ts';
 
 export interface KeyEntry {
   value: number;
@@ -51,7 +50,7 @@ export const app = {
   snapshot: null as DeviceSnapshot | null,
   /** Currently selected keymap layer arg (0–3; system bit stays 0). */
   layer: 0,
-  status: t('status.gettingReady'),
+  status: 'Getting ready…',
   statusError: false,
   /** True while a connect/refresh is in flight. */
   busy: false,
@@ -95,7 +94,7 @@ export async function setLayer(layer: number): Promise<void> {
   try {
     await ensureKeymap(app.layer);
   } catch (e) {
-    setStatus(t('status.couldNotReadKeymap', { msg: e instanceof Error ? e.message : String(e) }), true);
+    setStatus(`Could not read the keymap: ${e instanceof Error ? e.message : String(e)}`, true);
   }
 }
 
@@ -106,19 +105,19 @@ export async function connect(): Promise<void> {
   app.busy = true;
   emit();
   try {
-    setStatus(t('status.chooseKeyboard'));
+    setStatus('Choose your keyboard in the browser popup…');
     const device = await requestKhubDevice();
     if (!device) {
-      setStatus(t('status.noKeyboardSelected'));
+      setStatus('No keyboard selected.');
       return;
     }
-    setStatus(t('status.connecting'));
+    setStatus('Connecting…');
     app.connected = await openKhub916(device);
     await refresh();
   } catch (e) {
     app.connected = null;
     app.snapshot = null;
-    setStatus(t('status.couldNotConnect', { msg: e instanceof Error ? e.message : String(e) }), true);
+    setStatus(`Could not connect: ${e instanceof Error ? e.message : String(e)}`, true);
   } finally {
     app.busy = false;
     emit();
@@ -130,7 +129,7 @@ export async function disconnect(): Promise<void> {
   app.connected = null;
   app.snapshot = null;
   await c?.device.close().catch(() => {});
-  setStatus(t('status.disconnected'));
+  setStatus('Disconnected.');
 }
 
 /**
@@ -151,7 +150,7 @@ export async function refresh(): Promise<void> {
   let c = app.connected;
   if (!c) return;
   app.busy = true;
-  setStatus(t('status.readingKeyboard'));
+  setStatus('Reading your keyboard…');
   emit();
   try {
     app.snapshot = await loadSnapshot(c.session);
@@ -159,7 +158,7 @@ export async function refresh(): Promise<void> {
     // A poisoned session is recoverable: reopen the same (already
     // authorised) HIDDevice and retry once before bothering the user.
     if (c.session.isPoisoned) {
-      setStatus(t('status.reconnecting'));
+      setStatus('Connection hiccup — reconnecting…');
       try {
         c = await reopenKhub916(c.device);
         app.connected = c;
@@ -167,27 +166,21 @@ export async function refresh(): Promise<void> {
       } catch (e2) {
         app.connected = null;
         app.snapshot = null;
-        setStatus(
-          t('status.lostConnection', {
-            reason: c.session.poisonMessage || (e2 instanceof Error ? e2.message : String(e2)),
-          }),
-          true,
-        );
+        const reason = c.session.poisonMessage || (e2 instanceof Error ? e2.message : String(e2));
+        setStatus(`Lost the connection (${reason}) — please press Connect again.`, true);
         app.busy = false;
         emit();
         return;
       }
     } else {
-      setStatus(t('status.couldNotRead', { msg: e instanceof Error ? e.message : String(e) }), true);
+      setStatus(`Could not read the keyboard: ${e instanceof Error ? e.message : String(e)}`, true);
       app.busy = false;
       emit();
       return;
     }
   }
   setStatus(
-    t('status.ready', {
-      name: app.snapshot.info.catalogName ?? t('common.keyboard'),
-    }),
+    `Ready — ${app.snapshot.info.catalogName ?? 'keyboard'} connected. Pick an option on the left.`,
   );
   // Warm the current layer so the visualizer has labels immediately.
   await ensureKeymap(app.layer).catch(() => {});
@@ -206,7 +199,7 @@ export async function autoConnect(): Promise<void> {
   const candidates = remembered.filter((d) => kindOf(d.vendorId, d.productId) === 'wired');
   if (candidates.length === 0) return;
   app.busy = true;
-  setStatus(t('status.reconnectingKb'));
+  setStatus('Reconnecting keyboard…');
   emit();
   try {
     for (const device of candidates) {
@@ -218,7 +211,7 @@ export async function autoConnect(): Promise<void> {
         // try the next remembered device
       }
     }
-    setStatus(t('status.prevDeviceMissing'));
+    setStatus('Previously authorised device not found — use Connect.');
   } finally {
     app.busy = false;
     emit();
@@ -228,13 +221,13 @@ export async function autoConnect(): Promise<void> {
 /** Boot check: WebHID presence + previously granted devices. */
 export async function bootStatus(): Promise<void> {
   if (!('hid' in navigator)) {
-    setStatus(t('status.noWebHid'), true);
+    setStatus('This browser cannot talk to keyboards. Please use Chrome or Edge on a computer.', true);
     return;
   }
   const remembered = await getRememberedDevices().catch(() => [] as HIDDevice[]);
   setStatus(
     remembered.length > 0
-      ? t('status.welcomeBack')
-      : t('status.plugAndConnect'),
+      ? 'Welcome back! Press Connect to pick your keyboard.'
+      : 'Ready. Plug in your GravaStar keyboard with a USB cable, then press Connect.',
   );
 }

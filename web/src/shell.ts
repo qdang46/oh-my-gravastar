@@ -8,15 +8,12 @@
  *   .status                    global status line
  *   main.page                  routed page content
  *
- * The vendor header's onboard-config entry is omitted — this build has no
- * config profiles yet. The language dropdown position is reused for the
- * EN/VI toggle (vendor ships en/zh).
+ * The vendor header's language dropdown (en/zh) and onboard-config entry
+ * are omitted — this build is English-only and has no config profiles yet.
  */
 
-import { app, autoConnect, bootStatus, connect, disconnect, emit, refresh, subscribe } from './state.ts';
+import { app, autoConnect, bootStatus, connect, disconnect, refresh, subscribe } from './state.ts';
 import { PAGES, initPages, type PageId } from './pages.ts';
-import { getLang, onLangChange, setLang, t, type Locale } from './i18n.ts';
-import { initOnboarding } from './onboard.ts';
 
 // ── Inline SVG icons (stroke, 24 px viewBox — vendor uses an icon font) ──
 
@@ -58,30 +55,28 @@ export function mountShell(root: HTMLElement): void {
 
   // ── Sidebar (vendor `aside.sidebar`) ──────────────────────────────
   const sidebar = el('aside', 'sidebar');
-  const deviceName = el('div', 'menu-device-name', t('shell.noDevice'));
+  const deviceName = el('div', 'menu-device-name', 'No device');
   sidebar.append(deviceName);
 
   const nav = el('nav', 'sidebar-nav');
-  const navTexts = new Map<PageId, { label: HTMLElement; tip: HTMLElement }>();
   for (const p of PAGES) {
     const a = el('a', 'nav-item');
     a.href = `#${p.path}`;
     a.dataset.page = p.id;
     const icon = el('span', 'nav-icon');
     icon.innerHTML = ICONS[p.id];
-    const label = el('span', 'nav-text', t(`page.${p.id}.title`));
-    const tip = el('span', 'nav-tooltip', t(`page.${p.id}.title`));
+    const label = el('span', 'nav-text', p.title);
+    const tip = el('span', 'nav-tooltip', p.title);
     a.append(icon, label, tip);
     nav.append(a);
-    navTexts.set(p.id, { label, tip });
   }
   sidebar.append(nav);
 
   const footer = el('div', 'sidebar-footer');
   const collapseBtn = el('button', 'collapse-btn', '✕');
   collapseBtn.type = 'button';
-  collapseBtn.title = t('shell.collapse');
-  footer.append(el('h2', 'sidebar-title', t('shell.menu')), collapseBtn);
+  collapseBtn.title = 'Collapse sidebar';
+  footer.append(el('h2', 'sidebar-title', 'Menu'), collapseBtn);
   sidebar.append(footer);
 
   // ── Main column: topbar + status + page ───────────────────────────
@@ -95,45 +90,19 @@ export function mountShell(root: HTMLElement): void {
   brand.append(
     mark,
     el('span', 'brand-name', 'oh-my-gravastar'),
-    el('span', 'brand-sub', t('shell.brandSub')),
+    el('span', 'brand-sub', 'GravaStar keyboard setup'),
   );
   const actions = el('div', 'topbar-actions');
-
-  // Language toggle — vendor header position (its en/zh dropdown slot).
-  const lang = el('div', 'lang-toggle');
-  lang.setAttribute('role', 'group');
-  lang.setAttribute('aria-label', t('shell.langLabel'));
-  const langBtns: Record<Locale, HTMLButtonElement> = { en: el('button'), vi: el('button') };
-  for (const l of ['en', 'vi'] as const) {
-    langBtns[l].type = 'button';
-    langBtns[l].textContent = l.toUpperCase();
-    langBtns[l].dataset.lang = l;
-    langBtns[l].addEventListener('click', () => {
-      setLang(l);
-      syncLangToggle();
-      emit();
-    });
-    lang.append(langBtns[l]);
-  }
-  const syncLangToggle = (): void => {
-    const cur = getLang();
-    for (const l of ['en', 'vi'] as const) {
-      langBtns[l].classList.toggle('active', l === cur);
-      langBtns[l].setAttribute('aria-pressed', String(l === cur));
-    }
-  };
-  syncLangToggle();
-
   const deviceChip = el('span', 'device-chip', '');
-  const connectBtn = el('button', 'primary', t('shell.connect'));
+  const connectBtn = el('button', 'primary', 'Connect');
   connectBtn.type = 'button';
-  const disconnectBtn = el('button', '', t('shell.disconnect'));
+  const disconnectBtn = el('button', '', 'Disconnect');
   disconnectBtn.type = 'button';
   disconnectBtn.hidden = true;
-  const refreshBtn = el('button', '', t('shell.refresh'));
+  const refreshBtn = el('button', '', 'Refresh');
   refreshBtn.type = 'button';
   refreshBtn.hidden = true;
-  actions.append(lang, deviceChip, connectBtn, disconnectBtn, refreshBtn);
+  actions.append(deviceChip, connectBtn, disconnectBtn, refreshBtn);
   topbar.append(brand, actions);
 
   const statusEl = el('p', 'status', app.status);
@@ -143,14 +112,13 @@ export function mountShell(root: HTMLElement): void {
   const shell = el('div', 'shell');
   shell.append(sidebar, mainCol);
   root.append(shell);
-  document.title = t('shell.docTitle');
 
   // ── Wiring ────────────────────────────────────────────────────────
 
   const setCollapsed = (collapsed: boolean): void => {
     sidebar.classList.toggle('sidebar-collapsed', collapsed);
     collapseBtn.textContent = collapsed ? '☰' : '✕';
-    collapseBtn.title = collapsed ? t('shell.expand') : t('shell.collapse');
+    collapseBtn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
   };
   collapseBtn.addEventListener('click', () => {
     setCollapsed(!sidebar.classList.contains('sidebar-collapsed'));
@@ -200,17 +168,16 @@ export function mountShell(root: HTMLElement): void {
     refreshBtn.disabled = app.busy;
 
     const snap = app.snapshot;
-    deviceName.textContent =
-      snap?.info.catalogName ?? (connected ? t('shell.connectedDevice') : t('shell.noDevice'));
+    deviceName.textContent = snap?.info.catalogName ?? (connected ? 'Connected device' : 'No device');
     deviceChip.replaceChildren();
     const dot = el('span', 'dot');
     deviceChip.append(
       dot,
       document.createTextNode(
         snap
-          ? `${snap.info.catalogName ?? t('shell.keyboard')} · ${t('common.battery', { pct: snap.power.percent })}`
+          ? `${snap.info.catalogName ?? 'Keyboard'} · Battery ${snap.power.percent}%`
           : connected
-            ? t('shell.connected')
+            ? 'Connected'
             : '',
       ),
     );
@@ -218,32 +185,6 @@ export function mountShell(root: HTMLElement): void {
   });
 
   initPages(page, nav);
-
-  // Language change: refresh chrome labels, then emit() so every page
-  // re-renders in the new locale (stateful views rebuild via their own
-  // subscribe handlers / langEpoch checks).
-  onLangChange(() => {
-    for (const [id, texts] of navTexts) {
-      const label = t(`page.${id}.title`);
-      texts.label.textContent = label;
-      texts.tip.textContent = label;
-    }
-    connectBtn.textContent = t('shell.connect');
-    disconnectBtn.textContent = t('shell.disconnect');
-    refreshBtn.textContent = t('shell.refresh');
-    collapseBtn.title = sidebar.classList.contains('sidebar-collapsed')
-      ? t('shell.expand')
-      : t('shell.collapse');
-    sidebar.querySelector('.sidebar-title')!.textContent = t('shell.menu');
-    brand.querySelector('.brand-sub')!.textContent = t('shell.brandSub');
-    lang.setAttribute('aria-label', t('shell.langLabel'));
-    document.title = t('shell.docTitle');
-    syncLangToggle();
-    emit();
-  });
-
-  initOnboarding(shell);
-
   void bootStatus().then(() => {
     // Silent reconnect when the browser still holds permission for the
     // keyboard — non-tech users shouldn't have to click Connect every load.
