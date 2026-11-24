@@ -9,3 +9,6 @@ description = "GravaStar HE keyboard v2 protocol (port of orbit-gravastar keyboa
 [dependencies]
 anyhow.workspace = true
 omg-hid = { path = "../hid" }
+
+[dev-dependencies]
+proptest.workspace = true

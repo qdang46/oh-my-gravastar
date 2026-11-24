@@ -90,8 +90,18 @@ pub struct Sensor {
     pub lod: &'static [(u8, &'static str)],
 }
 
-const PAW3395: Sensor = Sensor { name: "PAW3395", max_dpi: 26000, base_max: 26000, lod: &[(1, "1 mm"), (2, "2 mm")] };
-const PAW3950: Sensor = Sensor { name: "PAW3950", max_dpi: 32000, base_max: 30000, lod: &[(3, "0.7 mm"), (1, "1 mm"), (2, "2 mm")] };
+const PAW3395: Sensor = Sensor {
+    name: "PAW3395",
+    max_dpi: 26000,
+    base_max: 26000,
+    lod: &[(1, "1 mm"), (2, "2 mm")],
+};
+const PAW3950: Sensor = Sensor {
+    name: "PAW3950",
+    max_dpi: 32000,
+    base_max: 30000,
+    lod: &[(3, "0.7 mm"), (1, "1 mm"), (2, "2 mm")],
+};
 
 pub const REPORT_RATES: [u32; 7] = [125, 250, 500, 1000, 2000, 4000, 8000];
 /// Sleep timeouts in units of 10 s.
@@ -158,7 +168,9 @@ impl Rgb {
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim().trim_start_matches('#');
         if let Some((r, rest)) = s.split_once(',') {
-            let (g, b) = rest.split_once(',').ok_or_else(|| anyhow!("bad colour '{s}'"))?;
+            let (g, b) = rest
+                .split_once(',')
+                .ok_or_else(|| anyhow!("bad colour '{s}'"))?;
             return Ok(Self {
                 r: r.trim().parse().map_err(|_| anyhow!("bad colour '{s}'"))?,
                 g: g.trim().parse().map_err(|_| anyhow!("bad colour '{s}'"))?,
@@ -167,7 +179,11 @@ impl Rgb {
         }
         if s.len() == 6 {
             let v = u32::from_str_radix(s, 16).map_err(|_| anyhow!("bad colour '{s}'"))?;
-            return Ok(Self { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 });
+            return Ok(Self {
+                r: (v >> 16) as u8,
+                g: (v >> 8) as u8,
+                b: v as u8,
+            });
         }
         bail!("bad colour '{s}' (want #rrggbb or r,g,b)")
     }
@@ -213,8 +229,10 @@ pub struct MouseConfig {
     pub buttons: [Button; BUTTON_SLOTS],
 }
 
-const VOLTAGE_TABLE: [u16; 21] =
-    [3050, 3420, 3480, 3540, 3600, 3660, 3720, 3760, 3800, 3840, 3880, 3920, 3940, 3960, 3980, 4000, 4020, 4040, 4060, 4080, 4110];
+const VOLTAGE_TABLE: [u16; 21] = [
+    3050, 3420, 3480, 3540, 3600, 3660, 3720, 3760, 3800, 3840, 3880, 3920, 3940, 3960, 3980, 4000,
+    4020, 4040, 4060, 4080, 4110,
+];
 
 /// Battery percentage from cell voltage, as the official driver computes it.
 fn voltage_to_percent(mv: u16, charging: bool) -> u8 {
@@ -262,7 +280,10 @@ pub struct CompxMouse {
 
 impl CompxMouse {
     pub fn new(link: Box<dyn Link>) -> Self {
-        Self { link, identity: None }
+        Self {
+            link,
+            identity: None,
+        }
     }
 
     pub fn matches(vid: u16, pid: u16, usage_page: u16) -> bool {
@@ -271,9 +292,18 @@ impl CompxMouse {
 
     fn request(&mut self, pkt: [u8; 16]) -> Result<[u8; 16]> {
         for _ in 0..5 {
-            let answer = transfer(self.link.as_mut(), RID, &pkt, Duration::from_millis(250), |r| {
-                r.len() >= 16 && r[0] == pkt[0] && (pkt[0] != CMD_READ && pkt[0] != CMD_WRITE || (r[2] == pkt[2] && r[3] == pkt[3]))
-            })?;
+            let answer = transfer(
+                self.link.as_mut(),
+                RID,
+                &pkt,
+                Duration::from_millis(250),
+                |r| {
+                    r.len() >= 16
+                        && r[0] == pkt[0]
+                        && (pkt[0] != CMD_READ && pkt[0] != CMD_WRITE
+                            || (r[2] == pkt[2] && r[3] == pkt[3]))
+                },
+            )?;
             if let Some(r) = answer {
                 if r[1] == 1 {
                     bail!("command 0x{:02x} rejected by the mouse", pkt[0]);
@@ -289,9 +319,26 @@ impl CompxMouse {
     // ── Status ─────────────────────────────────────────────────────────
 
     pub fn identify(&mut self) -> Result<Identity> {
-        let seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0x5eed);
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0x5eed);
         let challenge = seed.to_le_bytes();
-        let d = self.request(packet(CMD_INFO, 0, 8, &[challenge[0], challenge[1], challenge[2], challenge[3], 0, 0, 0, 0]))?;
+        let d = self.request(packet(
+            CMD_INFO,
+            0,
+            8,
+            &[
+                challenge[0],
+                challenge[1],
+                challenge[2],
+                challenge[3],
+                0,
+                0,
+                0,
+                0,
+            ],
+        ))?;
         if d[9] == 0 || d[10] == 0 {
             return Err(anyhow!("mouse offline"));
         }
@@ -303,9 +350,20 @@ impl CompxMouse {
             3 => (true, 8000),
             _ => (false, 1000),
         };
-        let sensor = if (3..=5).contains(&d[10]) { PAW3950 } else { PAW3395 };
+        let sensor = if (3..=5).contains(&d[10]) {
+            PAW3950
+        } else {
+            PAW3395
+        };
         let model = if d[9] == 18 { model_name(d[10]) } else { None };
-        let id = Identity { cid: d[9], mid: d[10], wired, max_rate, sensor, model };
+        let id = Identity {
+            cid: d[9],
+            mid: d[10],
+            wired,
+            max_rate,
+            sensor,
+            model,
+        };
         self.identity = Some(id);
         Ok(id)
     }
@@ -325,7 +383,11 @@ impl CompxMouse {
         } else {
             d[5]
         };
-        Ok(Battery { level: level.min(100), charging, millivolts })
+        Ok(Battery {
+            level: level.min(100),
+            charging,
+            millivolts,
+        })
     }
 
     /// `(mouse firmware, receiver firmware)`; the receiver part is `None`
@@ -335,7 +397,11 @@ impl CompxMouse {
         let mouse = fmt(self.request(packet(CMD_MOUSE_FW, 0, 0, &[]))?);
         let wired = self.identity.map(|i| i.wired).unwrap_or(false);
         // Older receivers don't answer the version query.
-        let dongle = if wired { None } else { self.request(packet(CMD_DONGLE_FW, 0, 0, &[])).ok().map(fmt) };
+        let dongle = if wired {
+            None
+        } else {
+            self.request(packet(CMD_DONGLE_FW, 0, 0, &[])).ok().map(fmt)
+        };
         Ok((mouse, dongle))
     }
 
@@ -354,14 +420,22 @@ impl CompxMouse {
     /// Write raw bytes to flash. **Refuses any range outside `WRITABLE`.**
     fn write_flash(&mut self, address: u16, bytes: &[u8]) -> Result<()> {
         let end = address + bytes.len() as u16;
-        if !WRITABLE.iter().any(|&(start, size)| address >= start && end <= start + size) {
+        if !WRITABLE
+            .iter()
+            .any(|&(start, size)| address >= start && end <= start + size)
+        {
             bail!("refusing to write flash {address}+{}", bytes.len());
         }
         if !self.online()? {
             bail!("mouse offline — if it is on the wireless receiver, move it to wake the link");
         }
         for (i, chunk) in bytes.chunks(10).enumerate() {
-            self.request(packet(CMD_WRITE, address + (i * 10) as u16, chunk.len() as u8, chunk))?;
+            self.request(packet(
+                CMD_WRITE,
+                address + (i * 10) as u16,
+                chunk.len() as u8,
+                chunk,
+            ))?;
         }
         Ok(())
     }
@@ -374,10 +448,18 @@ impl CompxMouse {
 
     pub fn read_config(&mut self) -> Result<MouseConfig> {
         let f = self.read_flash(0, 190)?;
-        let rgb = |a: usize| Rgb { r: f[a], g: f[a + 1], b: f[a + 2] };
+        let rgb = |a: usize| Rgb {
+            r: f[a],
+            g: f[a + 1],
+            b: f[a + 2],
+        };
         let light = addr::LIGHT as usize;
         Ok(MouseConfig {
-            report_rate: if f[0] >= 16 { f[0] as u32 / 16 * 2000 } else { 1000 / (f[0].max(1) as u32) },
+            report_rate: if f[0] >= 16 {
+                f[0] as u32 / 16 * 2000
+            } else {
+                1000 / (f[0].max(1) as u32)
+            },
             stage_count: (f[addr::STAGE_COUNT as usize] as usize).clamp(1, MAX_STAGES),
             current_stage: f[addr::CURRENT_STAGE as usize] as usize,
             dpi: std::array::from_fn(|i| decode_dpi(&f[addr::DPI as usize + 4 * i..])),
@@ -399,7 +481,10 @@ impl CompxMouse {
             sensor_mode: f[addr::SENSOR_MODE as usize],
             buttons: std::array::from_fn(|i| {
                 let a = addr::BUTTONS as usize + 4 * i;
-                Button { kind: f[a], param: u16::from_be_bytes([f[a + 1], f[a + 2]]) }
+                Button {
+                    kind: f[a],
+                    param: u16::from_be_bytes([f[a + 1], f[a + 2]]),
+                }
             }),
         })
     }
@@ -433,7 +518,11 @@ impl CompxMouse {
     // ── Setters ────────────────────────────────────────────────────────
 
     pub fn set_report_rate(&mut self, hz: u32) -> Result<()> {
-        let v = if hz <= 1000 { 1000 / hz } else { hz / 2000 * 16 };
+        let v = if hz <= 1000 {
+            1000 / hz
+        } else {
+            hz / 2000 * 16
+        };
         self.write_value(addr::REPORT_RATE, v as u8)
     }
 
@@ -449,7 +538,10 @@ impl CompxMouse {
         if stage >= MAX_STAGES {
             bail!("invalid DPI stage {stage} (0..{})", MAX_STAGES - 1);
         }
-        self.write_flash(addr::DPI_COLOR + 4 * stage as u16, &record(&[c.r, c.g, c.b]))
+        self.write_flash(
+            addr::DPI_COLOR + 4 * stage as u16,
+            &record(&[c.r, c.g, c.b]),
+        )
     }
 
     pub fn set_stage_count(&mut self, n: usize) -> Result<()> {
@@ -473,7 +565,14 @@ impl CompxMouse {
         if !l.on || l.mode == 0 {
             return self.write_value(addr::LIGHT_STATE, 0);
         }
-        let mut bytes = record(&[l.mode, l.color.r, l.color.g, l.color.b, l.speed, l.brightness]);
+        let mut bytes = record(&[
+            l.mode,
+            l.color.r,
+            l.color.g,
+            l.color.b,
+            l.speed,
+            l.brightness,
+        ]);
         bytes.extend_from_slice(&pair(1));
         self.write_flash(addr::LIGHT, &bytes)
     }
@@ -486,7 +585,14 @@ impl CompxMouse {
     /// light-off-moving live at fixed addresses — see [`addr`]).
     pub fn set_flag(&mut self, address: u16, on: bool) -> Result<()> {
         // Defence in depth: only the four known flag addresses are allowed.
-        if ![addr::MOTION_SYNC, addr::ANGLE_SNAP, addr::RIPPLE, addr::LIGHT_OFF_MOVING].contains(&address) {
+        if ![
+            addr::MOTION_SYNC,
+            addr::ANGLE_SNAP,
+            addr::RIPPLE,
+            addr::LIGHT_OFF_MOVING,
+        ]
+        .contains(&address)
+        {
             bail!("not a flag address: {address}");
         }
         self.write_value(address, on as u8)
@@ -556,7 +662,15 @@ mod tests {
         assert_eq!(p[..7], [0x07, 0, 0, 0, 2, 0x01, 0x54]);
         assert_eq!(p[15], 0xef);
         // Every packet satisfies the checksum invariant.
-        for cmd in [CMD_INFO, CMD_ONLINE, CMD_BATTERY, CMD_WRITE, CMD_READ, CMD_MOUSE_FW, CMD_DONGLE_FW] {
+        for cmd in [
+            CMD_INFO,
+            CMD_ONLINE,
+            CMD_BATTERY,
+            CMD_WRITE,
+            CMD_READ,
+            CMD_MOUSE_FW,
+            CMD_DONGLE_FW,
+        ] {
             let p = packet(cmd, 0x1234, 3, &[1, 2, 3]);
             let sum = (0x08u16 + p.iter().map(|&b| b as u16).sum::<u16>()) & 0xff;
             assert_eq!(sum, 0x55, "cmd {cmd:#x}");
@@ -566,7 +680,10 @@ mod tests {
     #[test]
     fn dpi_roundtrip() {
         assert_eq!(decode_dpi(&[0x1f, 0x1f, 0x00, 0x17]), 1600);
-        let m = CompxMouse { link: Box::new(NullLink), identity: None };
+        let m = CompxMouse {
+            link: Box::new(NullLink),
+            identity: None,
+        };
         assert_eq!(m.encode_dpi(1600), vec![0x1f, 0x1f, 0x00, 0x17]);
         // PAW3950 base range: 30000 encodes with step 50, 31000 with step 100.
         assert_eq!(decode_dpi(&m.encode_dpi(30000)), 30000);
@@ -575,7 +692,10 @@ mod tests {
 
     #[test]
     fn dpi_clamped_to_sensor() {
-        let m = CompxMouse { link: Box::new(NullLink), identity: None };
+        let m = CompxMouse {
+            link: Box::new(NullLink),
+            identity: None,
+        };
         // No identity → PAW3395 defaults: max 26000.
         assert_eq!(m.clamp_dpi(50_000), 26000);
         assert_eq!(m.clamp_dpi(1234), 1250);
@@ -597,14 +717,22 @@ mod tests {
         // this crate only ever emits 0x01/0x03/0x04/0x07/0x08/0x12/0x1d.)
         // Gaps between known ranges, the bootloader range and beyond the map.
         for addr in [6u16, 7, 8, 9, 0x80, 0xB0, 0xB7, 190, 255] {
-            let mut m = CompxMouse { link: Box::new(NullLink), identity: None };
+            let mut m = CompxMouse {
+                link: Box::new(NullLink),
+                identity: None,
+            };
             let err = m.write_flash(addr, &[1, 2]).expect_err("must be refused");
-            assert!(err.to_string().contains("refusing to write"), "addr {addr:#x}: {err}");
+            assert!(
+                err.to_string().contains("refusing to write"),
+                "addr {addr:#x}: {err}"
+            );
         }
         // Spot-check the allowlist predicate itself.
         let allowed = |address: u16, len: usize| {
             let end = address + len as u16;
-            WRITABLE.iter().any(|&(start, size)| address >= start && end <= start + size)
+            WRITABLE
+                .iter()
+                .any(|&(start, size)| address >= start && end <= start + size)
         };
         assert!(!allowed(6, 2)); // gap between CURRENT_STAGE and LOD
         assert!(!allowed(9, 1)); // last gap byte before LOD

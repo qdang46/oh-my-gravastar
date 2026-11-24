@@ -32,8 +32,8 @@ pub const USAGE_PAGE: u16 = 0xffb0;
 
 /// Product ids the official web driver routes to the v2 (HE) protocol.
 pub const PIDS: [u16; 23] = [
-    11272, 11273, 11282, 11275, 11276, 11288, 11289, 11296, 11297, 11290, 11291, 11292, 11293, 11274, 11278, 11277, 4896,
-    11283, 11284, 11305, 11306, 11300, 11298,
+    11272, 11273, 11282, 11275, 11276, 11288, 11289, 11296, 11297, 11290, 11291, 11292, 11293,
+    11274, 11278, 11277, 4896, 11283, 11284, 11305, 11306, 11300, 11298,
 ];
 
 const DEVICE: u8 = 1;
@@ -188,7 +188,15 @@ fn parse_key_perf(d: &[u8]) -> KeyPerf {
 /// Builds the `04 02` write packet for one key's performance settings.
 fn key_perf_packet(row: u8, col: u8, p: &KeyPerf) -> Vec<u8> {
     let mut pkt = vec![PERFORMANCE, 2, row, col, p.mode];
-    for v in [p.normal_press, p.normal_release, p.rt_first_touch, p.rt_press, p.rt_release, p.press_deadzone, p.release_deadzone] {
+    for v in [
+        p.normal_press,
+        p.normal_release,
+        p.rt_first_touch,
+        p.rt_press,
+        p.rt_release,
+        p.press_deadzone,
+        p.release_deadzone,
+    ] {
         pkt.extend_from_slice(&um(v));
     }
     pkt.extend_from_slice(&[p.axis, p.calibrate]);
@@ -208,14 +216,23 @@ impl HeKeyboard {
     }
 
     /// Sends a request and returns the answer whose first `match_len` bytes echo the request.
-    fn request_matching(&mut self, payload: &[u8], timeout_ms: u64, match_len: usize) -> Result<[u8; 64]> {
+    fn request_matching(
+        &mut self,
+        payload: &[u8],
+        timeout_ms: u64,
+        match_len: usize,
+    ) -> Result<[u8; 64]> {
         let mut pkt = [0u8; 64];
         let n = payload.len().min(64);
         pkt[..n].copy_from_slice(&payload[..n]);
         for _ in 0..3 {
-            let answer = transfer(self.link.as_mut(), 0, &pkt, Duration::from_millis(timeout_ms), |r| {
-                r.len() >= match_len && r[..match_len] == pkt[..match_len]
-            })?;
+            let answer = transfer(
+                self.link.as_mut(),
+                0,
+                &pkt,
+                Duration::from_millis(timeout_ms),
+                |r| r.len() >= match_len && r[..match_len] == pkt[..match_len],
+            )?;
             if let Some(r) = answer {
                 let mut out = [0u8; 64];
                 let m = r.len().min(64);
@@ -240,13 +257,22 @@ impl HeKeyboard {
     pub fn info(&mut self) -> Result<KeyboardInfo> {
         let proto = self.req(&[DEVICE, 1])?;
         let d = self.req(&[DEVICE, 2])?;
-        let ts: String = d[29..].iter().take_while(|&&b| b != 0).map(|&b| b as char).collect();
+        let ts: String = d[29..]
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as char)
+            .collect();
         let build_time = if ts.len() == 16 && ts.as_bytes()[10] == b':' {
             format!("{}-{}-{} {}", &ts[0..4], &ts[4..6], &ts[6..8], &ts[8..])
         } else {
             ts
         };
-        let join = |b: &[u8], sep: &str| b.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(sep);
+        let join = |b: &[u8], sep: &str| {
+            b.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(sep)
+        };
         Ok(KeyboardInfo {
             firmware: join(&d[8..12], "."),
             pcb: join(&d[12..16], "-"),
@@ -330,7 +356,12 @@ impl HeKeyboard {
 
     pub fn lighting_areas(&mut self) -> Result<Vec<LightingArea>> {
         let d = self.req(&[GLOBAL, LIGHTING_AREAS, 0])?;
-        Ok((0..(d[3] as usize).min(14)).map(|i| LightingArea { index: d[4 + 4 * i], count: d[5 + 4 * i] }).collect())
+        Ok((0..(d[3] as usize).min(14))
+            .map(|i| LightingArea {
+                index: d[4 + 4 * i],
+                count: d[5 + 4 * i],
+            })
+            .collect())
     }
 
     /// Lighting sleep timeout in minutes (0 = never).
@@ -345,7 +376,8 @@ impl HeKeyboard {
 
     /// Start (true) or finish (false) travel calibration.
     pub fn calibration(&mut self, start: bool) -> Result<()> {
-        self.request(&[GLOBAL, CALIBRATION, if start { 0 } else { 1 }], 2000).map(|_| ())
+        self.request(&[GLOBAL, CALIBRATION, if start { 0 } else { 1 }], 2000)
+            .map(|_| ())
     }
 
     // ── Performance ────────────────────────────────────────────────────
@@ -364,24 +396,51 @@ impl HeKeyboard {
     pub fn live_row(&mut self, row: u8) -> Result<[(f32, bool); 21]> {
         let travel = self.request_matching(&[PERFORMANCE, 3, 1, row], 300, 4)?;
         let status = self.request_matching(&[PERFORMANCE, 3, 3, row], 300, 4)?;
-        Ok(std::array::from_fn(|i| (mm(&travel, 4 + 2 * i), rd16(&status, 4 + 2 * i) != 0)))
+        Ok(std::array::from_fn(|i| {
+            (mm(&travel, 4 + 2 * i), rd16(&status, 4 + 2 * i) != 0)
+        }))
     }
 
     // ── Lighting ───────────────────────────────────────────────────────
 
     pub fn lighting(&mut self, area: u8) -> Result<LightingBase> {
         let d = self.req(&[LIGHTING, READ, area, 0])?;
-        Ok(LightingBase { on: d[4] != 0, mode: d[5], brightness: d[6], speed: d[7], direction: d[8], color_index: d[9] })
+        Ok(LightingBase {
+            on: d[4] != 0,
+            mode: d[5],
+            brightness: d[6],
+            speed: d[7],
+            direction: d[8],
+            color_index: d[9],
+        })
     }
 
     pub fn set_lighting(&mut self, area: u8, l: &LightingBase) -> Result<()> {
-        self.req(&[LIGHTING, WRITE, area, 0, l.on as u8, l.mode, l.brightness, l.speed, l.direction, l.color_index]).map(|_| ())
+        self.req(&[
+            LIGHTING,
+            WRITE,
+            area,
+            0,
+            l.on as u8,
+            l.mode,
+            l.brightness,
+            l.speed,
+            l.direction,
+            l.color_index,
+        ])
+        .map(|_| ())
     }
 
     /// The 8 preset colours a lighting mode can pick from (wire order B, G, R, H).
     pub fn palette(&mut self, area: u8) -> Result<Vec<Rgb>> {
         let d = self.req(&[LIGHTING, READ, area, 1])?;
-        Ok((0..8).map(|i| Rgb { b: d[4 + 4 * i], g: d[5 + 4 * i], r: d[6 + 4 * i] }).collect())
+        Ok((0..8)
+            .map(|i| Rgb {
+                b: d[4 + 4 * i],
+                g: d[5 + 4 * i],
+                r: d[6 + 4 * i],
+            })
+            .collect())
     }
 
     pub fn set_palette(&mut self, area: u8, colors: &[Rgb]) -> Result<()> {
@@ -399,21 +458,25 @@ mod tests {
 
     #[test]
     fn um_mm_roundtrip() {
-        let pkt = key_perf_packet(1, 2, &KeyPerf {
-            mode: MODE_RAPID,
-            normal_press: 1.2345,
-            normal_release: 2.0,
-            rt_first_touch: 0.5,
-            rt_press: 3.4,
-            rt_release: 1.0,
-            press_deadzone: 0.25,
-            release_deadzone: 0.1,
-            axis: 3,
-            calibrate: 1,
-            axis_v2_id: 13232,
-            axis_range_max: 65535,
-            axis_coefficient: 100,
-        });
+        let pkt = key_perf_packet(
+            1,
+            2,
+            &KeyPerf {
+                mode: MODE_RAPID,
+                normal_press: 1.2345,
+                normal_release: 2.0,
+                rt_first_touch: 0.5,
+                rt_press: 3.4,
+                rt_release: 1.0,
+                press_deadzone: 0.25,
+                release_deadzone: 0.1,
+                axis: 3,
+                calibrate: 1,
+                axis_v2_id: 13232,
+                axis_range_max: 65535,
+                axis_coefficient: 100,
+            },
+        );
         // Header (4) + mode + 7 u16 distances + 2 echo bytes + 3 u16 echoes.
         assert_eq!(pkt.len(), 5 + 14 + 2 + 6);
         assert_eq!(pkt[0], PERFORMANCE);
@@ -436,7 +499,10 @@ mod tests {
         d[2] = 3;
         d[3] = 4;
         d[4] = MODE_FIXED;
-        for (i, v) in [1.0f32, 0.5, 2.5, 1.5, 0.75, 0.25, 0.125].iter().enumerate() {
+        for (i, v) in [1.0f32, 0.5, 2.5, 1.5, 0.75, 0.25, 0.125]
+            .iter()
+            .enumerate()
+        {
             d[5 + 2 * i..7 + 2 * i].copy_from_slice(&um(*v));
         }
         d[19] = 7;
@@ -450,7 +516,16 @@ mod tests {
         assert!((p.normal_press - 1.0).abs() < 1e-6);
         assert!((p.rt_release - 0.75).abs() < 1e-6);
         assert!((p.press_deadzone - 0.25).abs() < 1e-6);
-        assert_eq!((p.axis, p.calibrate, p.axis_v2_id, p.axis_range_max, p.axis_coefficient), (7, 1, 13232, 3400, 42));
+        assert_eq!(
+            (
+                p.axis,
+                p.calibrate,
+                p.axis_v2_id,
+                p.axis_range_max,
+                p.axis_coefficient
+            ),
+            (7, 1, 13232, 3400, 42)
+        );
     }
 
     #[test]
@@ -509,8 +584,19 @@ mod tests {
         d[4] = 10;
         d[5] = 20;
         d[6] = 30;
-        let c = Rgb { b: d[4], g: d[5], r: d[6] };
-        assert_eq!(c, Rgb { r: 30, g: 20, b: 10 });
+        let c = Rgb {
+            b: d[4],
+            g: d[5],
+            r: d[6],
+        };
+        assert_eq!(
+            c,
+            Rgb {
+                r: 30,
+                g: 20,
+                b: 10
+            }
+        );
     }
 
     #[test]
@@ -524,7 +610,11 @@ mod tests {
         d[29..45].copy_from_slice(b"20260102030405ab");
         let board_id = u32::from_be_bytes([d[4], d[5], d[6], d[7]]);
         assert_eq!(board_id, 0xdeadbeef);
-        let collected: String = d[29..].iter().take_while(|&&b| b != 0).map(|&b| b as char).collect();
+        let collected: String = d[29..]
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as char)
+            .collect();
         assert_eq!(collected, "20260102030405ab");
         // The upstream build_time reformat triggers only on a 16-char string
         // with ':' at index 10; this payload stays verbatim.
@@ -538,5 +628,101 @@ mod tests {
         assert!(!HeKeyboard::matches(0x258a, 0x010c, USAGE_PAGE)); // K1 Pro is khub916
         assert!(!HeKeyboard::matches(0x1ca6, 11272, 0xffa0));
         assert!(!HeKeyboard::matches(0x1ca6, 9999, USAGE_PAGE));
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Copy an arbitrary byte stream into a 64-byte reply (zero padded).
+    fn reply(data: &[u8]) -> [u8; 64] {
+        let mut d = [0u8; 64];
+        let n = data.len().min(64);
+        d[..n].copy_from_slice(&data[..n]);
+        d
+    }
+
+    proptest! {
+        /// `um`/`mm` are total over every f32 (NaN, infinities included)
+        /// and the decoded distance always lands in [0, 65.535] mm.
+        #[test]
+        fn um_mm_never_panics(v in any::<f32>()) {
+            let b = um(v);
+            let back = mm(&b, 0);
+            prop_assert!(back.is_finite());
+            prop_assert!((0.0..=65.535).contains(&back));
+        }
+
+        /// In-range distances survive encode→decode within quantisation.
+        #[test]
+        fn um_mm_roundtrip_in_range(v in 0.0f32..=65.535) {
+            let back = mm(&um(v), 0);
+            let want = (v * 1000.0).round() / 1000.0;
+            prop_assert!((back - want).abs() <= 0.0015, "{v} -> {back}, want {want}");
+        }
+
+        /// Arbitrary 64-byte replies never panic the geometry parser and
+        /// every decoded slot stays inside the packed-field bounds.
+        #[test]
+        fn parse_key_slots_never_panics(data in prop::collection::vec(any::<u8>(), 0..=80), row in any::<u8>()) {
+            let d = reply(&data);
+            for slot in parse_key_slots(row, &d) {
+                prop_assert_eq!(slot.row, row);
+                prop_assert!(slot.col < 21);
+                prop_assert!((0.0..=7.75).contains(&slot.y), "y={}", slot.y);
+                prop_assert!((0.0..=31.75).contains(&slot.x), "x={}", slot.x);
+                prop_assert!((1..=15).contains(&slot.size));
+            }
+        }
+
+        /// Arbitrary replies never panic the perf parser; distances are
+        /// always valid millimetre values.
+        #[test]
+        fn parse_key_perf_never_panics(data in prop::collection::vec(any::<u8>(), 0..=80)) {
+            let d = reply(&data);
+            let p = parse_key_perf(&d);
+            for v in [p.normal_press, p.normal_release, p.rt_first_touch, p.rt_press, p.rt_release, p.press_deadzone, p.release_deadzone] {
+                prop_assert!((0.0..=65.535).contains(&v), "{v}");
+            }
+        }
+
+        /// encode→parse→encode is a fixed point: the packet parser sees
+        /// exactly the quantised um() values it wrote, so a second encode
+        /// of the parsed settings reproduces identical bytes.
+        #[test]
+        fn key_perf_packet_roundtrip_is_stable(
+            row in any::<u8>(),
+            col in any::<u8>(),
+            mode in any::<u8>(),
+            vals in prop::collection::vec(any::<f32>(), 7..=7),
+            axis in any::<u8>(),
+            calibrate in any::<u8>(),
+            echoes in prop::collection::vec(any::<u16>(), 3..=3),
+        ) {
+            let p = KeyPerf {
+                mode,
+                normal_press: vals[0],
+                normal_release: vals[1],
+                rt_first_touch: vals[2],
+                rt_press: vals[3],
+                rt_release: vals[4],
+                press_deadzone: vals[5],
+                release_deadzone: vals[6],
+                axis,
+                calibrate,
+                axis_v2_id: echoes[0],
+                axis_range_max: echoes[1],
+                axis_coefficient: echoes[2],
+            };
+            let pkt = key_perf_packet(row, col, &p);
+            prop_assert_eq!(pkt.len(), 27);
+            let mut d = [0u8; 64];
+            d[..pkt.len()].copy_from_slice(&pkt);
+            let parsed = parse_key_perf(&d);
+            let pkt2 = key_perf_packet(row, col, &parsed);
+            prop_assert_eq!(&pkt[..], &pkt2[..]);
+        }
     }
 }

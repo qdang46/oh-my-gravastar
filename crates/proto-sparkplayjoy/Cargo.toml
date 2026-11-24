@@ -10,3 +10,6 @@ description = "SparkPlayJoy 6x21 analog keyboard protocol (GravaStar Mercury HE)
 anyhow.workspace = true
 omg-hid = { path = "../hid" }
 serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

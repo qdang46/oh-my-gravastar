@@ -7,3 +7,6 @@ license.workspace = true
 description = "Key labels, layouts and lighting mode tables for GravaStar HE keyboards"
 
 [dependencies]
+
+[dev-dependencies]
+proptest.workspace = true

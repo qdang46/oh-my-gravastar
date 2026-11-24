@@ -1615,3 +1615,115 @@ mod tests {
         assert!(!SparkPlayJoy::matches(0xffb0, 1));
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// build_frame→parse_frame roundtrip: a response frame built for
+        /// `request | 0x80` parses back to the identical payload.
+        #[test]
+        fn frame_roundtrip(
+            request_cmd in any::<u8>(),
+            payload in prop::collection::vec(any::<u8>(), 0..=60),
+        ) {
+            let response_cmd = request_cmd | 0x80;
+            let frame = build_frame(response_cmd, &payload).expect("payload <= 60 always builds");
+            let mut stream = Vec::with_capacity(WIRE_REPORT_BYTES);
+            stream.extend_from_slice(&frame);
+            let view = parse_frame(&stream, request_cmd).expect("self-built frame must parse");
+            prop_assert_eq!(view.command, response_cmd);
+            prop_assert_eq!(view.payload, &payload[..]);
+        }
+
+        /// Payloads over 60 bytes are refused by build_frame.
+        #[test]
+        fn build_frame_rejects_oversize(payload in prop::collection::vec(any::<u8>(), 61..=300)) {
+            prop_assert!(build_frame(0x01, &payload).is_none());
+        }
+
+        /// The frame parser is total: arbitrary bytes of any length and
+        /// any expected command produce Ok or Err, never a panic.
+        #[test]
+        fn parse_frame_never_panics(
+            stream in prop::collection::vec(any::<u8>(), 0..=256),
+            request_cmd in any::<u8>(),
+        ) {
+            let _ = parse_frame(&stream, request_cmd);
+        }
+
+        /// The Win32 envelope stripper is total on arbitrary reports.
+        #[test]
+        fn protocol_report_never_panics(report in prop::collection::vec(any::<u8>(), 0..=128)) {
+            let _ = protocol_report(&report);
+        }
+
+        /// Key-function decode follows the documented ranges exactly.
+        #[test]
+        fn decode_key_function_ranges(function in any::<u16>()) {
+            match decode_key_function(function) {
+                Some(KeyFunction::HidUsage(u)) => {
+                    prop_assert!((0x04..=0xe7).contains(&u));
+                    prop_assert_eq!(u16::from(u), function);
+                }
+                Some(KeyFunction::Fn) => prop_assert_eq!(function, 0xf001),
+                None => prop_assert!(!(0x04..=0xe7).contains(&function) && function != 0xf001),
+            }
+        }
+
+        /// Travel normalisation is bounded and saturates at the maximum.
+        #[test]
+        fn normalize_travel_bounds(travel in any::<u16>(), max in any::<u16>()) {
+            let v = normalize_travel_to_milli(travel, max);
+            prop_assert!(v <= 1000);
+            if travel == 0 || max == 0 {
+                prop_assert_eq!(v, 0);
+            } else if travel >= max {
+                prop_assert_eq!(v, 1000);
+            }
+        }
+
+        /// Every payload decoder is total on arbitrary bytes of arbitrary
+        /// length: wrong lengths and malformed contents yield Err, never
+        /// a panic. Exact-length payloads are generated separately so the
+        /// in-bounds indexing paths are fuzzed too.
+        #[test]
+        fn payload_decoders_never_panics(
+            data in prop::collection::vec(any::<u8>(), 0..=200),
+            sync in prop::collection::vec(any::<u8>(), SYNC_PAYLOAD..=SYNC_PAYLOAD),
+            scale in prop::collection::vec(any::<u8>(), SCALE_PAYLOAD..=SCALE_PAYLOAD),
+            travel in prop::collection::vec(any::<u8>(), TRAVEL_PAYLOAD..=TRAVEL_PAYLOAD),
+            status in prop::collection::vec(any::<u8>(), STATUS_PAYLOAD..=STATUS_PAYLOAD),
+            dmap in prop::collection::vec(any::<u8>(), DEFAULT_MAP_PAYLOAD..=DEFAULT_MAP_PAYLOAD),
+        ) {
+            let _ = decode_sync(&data);
+            let _ = decode_sync(&sync);
+            let _ = decode_scale(&data);
+            let _ = decode_scale(&scale);
+            let _ = decode_travel_half(&data);
+            let _ = decode_travel_half(&travel);
+            let _ = decode_status(&data);
+            let _ = decode_status(&status);
+            let mut map = [[0u8; COLS]; ROWS];
+            let _ = decode_default_map_rows(&data, 0, 1, &mut map);
+            let _ = decode_default_map_rows(&dmap, 0, 1, &mut map);
+            let _ = decode_default_map_rows(&dmap, 200, 201, &mut map);
+        }
+
+        /// The 0x23 decoder is total for arbitrary payloads and arbitrary
+        /// (well-formed-count) queries.
+        #[test]
+        fn key_function_response_never_panics(
+            data in prop::collection::vec(any::<u8>(), 0..=80),
+            count in 1usize..=KEY_FUNCTION_RECORDS,
+            keys in prop::collection::vec(any::<u8>(), KEY_FUNCTION_RECORDS..=KEY_FUNCTION_RECORDS),
+        ) {
+            let mut qk = [0u8; KEY_FUNCTION_RECORDS];
+            qk.copy_from_slice(&keys[..KEY_FUNCTION_RECORDS]);
+            let query = KeyFunctionQuery { keys: qk, count };
+            let _ = decode_key_function_response(&data, &query);
+        }
+    }
+}

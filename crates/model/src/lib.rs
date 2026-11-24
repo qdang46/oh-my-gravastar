@@ -9,7 +9,11 @@ const UFO_SWITCH: u16 = 13232;
 
 /// Maximum actuation travel for a switch, in millimetres.
 pub fn max_travel(axis_v2_id: u16) -> f32 {
-    if axis_v2_id == UFO_SWITCH { 3.5 } else { 3.4 }
+    if axis_v2_id == UFO_SWITCH {
+        3.5
+    } else {
+        3.4
+    }
 }
 
 /// Largest allowed press/release deadzone, in millimetres.
@@ -101,8 +105,36 @@ pub fn key_label(code: u16, german: bool) -> String {
     if !fixed.is_empty() || code == 0x2c {
         return fixed.to_string();
     }
-    let punct_us = [(0x2d, "-"), (0x2e, "="), (0x2f, "["), (0x30, "]"), (0x31, "\\"), (0x32, "#"), (0x33, ";"), (0x34, "'"), (0x35, "`"), (0x36, ","), (0x37, "."), (0x38, "/"), (0x64, "\\")];
-    let punct_de = [(0x2d, "ß"), (0x2e, "´"), (0x2f, "Ü"), (0x30, "+"), (0x31, "#"), (0x32, "#"), (0x33, "Ö"), (0x34, "Ä"), (0x35, "^"), (0x36, ","), (0x37, "."), (0x38, "-"), (0x64, "<")];
+    let punct_us = [
+        (0x2d, "-"),
+        (0x2e, "="),
+        (0x2f, "["),
+        (0x30, "]"),
+        (0x31, "\\"),
+        (0x32, "#"),
+        (0x33, ";"),
+        (0x34, "'"),
+        (0x35, "`"),
+        (0x36, ","),
+        (0x37, "."),
+        (0x38, "/"),
+        (0x64, "\\"),
+    ];
+    let punct_de = [
+        (0x2d, "ß"),
+        (0x2e, "´"),
+        (0x2f, "Ü"),
+        (0x30, "+"),
+        (0x31, "#"),
+        (0x32, "#"),
+        (0x33, "Ö"),
+        (0x34, "Ä"),
+        (0x35, "^"),
+        (0x36, ","),
+        (0x37, "."),
+        (0x38, "-"),
+        (0x64, "<"),
+    ];
     let table: &[(u16, &str)] = if german { &punct_de } else { &punct_us };
     if let Some((_, s)) = table.iter().find(|(c, _)| *c == code) {
         return s.to_string();
@@ -126,7 +158,16 @@ pub fn build_layout(slots: &[KeySlot], codes: &dyn Fn(u8, u8) -> u16, german: bo
         .iter()
         .map(|s| {
             let (w, h, iso_enter) = key_size(s.size);
-            KeyDef { row: s.row, col: s.col, x: s.x, y: s.y - top, w, h, iso_enter, label: key_label(codes(s.row, s.col), german) }
+            KeyDef {
+                row: s.row,
+                col: s.col,
+                x: s.x,
+                y: s.y - top,
+                w,
+                h,
+                iso_enter,
+                label: key_label(codes(s.row, s.col), german),
+            }
         })
         .collect()
 }
@@ -164,7 +205,12 @@ pub struct LightingZone {
 }
 
 const fn m(id: u8, en: &'static str, palette: bool, preview: Preview) -> LightingMode {
-    LightingMode { id, en, palette, preview }
+    LightingMode {
+        id,
+        en,
+        palette,
+        preview,
+    }
 }
 
 const KEY_MODES: [LightingMode; 15] = [
@@ -196,24 +242,40 @@ const BAR_MODES: [LightingMode; 8] = [
     m(7, "Follow keys", false, Preview::Rainbow),
 ];
 
-const INDICATOR_MODES: [LightingMode; 2] =
-    [m(0, "Static", true, Preview::Solid), m(1, "Follow keys", false, Preview::Rainbow)];
+const INDICATOR_MODES: [LightingMode; 2] = [
+    m(0, "Static", true, Preview::Solid),
+    m(1, "Follow keys", false, Preview::Rainbow),
+];
 
 /// Zones and their effects. `count` from the lighting-area query is the number
 /// of effects the zone supports, which hides the optional modes.
 pub fn lighting_zone(area: u8, count: u8) -> LightingZone {
     match area {
-        0 => LightingZone { en: "Keys", modes: KEY_MODES.to_vec(), speed: true, direction: true, multicolor_index0: true },
+        0 => LightingZone {
+            en: "Keys",
+            modes: KEY_MODES.to_vec(),
+            speed: true,
+            direction: true,
+            multicolor_index0: true,
+        },
         1 => LightingZone {
             en: "Side light bar",
-            modes: BAR_MODES.iter().copied().filter(|x| x.id < 6 || (x.id == 6 && count > 8) || (x.id == 7 && count > 7)).collect(),
+            modes: BAR_MODES
+                .iter()
+                .copied()
+                .filter(|x| x.id < 6 || (x.id == 6 && count > 8) || (x.id == 7 && count > 7))
+                .collect(),
             speed: true,
             direction: false,
             multicolor_index0: false,
         },
         _ => LightingZone {
             en: "Indicator",
-            modes: INDICATOR_MODES.iter().copied().filter(|x| x.id == 0 || count > 2).collect(),
+            modes: INDICATOR_MODES
+                .iter()
+                .copied()
+                .filter(|x| x.id == 0 || count > 2)
+                .collect(),
             speed: false,
             direction: false,
             multicolor_index0: false,
@@ -240,5 +302,72 @@ mod tests {
         assert_eq!(key_size(1), (1.0, 1.0, false));
         assert_eq!(key_size(11), (1.5, 2.0, true));
         assert_eq!(key_size(9), (6.25, 1.0, false));
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `key_label` is total: every u16 code and both legend tables
+        /// produce a string without panicking.
+        #[test]
+        fn key_label_total(code in any::<u16>(), german in any::<bool>()) {
+            let label = key_label(code, german);
+            prop_assert!(label.len() <= 16);
+        }
+
+        /// Letters/digits decode to themselves; unknown codes never panic.
+        #[test]
+        fn key_label_letters(code in 0x04u16..=0x1d, german in any::<bool>()) {
+            let label = key_label(code, german);
+            if german && (code == 0x1c || code == 0x1d) {
+                prop_assert!(label == "Z" || label == "Y");
+            } else {
+                prop_assert_eq!(label, ((b'A' + (code - 4) as u8) as char).to_string());
+            }
+        }
+
+        /// `key_size` is total and only ever returns documented geometry.
+        #[test]
+        fn key_size_bounds(code in any::<u8>()) {
+            let (w, h, iso) = key_size(code);
+            prop_assert!([1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 6.25].contains(&w));
+            prop_assert!(h == 1.0 || h == 2.0);
+            prop_assert_eq!(iso, code == 11);
+        }
+
+        /// `max_travel` only ever returns the two documented limits.
+        #[test]
+        fn max_travel_values(id in any::<u16>()) {
+            let t = max_travel(id);
+            prop_assert!(t == 3.4 || t == 3.5);
+            prop_assert_eq!(t == 3.5, id == UFO_SWITCH);
+        }
+
+        /// `build_layout` preserves slot count and applies `key_size`.
+        #[test]
+        fn build_layout_shape(
+            slots in prop::collection::vec(
+                (any::<u8>(), any::<u8>(), 0.0f32..=40.0, 0.0f32..=20.0, any::<u8>()),
+                0..=32,
+            ),
+            code in any::<u16>(),
+            german in any::<bool>(),
+        ) {
+            let slots: Vec<KeySlot> = slots
+                .into_iter()
+                .map(|(row, col, x, y, size)| KeySlot { row, col, x, y, size })
+                .collect();
+            let keys = build_layout(&slots, &|_, _| code, german);
+            prop_assert_eq!(keys.len(), slots.len());
+            for (k, s) in keys.iter().zip(slots.iter()) {
+                let (w, h, iso) = key_size(s.size);
+                prop_assert_eq!((k.w, k.h, k.iso_enter), (w, h, iso));
+                prop_assert_eq!(&k.label, &key_label(code, german));
+            }
+        }
     }
 }
