@@ -26,7 +26,8 @@
 
 import { app, refresh, setStatus, subscribe, type DeviceSnapshot } from './state.ts';
 import { profileWithSleepSeconds } from './proto/khub916.ts';
-import { K1_PRO_BLOCKS, K1_PRO_LAYOUT_MODELS } from './k1pro-layout.ts';
+import { mountLayoutEditor } from './layout-editor.ts';
+import { physicalLayoutForModel, PHYSICAL_LAYOUTS } from './layout-model.ts';
 import { confirmDialog } from './modal.ts';
 import { initProfileHistory, renderProfileHistory } from './profiles.ts';
 import {
@@ -452,48 +453,40 @@ function renderBasic(root: HTMLElement): void {
   }
 
   const model = app.snapshot.info.catalogModel;
-  // Only the K1 Pro table is ported (k1pro-layout.ts); other models fall
-  // back to it — the kv row below says so.
-  const blocks = K1_PRO_BLOCKS;
-  const physical = blocks.filter((b) => b.display);
-  const hidden = blocks.length - physical.length;
+  // Physical layout tables are ported per catalogModel (layout-model.ts);
+  // models without a table can still pick any registered layout — the
+  // choice is display metadata only.
+  const matched = physicalLayoutForModel(model);
+  const shownCount = matched
+    ? matched.keys.filter((k) => k.display).length
+    : PHYSICAL_LAYOUTS.reduce((n, l) => Math.max(n, l.keys.filter((k) => k.display).length), 0);
 
   const c = card('Keyboard layout');
   const dl = el('dl', 'kv');
-  kv(dl, 'Keys', `${physical.length} physical keys`);
-  kv(dl, 'Key size', 'standard 1u keys (the size used by most keyboards)');
+  kv(dl, 'Keys', `${shownCount} physical keys`);
   kv(
     dl,
     'Layout table',
-    model && K1_PRO_LAYOUT_MODELS.includes(model)
-      ? 'matched to this keyboard model'
-      : 'generic reference layout — a table for this model is not available yet',
+    matched
+      ? `matched to this keyboard model (${matched.id})`
+      : 'no table for this model — pick a layout below (reference geometry)',
   );
-  kv(dl, 'Live preview', 'the Keys page shows this layout with live key labels and lighting');
+  kv(dl, 'Editing', 'visual only — saved in this browser, never sent to the keyboard');
+  kv(dl, 'Live preview', 'the Keys page shows the real device layout with live key labels and lighting');
   c.body.append(dl);
 
   c.body.append(
     el(
       'p',
       'hint',
-      'The vendor app lets you draw custom keycap shapes and spacing, but it ' +
-        'only saves them in the browser — it never sends them to the keyboard. ' +
-        'This page shows the fixed layout the keyboard actually uses.',
+      'The editor below changes only how the keyboard looks on screen — ' +
+        'positions, sizes, rotation, legends and hidden keycaps are stored ' +
+        'in this browser (localStorage) and are never written to the device. ' +
+        'Key assignments are edited on the Keys page.',
     ),
   );
 
-  const disabled = el('div', 'sec-actions');
-  const mkBtn = (label: string, reason: string): void => {
-    const b = el('button', 'sec-btn', label);
-    b.type = 'button';
-    b.disabled = true;
-    b.title = reason;
-    disabled.append(b);
-  };
-  mkBtn('Edit key shape', 'The vendor app only stores this in the browser, not on the keyboard');
-  mkBtn('Hidden keys', 'Layout details are browser-side only in the vendor app');
-  mkBtn('Base size / gaps', 'Layout editing is browser-side only — nothing to send to the keyboard');
-  c.body.append(disabled);
+  mountLayoutEditor(c.body, { model });
   root.append(c.card);
 }
 
