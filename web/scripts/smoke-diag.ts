@@ -8,10 +8,14 @@
 declare const process: { exit(code?: number): never };
 
 import {
+  bootPressedUsages,
+  ChatterTracker,
   decodeBootKeyboardReport,
   hexBytes,
   MODIFIER_LABELS,
   pressTokensForValue,
+  ReportCadence,
+  RolloverTracker,
 } from '../src/diag-core.ts';
 
 let failures = 0;
@@ -102,6 +106,105 @@ console.log('diag-core: labels / hex');
 check('modifier labels cover 0xE0..0xE7', Object.keys(MODIFIER_LABELS).length === 8);
 check('hexBytes short', hexBytes(new Uint8Array([0xab, 0x01])) === 'ab 01');
 check('hexBytes truncates', hexBytes(new Uint8Array(200), 4).endsWith('…'));
+
+console.log('diag-core: bootPressedUsages');
+{
+  const boot = decodeBootKeyboardReport(new Uint8Array([0x01, 0, 0x04, 0, 0, 0, 0, 0]))!;
+  const s = bootPressedUsages(boot);
+  check('modifiers + keys merged', eq([...s].sort((a, b) => a - b), [0x04, 0xe0]));
+}
+
+console.log('diag-core: RolloverTracker');
+{
+  const t = new RolloverTracker();
+  t.down('KeyA');
+  t.down('KeyB');
+  t.down('KeyA'); // auto-repeat
+  let s = t.snapshot();
+  check('two distinct keys held', s.heldCount === 2 && s.peak === 2);
+  check('repeat counted not pressed', s.presses === 2 && s.repeats === 1);
+  check('held sorted', eq(s.held, ['KeyA', 'KeyB']));
+  t.down('KeyC');
+  t.down('KeyD');
+  t.down('KeyE');
+  t.down('KeyF');
+  t.down('KeyG');
+  t.down('KeyH');
+  t.down('KeyI');
+  s = t.snapshot();
+  check('peak tracks simultaneous', s.peak === 9 && s.heldCount === 9);
+  t.up('KeyA');
+  t.up('KeyZ'); // orphan keyup
+  s = t.snapshot();
+  check('release matched', s.releases === 1 && s.orphanReleases === 1);
+  check('held after release', s.heldCount === 8 && !s.held.includes('KeyA'));
+  t.reset();
+  s = t.snapshot();
+  check('reset counts lost', s.lostReleases === 8 && s.heldCount === 0);
+  check('peak survives reset', s.peak === 9);
+}
+
+console.log('diag-core: ChatterTracker');
+{
+  const t = new ChatterTracker();
+  // 'A' (0x04) pressed at t=0, released at t=10 → 10 ms press.
+  t.feed(new Set([0x04]), 0);
+  t.feed(new Set(), 10);
+  // Same key again: press at 100, release at 115 → 15 ms.
+  t.feed(new Set([0x04]), 100);
+  t.feed(new Set(), 115);
+  // Long press: 200→900 = 700 ms.
+  t.feed(new Set([0x04]), 200);
+  t.feed(new Set(), 900);
+  const a = t.all().find((u) => u.usage === 0x04);
+  check('press/release counted', a?.presses === 3 && a?.releases === 3);
+  check('min press duration', a?.minPressMs === 10);
+  check('last press duration', a?.lastPressMs === 700);
+  check('not yet a chatter suspect', a?.chatter === false);
+  check('suspects empty', t.suspects().length === 0);
+
+  // Fourth fast press → suspect (≥4 presses, min < 30 ms).
+  t.feed(new Set([0x04]), 1000);
+  t.feed(new Set(), 1010);
+  const a2 = t.all().find((u) => u.usage === 0x04);
+  check('4 fast presses → chatter flag', a2?.chatter === true);
+  check('suspects lists it', t.suspects().some((u) => u.usage === 0x04));
+
+  // Modifier usage transitions work identically.
+  t.feed(new Set([0xe0]), 2000);
+  t.feed(new Set(), 2050);
+  const m = t.all().find((u) => u.usage === 0xe0);
+  check('modifier timing tracked', m?.presses === 1 && m?.lastPressMs === 50);
+
+  // Held key across feeds counts as one press, no release.
+  const t2 = new ChatterTracker();
+  t2.feed(new Set([0x05]), 0);
+  t2.feed(new Set([0x05]), 16);
+  t2.feed(new Set([0x05]), 32);
+  const b = t2.all().find((u) => u.usage === 0x05);
+  check('steady hold = 1 press', b?.presses === 1 && b?.releases === 0);
+  check('held reports downAt', b?.downAt === 0);
+
+  // Ordering: most transitions first.
+  check('sorted by transitions', t.all()[0]!.usage === 0x04);
+}
+
+console.log('diag-core: ReportCadence');
+{
+  const c = new ReportCadence();
+  check('no stats before 2 reports', c.stats() === null);
+  c.push(1000);
+  c.push(1016);
+  c.push(1040);
+  c.push(1100);
+  const s = c.stats();
+  check('cadence samples = reports-1', s?.samples === 3);
+  check('cadence min', s?.minMs === 16);
+  check('cadence avg', s?.avgMs === (16 + 24 + 60) / 3);
+  check('cadence max', s?.maxMs === 60);
+  c.reset();
+  check('reset clears stats', c.stats() === null);
+}
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);

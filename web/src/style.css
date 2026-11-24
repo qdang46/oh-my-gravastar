@@ -3226,3 +3226,39 @@ details.beh-more .beh-choices {
   margin: var(--space-4) 0 var(--space-2);
   font-size: 14px;
 }
+
+/* ── Diagnostics extended tests (bead 7l0) ─────────────────────────── */
+
+.diag-rollover {
+  min-height: 28px;
+}
+
+.diag-rollover-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  align-items: center;
+}
+
+.diag-chatter-box {
+  margin-top: var(--space-3);
+}
+
+.diag-chatter {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.diag-chatter-row {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.diag-chatter-row--flag {
+  color: var(--warn);
+}
