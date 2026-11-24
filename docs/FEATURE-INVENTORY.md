@@ -87,19 +87,34 @@ layer support is firmware-dependent and code-tested only.
 
 ## C. Advanced behaviors (14)
 
+Per-protocol verdicts with wire evidence: `docs/protocol-behaviors.md`
+(bead `oh-my-gravastar-0is`). Summary: **no protocol supports tap dance,
+one-shot, caps word, auto shift, leader, repeat, mod-morph, or conditional
+layers**; khub916 and HE v2 both have firmware mod-tap + toggle + SOCD.
+
 | Behavior | Status | Evidence |
 |---|---|---|
-| Mod-Tap (MT) | [partial] | codec + UI + keymap bind shipped; **history write unverified on K1 Pro** (`docs/advkeys-schema.md`, `crates/proto-khub916/src/advkey.rs`) |
-| SOCD | [partial] | same caveat |
-| TGL | [partial] | same caveat |
-| Layer-Tap, Tap Dance, Combo, Key Override, One-Shot, Sticky, Caps Word, Auto Shift, Leader, Repeat, Mod-Morph, Conditional Layer | [missing] | no protocol evidence in any `docs/protocol-*.md` |
-| Macro Behavior (as a key behavior) | [partial] | khub916 macros can be *bound to keys* via tag-3 binds (`omg kb916 macro bind`, `docs/macro-schema.md`) — live-verified write path; HE `kb macro` code-tested only |
+| Mod-Tap (MT) | [partial] | khub916 tag `0x21` + MT history slot — codec + UI + keymap bind shipped; **history write unverified on K1 Pro** (`docs/advkeys-schema.md`, `crates/proto-khub916/src/advkey.rs`). HE v2 HK mode 3 (`kcs[2]`+`time`) — code-tested only (`crates/proto-he`, `docs/protocol-behaviors.md` §2) |
+| Tap-Hold | [partial] | same MT primitive on both protocols (khub916 persistence caveat above) |
+| SOCD | [partial] | khub916 tag `0x20` + 8 B history slots — same caveat; HE v2 HK mode 6 two-packet cross-linked pair — code-tested |
+| TGL / toggle-trigger | [partial] | khub916 tag `0x22` — same caveat; HE v2 HK mode 4 — code-tested. Closest existing primitive to **Sticky** (toggle = continuous trigger; one-shot vs latch semantics unconfirmed on both) |
+| Layer-Tap | [missing] | khub916 tag `0x07` "secondary-layer" exists in decoder but write path/semantics unobserved; HE has 4 layers + `0xF100–0xF103` switch keys but hold-vs-toggle undocumented — **unknown**, not proven absent (`docs/protocol-behaviors.md` §1.2/§2) |
+| Combo | [missing] | **[protocol-verified absence of detection]** — khub916 "combo key" is a static chord *output* (tag-0 `mods<<16\|usage`, no history, no multi-key trigger — vendor `setKeyboardComboKey`, `docs/protocol-behaviors.md` §1.3); HE has no combo mode (SOCD/RS are strictly 2-key) |
+| Key Override | [missing] | HE END mode (mode 5) sends a different key *on release* — not a press-time override; no press-remap encoding on any protocol |
+| One-Shot, Sticky (as specced), Caps Word, Auto Shift, Leader, Repeat, Mod-Morph, Conditional Layer | [missing] | no protocol evidence in any `docs/protocol-*.md`; see `docs/protocol-behaviors.md` verdict tables |
+| Macro Behavior (as a key behavior) | [partial] | khub916 macros bound to keys via tag-3 (`omg kb916 macro bind`, `docs/macro-schema.md`) — live-verified write path; HE `kb macro` (cat 7, `repNum`+4 modes) code-tested only |
+| (HE-only extras) DKS / MPT / RS | [blocked-by-hardware] | HK modes 1/2/7 — analog press-depth multi-output and two-key depth-priority; no khub916/mouse equivalent (`docs/protocol-behaviors.md` §2) |
 
 ## D. Combo & shortcut engine
 
-[missing] — no combo detection anywhere (host-side or firmware-exposed).
-HE `hk` advanced keys (`crates/proto-he`, `omg kb hk`) include DKS/MPT/SOCD/
-RS modes but not arbitrary combos; code-tested only.
+[missing] — **[protocol-verified]**: no protocol exposes N-key combo
+detection. khub916's vendor "combo key" emits a fixed modifier+key chord
+from one bound key (tag-0 encoding, `docs/protocol-behaviors.md` §1.3);
+HE v2 HigherKey has only 2-key SOCD/RS pairs. Any combo engine must be
+host-side (web/CLI), which conflicts with offline keyboard operation —
+flag as a design constraint, not just a missing feature. HE `hk`
+advanced keys (`crates/proto-he`, `omg kb hk`) include DKS/MPT/SOCD/RS
+modes but not arbitrary combos; code-tested only.
 
 ## E. Macro Studio (28 items)
 
