@@ -106,3 +106,42 @@ cargo test
 
 `cargo fmt` is not enforced; match surrounding style. Windows-only CI is the
 clean-checkout run.
+
+## Incident log — khub916 cmd-8 stream wedge (2026-11)
+
+`omg kb916 light stream` / `light music` send cmd-8 GIF frames
+(fire-and-forget `feature_write`, 519 B reports). After many live runs —
+including one interrupted mid-stream — the K1 Pro wedged: lighting stuck
+off, **all Fn combos dead** (Fn+B/Tab/|/Shift), while normal typing and
+Hub-web config writes still worked. Recovery required **two** resets:
+`omg kb916 reset --yes` (cmd 17 type 0 = factory) then
+`omg kb916 reset --kind 2 --yes` (reset all keymap layers), plus a
+replug. Root cause unproven — consistent with firmware state corruption
+from sustained/uninterrupted cmd-8 traffic or a killed restore; treat
+cmd-8 as **hardware-unverified for long sessions**.
+
+### Rules going forward (non-negotiable for cmd-8/GIF paths)
+
+- **Never SIGKILL / force-quit** `light stream` or `light music`. The
+  Ctrl-C handler must run to completion so profile + light-data restore.
+  If a run is interrupted, expect the device may need `reset --yes`.
+- **Snapshot sanity check before restore**: if the pre-stream profile
+  shows an abnormal state (e.g. light mode 0/off while a stream was
+  active, or a previous run was killed), do NOT blindly write it back —
+  warn and let the user pick a known-good lighting config instead.
+- **Rate-limit conservatively**: default 30 fps is the verified ceiling;
+  do not raise `--fps` defaults or send back-to-back bursts without
+  settle time. Vendor `setGifLight` cadence is ~30 ms.
+- **Recovery commands** (both behind `--yes`, fire-and-forget, device
+  reboots off the bus):
+  - `omg kb916 reset --yes` — cmd 17 type 0, factory defaults.
+  - `omg kb916 reset --kind 2 --yes` — reset all keymap layers.
+  - `omg kb916 light apply <json> --yes` — restore a known-good
+    lighting config (docs/lighting-schema.md).
+- **Fn combos are firmware-handled**, not protocol-visible: if Fn dies
+  while typing/Hub still work, it is NOT a keymap/config problem —
+  suspect firmware wedge first (resets above), hardware only as last
+  resort after exhausting software recovery.
+- Any new always-on daemon or long-lived HID writer must install a
+  signal handler that restores device state on SIGINT **and** SIGTERM,
+  and must document what happens if it is killed ungracefully.
