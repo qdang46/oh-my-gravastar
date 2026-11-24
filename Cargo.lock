@@ -1034,6 +1034,7 @@ dependencies = [
  "anyhow",
  "omg-hid",
  "proptest",
+ "serde",
 ]
 
 [[package]]

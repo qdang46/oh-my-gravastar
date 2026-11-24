@@ -9,6 +9,15 @@
 //!
 //! Ported from `orbit-gravastar/src/protocol/keyboard.rs` (MIT).
 //!
+//! Categories 6 (HigherKey / advanced keys), 7 (Macro), the category-3
+//! keycode write commands and `02 0E` (macro space info) were extracted
+//! from the official v2 web-driver JavaScript
+//! (`docs/research/he-macros-research.md`, mirror under
+//! `docs/research/he-webapp/v2/`). **No HE keyboard was available for
+//! hardware verification: every command added for them is inferred from
+//! the vendor JS and is hardware-unverified.** Treat write paths as
+//! code-complete but unproven until exercised on a board.
+//!
 //! # Safety blacklist (docs/plan.md §2 — never implemented, even later)
 //!
 //! - `02 01` factory reset (category 2, command 1)
@@ -18,13 +27,16 @@
 //! - `02 0F 01` keyboard restart
 //! - `02 09` default switch
 //! - categories `0x0C` (display), `0x0E` (voice), `0x0F` (haptic)
-//! - macro keycodes `0xF200` / `0xF203` are never written (see protocol doc)
+//! - category `0A` custom command passthrough remains unimplemented
+//! - keycodes `0xF200` / `0xF203` are rejected on every write path
+//!   (keymap row/single writes and macro actions) — see protocol doc
 
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use omg_hid::{transfer, Link, NoAnswer};
+use serde::{Deserialize, Serialize};
 
 /// Vendor ids the official driver routes to this protocol.
 pub const VIDS: [u16; 2] = [0x1ca6, 0x31e3];
@@ -41,6 +53,8 @@ const GLOBAL: u8 = 2;
 const LAYOUT: u8 = 3;
 const PERFORMANCE: u8 = 4;
 const LIGHTING: u8 = 5;
+const HIGHER_KEY: u8 = 6;
+const MACRO: u8 = 7;
 
 const CONFIG: u8 = 3;
 const SYSTEM: u8 = 4;
@@ -49,6 +63,7 @@ const CALIBRATION: u8 = 6;
 const LIGHTING_AREAS: u8 = 8;
 const RT_PRECISION: u8 = 12;
 const LIGHTING_SLEEP: u8 = 13;
+const MACRO_SPACE_INFO: u8 = 14;
 
 const READ_LIST: u8 = 0;
 const READ: u8 = 1;
