@@ -62,8 +62,9 @@ enum Commands {
         command: KbCommands,
     },
     /// GravaStar K1/K98 series keyboards (khub916 wired feature-report
-    /// protocol, docs/protocol-khub916.md). Screen commands, the wireless
-    /// 916_wireLess transport and all writes are not wired yet.
+    /// protocol, docs/protocol-khub916.md). Screen reads/plans are wired;
+    /// screen writes, the wireless 916_wireLess transport and all other
+    /// writes are not.
     Kb916 {
         #[command(subcommand)]
         command: Kb916Commands,
@@ -369,6 +370,13 @@ fn probe_device(d: &DeviceInfo, deep: bool) -> serde_json::Value {
         DeviceKind::CompxMouse => probe_mouse(d),
         DeviceKind::SparkPlayJoy => probe_spark(d, deep),
         DeviceKind::Khub916Wired | DeviceKind::Khub916Wireless => probe_khub916(d),
+        // Write-only image target: opening it and sending the cmd-130
+        // report-id probe could block on a feature-report read the
+        // firmware may never answer (docs/protocol-khub916-screen.md §1).
+        DeviceKind::Khub916Screen => json!({
+            "kind": d.kind.label(),
+            "note": "write-only screen interface — the vendor protocol has no query path on it and image pushes are not implemented yet",
+        }),
     };
     json!({
         "device": d,
@@ -2739,13 +2747,16 @@ fn parse_polling_rate(s: &str) -> Result<u8> {
 
 // ── khub916 keyboards (K1 / K1 Pro / K98 Pro, wired "916") ─────────────
 //
-// Read commands only. The proto crate also exposes write_keymap /
-// write_profile / write_custom_light_colors, but they are deliberately NOT
-// wired into the CLI yet: the keymap write needs a full 128-entry table
-// while the device only returns 126 entries on read (length mismatch —
+// Read commands plus `screen info`/`screen plan`. The proto crate also
+// exposes write_keymap / write_profile / write_custom_light_colors and
+// the fire-and-forget screen writers (screen_begin/screen_frame/
+// screen_push/screen_end/set_screen_clock), but they are deliberately NOT
+// wired into the CLI: the keymap write needs a full 128-entry table while
+// the device only returns 126 entries on read (length mismatch —
 // docs/protocol-khub916.md §8), the profile field semantics are only
-// partially proven, and no write has been live-verified. Screen commands
-// (11/12/13) and the 916_wireLess transport are separate beads.
+// partially proven, no write has been live-verified, and screen writes
+// have no read-back path at all (docs/protocol-khub916-screen.md §2).
+// The 916_wireLess transport is a separate bead.
 
 #[derive(Subcommand)]
 enum Kb916Commands {
@@ -2779,9 +2790,13 @@ enum Kb916Commands {
     LightData,
     /// Macro region (≤512 B, cmd 133) as a hex dump.
     Macro,
-    /// Screen commands (time/image, spec docs/protocol-khub916-screen.md)
-    /// are a separate bead — always "not implemented".
-    Screen,
+    /// Screen display: capability report and image-push planning
+    /// (docs/protocol-khub916-screen.md). Actual image/time writes are
+    /// refused — see `omg kb916 screen --help`.
+    Screen {
+        #[command(subcommand)]
+        command: Kb916Screen,
+    },
     /// The 916_wireLess 2.4 GHz transport is a separate bead — always
     /// "not implemented".
     Wireless,
@@ -2791,6 +2806,45 @@ enum Kb916Commands {
         #[command(subcommand)]
         command: Kb916Set,
     },
+}
+
+#[derive(Subcommand)]
+enum Kb916Screen {
+    /// Screen capability report: keyboard-interface geometry (cmd 130),
+    /// catalog topology, detected separate screen interfaces, wire-format
+    /// limits and honesty notes. Read-only.
+    Info,
+    /// Dry-run plan for an image push: packet/chunk counts, wire size and
+    /// the vendor pacing time estimate. Sends nothing to any device.
+    Plan {
+        /// Frame width in pixels (default 160 — the evidenced size).
+        #[arg(long, default_value_t = khub::SCREEN_DEFAULT_WIDTH)]
+        width: u16,
+        /// Frame height in pixels (default 80).
+        #[arg(long, default_value_t = khub::SCREEN_DEFAULT_HEIGHT)]
+        height: u16,
+        /// Number of frames, 1-255 (vendor UI caps at 150).
+        #[arg(long, default_value_t = 1)]
+        frames: usize,
+        /// Frames per second; interval = round(1000/fps) ms. Mutually
+        /// exclusive with --interval-ms.
+        #[arg(long, conflicts_with = "interval_ms")]
+        fps: Option<f64>,
+        /// Frame interval in milliseconds directly (u16, ≤65535; the
+        /// device-side unit is unverified — spec §8).
+        #[arg(long)]
+        interval_ms: Option<u16>,
+    },
+    /// Push an image/GIF to the screen — refused: the GIF→RGB565 frame
+    /// pipeline is client-side and not implemented, and screen writes are
+    /// fire-and-forget feature reports with no read-back verify.
+    Push {
+        /// Image or GIF file (unsupported today — see the error message).
+        file: String,
+    },
+    /// Sync the screen RTC (cmd 11, wired keyboard interface) — refused:
+    /// fire-and-forget write with no read-back, hardware-unverified.
+    Clock,
 }
 
 #[derive(Subcommand)]
@@ -2919,15 +2973,9 @@ fn kb916_session(cli: &Cli) -> Result<Result<(DeviceInfo, khub::Khub916), ExitCo
 }
 
 fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
-    // Commands that never touch the device.
+    // Commands that never touch the device (or handle their own session).
     match command {
-        Kb916Commands::Screen => {
-            return kb916_unsupported(
-                cli,
-                "khub916 screen commands (11/12/13)",
-                "the screen/GIF protocol is code-verified only (docs/protocol-khub916-screen.md) and is a separate bead",
-            );
-        }
+        Kb916Commands::Screen { command } => return cmd_kb916_screen(cli, command),
         Kb916Commands::Wireless => {
             return kb916_unsupported(cli, "916_wireLess transport", kb916_wireless_pending());
         }
@@ -3115,11 +3163,265 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
                 print_hex_dump(&data);
             }
         }
-        Kb916Commands::Screen | Kb916Commands::Wireless | Kb916Commands::Set { .. } => {
+        Kb916Commands::Screen { .. } | Kb916Commands::Wireless | Kb916Commands::Set { .. } => {
             unreachable!("handled before the session is opened")
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// ── khub916 screen (docs/protocol-khub916-screen.md) ──────────────────
+//
+// There is NO screen query command in the spec: cmd 130's `screen_size`
+// byte on the keyboard interface is the only capability read, and the
+// separate screen interface (VID 0x258A PID 0x01B4) is write-only in the
+// vendor JS. `screen info` merges both views; `screen plan` is a pure
+// dry-run; `push`/`clock` refuse because screen writes are
+// fire-and-forget feature reports with no read-back verify.
+
+/// Static wire-format facts shared by `screen info` and `screen plan`.
+fn screen_wire_format_json() -> serde_json::Value {
+    json!({
+        "pixel_format": "rgb565_be",
+        "color_depth_bpp": 16,
+        "default_geometry": [khub::SCREEN_DEFAULT_WIDTH, khub::SCREEN_DEFAULT_HEIGHT],
+        "max_frames_wire": khub::SCREEN_MAX_FRAMES,
+        "max_frames_ui": khub::SCREEN_UI_MAX_FRAMES,
+        "max_chunks_per_frame": khub::SCREEN_MAX_CHUNKS_PER_FRAME,
+        "chunk_payload_bytes": khub::SCREEN_CHUNK_BYTES,
+        "feature_payload_bytes": khub::FEATURE_PAYLOAD_BYTES,
+        "separate_interface": format!(
+            "VID {:04X} PID {:04X}",
+            khub::SCREEN_INTERFACE_VID, khub::SCREEN_INTERFACE_PID
+        ),
+        "frame_interval": "u16 ms at packet bytes 10-11 (Math.round(1000/fps) in the vendor JS; device-side unit unverified)",
+    })
+}
+
+/// Validate a hypothetical push and return the plan as JSON. Sends
+/// nothing; used by `screen plan` for both output modes.
+fn screen_push_plan(
+    width: u16,
+    height: u16,
+    frames: usize,
+    fps: Option<f64>,
+    interval_ms: Option<u16>,
+) -> Result<serde_json::Value> {
+    if width == 0 || height == 0 {
+        bail!("screen plan: width and height must be > 0");
+    }
+    let interval_ms = match (fps, interval_ms) {
+        (Some(f), None) => {
+            if !f.is_finite() || f <= 0.0 {
+                bail!("screen plan: --fps must be a positive number");
+            }
+            let ms = (1000.0 / f).round();
+            if ms > f64::from(u16::MAX) {
+                bail!("screen plan: --fps {f} gives interval {ms} ms > 65535");
+            }
+            ms as u16
+        }
+        // Vendor JS default when fps is invalid/absent (spec §3).
+        (None, None) => 0,
+        (None, Some(ms)) => ms,
+        (Some(_), Some(_)) => unreachable!("clap conflicts_with"),
+    };
+    if frames == 0 || frames > khub::SCREEN_MAX_FRAMES {
+        bail!(
+            "screen plan: frames must be 1..={}, got {frames}",
+            khub::SCREEN_MAX_FRAMES
+        );
+    }
+    let frame_bytes = width as usize * height as usize * 2;
+    let chunks_per_frame = frame_bytes.div_ceil(khub::SCREEN_CHUNK_BYTES);
+    if chunks_per_frame > khub::SCREEN_MAX_CHUNKS_PER_FRAME {
+        bail!(
+            "screen plan: {width}x{height} needs {chunks_per_frame} chunks/frame > {}",
+            khub::SCREEN_MAX_CHUNKS_PER_FRAME
+        );
+    }
+    let total_chunks = frames * chunks_per_frame;
+    // cmd-13 begin + all cmd-12 chunks + cmd-13 end.
+    let packets = total_chunks + 2;
+    let wire_bytes = total_chunks * khub::FEATURE_PAYLOAD_BYTES;
+    // Vendor pacing estimate (spec §5): chunk_delay per packet plus one
+    // frame_delay after each frame.
+    let est_secs = |p: khub::ScreenPacing| -> f64 {
+        frames as f64
+            * (chunks_per_frame as f64 * p.chunk_delay.as_secs_f64()
+                + p.frame_delay.as_secs_f64())
+    };
+    Ok(json!({
+        "width": width,
+        "height": height,
+        "color_depth_bpp": 16,
+        "pixel_format": "rgb565_be",
+        "frames": frames,
+        "interval_ms": interval_ms,
+        "frame_bytes": frame_bytes,
+        "chunks_per_frame": chunks_per_frame,
+        "total_chunks": total_chunks,
+        "packets": packets,
+        "wire_bytes_approx": wire_bytes,
+        "estimated_seconds_keyboard_interface": est_secs(khub::ScreenPacing::keyboard_interface()),
+        "estimated_seconds_screen_interface": est_secs(khub::ScreenPacing::screen_interface()),
+        "limits": {
+            "max_frames_wire": khub::SCREEN_MAX_FRAMES,
+            "max_frames_ui": khub::SCREEN_UI_MAX_FRAMES,
+            "max_chunks_per_frame": khub::SCREEN_MAX_CHUNKS_PER_FRAME,
+            "over_ui_cap": frames > khub::SCREEN_UI_MAX_FRAMES,
+        },
+        "hardware_verified": false,
+    }))
+}
+
+fn cmd_kb916_screen(cli: &Cli, command: &Kb916Screen) -> Result<ExitCode> {
+    match command {
+        Kb916Screen::Plan {
+            width,
+            height,
+            frames,
+            fps,
+            interval_ms,
+        } => {
+            let plan = screen_push_plan(*width, *height, *frames, *fps, *interval_ms)?;
+            // Name the would-be target: detected separate screen interfaces.
+            let devices = find_devices()?;
+            let screens: Vec<&DeviceInfo> = devices
+                .iter()
+                .filter(|d| d.kind == DeviceKind::Khub916Screen)
+                .collect();
+            if cli.json {
+                print_json(&json!({ "plan": plan, "screen_interfaces": screens }))?;
+            } else {
+                println!("screen push plan (dry run — nothing was sent)");
+                println!(
+                    "  geometry: {}x{}, RGB565 big-endian (16 bpp)",
+                    plan["width"], plan["height"]
+                );
+                println!(
+                    "  frames: {} @ interval {} ms",
+                    plan["frames"], plan["interval_ms"]
+                );
+                println!(
+                    "  per frame: {} B → {} chunks",
+                    plan["frame_bytes"], plan["chunks_per_frame"]
+                );
+                println!(
+                    "  total: {} chunks + begin/end = {} packets (~{} B on the wire)",
+                    plan["total_chunks"], plan["packets"], plan["wire_bytes_approx"]
+                );
+                println!(
+                    "  estimated transfer at vendor pacing: {:.1} s (keyboard interface) / {:.1} s (screen interface)",
+                    plan["estimated_seconds_keyboard_interface"].as_f64().unwrap_or(0.0),
+                    plan["estimated_seconds_screen_interface"].as_f64().unwrap_or(0.0)
+                );
+                if plan["limits"]["over_ui_cap"].as_bool().unwrap_or(false) {
+                    println!(
+                        "  note: {} frames exceeds the vendor UI cap of {} (wire allows 255)",
+                        plan["frames"], khub::SCREEN_UI_MAX_FRAMES
+                    );
+                }
+                match screens.len() {
+                    0 => println!("  screen interfaces detected: none"),
+                    n => {
+                        println!("  screen interfaces detected: {n}");
+                        for s in screens {
+                            println!("    {}  {}", s.vid_pid(), s.path);
+                        }
+                    }
+                }
+                println!("  status: hardware-unverified — packet layout is code-verified only");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Kb916Screen::Info => {
+            let devices = find_devices()?;
+            let screens: Vec<&DeviceInfo> = devices
+                .iter()
+                .filter(|d| d.kind == DeviceKind::Khub916Screen)
+                .collect();
+            let (device, mut kb) = match kb916_session(cli)? {
+                Ok(s) => s,
+                Err(code) => return Ok(code),
+            };
+            let info = kb.device_info()?;
+            let topology = info
+                .catalog_model
+                .as_deref()
+                .and_then(khub::catalog_screen);
+            let wire = screen_wire_format_json();
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "info": info,
+                    "catalog_topology": topology,
+                    "screen_interfaces": screens,
+                    "wire_format": wire,
+                    "readback": "none — screen commands are fire-and-forget feature-report writes (docs/protocol-khub916-screen.md §2)",
+                    "hardware_verified": false,
+                }))?;
+            } else {
+                println!("{}", device.vid_pid());
+                println!("path:          {}", device.path);
+                match (&info.catalog_model, &info.catalog_name) {
+                    (Some(m), Some(n)) => println!("model:         {n} ({m})"),
+                    (Some(m), None) => println!("model:         {m}"),
+                    _ => println!("model:         (UUID not in the vendor catalog)"),
+                }
+                println!("uuid:          {}", info.uuid);
+                println!("version:       0x{:04X}", info.version);
+                match info.screen {
+                    Some((w, h)) => {
+                        println!("screen:        {w}x{h} on the keyboard interface (code {})", info.screen_size)
+                    }
+                    None => println!("screen:        none on the keyboard interface (code {})", info.screen_size),
+                }
+                match topology {
+                    Some(khub::ScreenTopology::SeparateInterface) => println!(
+                        "catalog:       separate screen interface {}",
+                        wire["separate_interface"]
+                    ),
+                    Some(khub::ScreenTopology::OnKeyboardInterface { width: w, height: h }) => {
+                        println!("catalog:       screen on the keyboard interface, {w}x{h}")
+                    }
+                    None => println!("catalog:       no screen entry for this model"),
+                }
+                match screens.len() {
+                    0 => println!("screen HID:    none detected"),
+                    n => {
+                        println!("screen HID:    {n} interface(s) detected");
+                        for s in screens {
+                            println!("    {}  {}", s.vid_pid(), s.path);
+                        }
+                    }
+                }
+                println!(
+                    "format:        RGB565 big-endian, 16 bpp; frame = w*h*2 B in {} B chunks",
+                    khub::SCREEN_CHUNK_BYTES
+                );
+                println!(
+                    "limits:        ≤{} frames (vendor UI cap {}), ≤{} chunks/frame, interval u16 ms",
+                    khub::SCREEN_MAX_FRAMES,
+                    khub::SCREEN_UI_MAX_FRAMES,
+                    khub::SCREEN_MAX_CHUNKS_PER_FRAME
+                );
+                println!("read-back:     none — screen writes are fire-and-forget");
+                println!("status:        hardware-unverified (code-verified from vendor JS only)");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Kb916Screen::Push { .. } => kb916_unsupported(
+            cli,
+            "khub916 screen image push",
+            "the GIF→RGB565 frame pipeline is client-side and not implemented, and screen writes (cmd 12/13) are fire-and-forget feature reports with no read-back verify — the CLI refuses blind writes (docs/protocol-khub916-screen.md §2/§4)",
+        ),
+        Kb916Screen::Clock => kb916_unsupported(
+            cli,
+            "khub916 screen clock sync (cmd 11)",
+            "fire-and-forget feature write with no read-back verify, hardware-unverified — refused until a screen device confirms it (docs/protocol-khub916-screen.md §3/§8)",
+        ),
+    }
 }
 
 /// Full hex string (no truncation) for profile/config blobs.
@@ -3168,6 +3470,9 @@ fn capture_state(d: &DeviceInfo, full: bool) -> Result<serde_json::Value> {
         DeviceKind::Khub916Wireless => {
             bail!("916_wireLess transport is not implemented (docs/protocol-khub916.md §3/§7)")
         }
+        DeviceKind::Khub916Screen => {
+            bail!("khub916 screen interface is write-only; there is no readable state to export")
+        }
         DeviceKind::SparkPlayJoy => {
             let link = d.open_link()?;
             profile::spark_state(&mut spj::SparkPlayJoy::new(Box::new(link)))
@@ -3191,6 +3496,12 @@ fn export_device_entry(d: &DeviceInfo, full: bool) -> serde_json::Value {
     if d.kind == DeviceKind::Khub916Wireless {
         e["note"] = json!(
             "916_wireLess transport is not implemented yet (docs/protocol-khub916.md §3/§7); export skipped"
+        );
+        return e;
+    }
+    if d.kind == DeviceKind::Khub916Screen {
+        e["note"] = json!(
+            "khub916 screen interface is write-only (docs/protocol-khub916-screen.md §1); export skipped"
         );
         return e;
     }
@@ -3375,6 +3686,11 @@ fn import_entry(
             "device": device_label,
             "status": "skipped",
             "reason": profile::SPARK_WRITE_SKIP,
+        })),
+        DeviceKind::Khub916Screen => Ok(json!({
+            "device": device_label,
+            "status": "skipped",
+            "reason": "khub916 screen interface is write-only; nothing to apply",
         })),
         DeviceKind::CompxMouse => import_mouse(d, state, dry_run, backup_dir, &device_label),
         DeviceKind::HeKeyboardV2 => import_he(d, state, dry_run, backup_dir, &device_label),

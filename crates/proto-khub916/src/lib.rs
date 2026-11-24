@@ -955,6 +955,59 @@ pub struct ScreenPushStats {
     pub frame_bytes: usize,
 }
 
+/// Separate screen interface identity (screen spec §1 `va["916"][0]`):
+/// screen-capable models expose the display as a second HID device, not
+/// on the keyboard interface.
+pub const SCREEN_INTERFACE_VID: u16 = 0x258A;
+pub const SCREEN_INTERFACE_PID: u16 = 0x01B4;
+
+/// Default frame geometry when the catalog `screen` field carries no
+/// width/height — the K98 Pro vid/pid entry and spec §4's fallback.
+pub const SCREEN_DEFAULT_WIDTH: u16 = 160;
+pub const SCREEN_DEFAULT_HEIGHT: u16 = 80;
+
+/// Frame cap enforced by the vendor GIF editor UI (spec §4); the wire
+/// format itself allows up to [`SCREEN_MAX_FRAMES`] (255).
+pub const SCREEN_UI_MAX_FRAMES: usize = 150;
+
+/// How a catalog model's screen is attached (screen spec §1 `Dp` table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ScreenTopology {
+    /// Screen shares the keyboard HID interface; pixel geometry comes
+    /// from the cmd-130 `screen_size` code (916_K95 → 160×80).
+    OnKeyboardInterface { width: u16, height: u16 },
+    /// Screen is a second HID device at [`SCREEN_INTERFACE_VID`] /
+    /// [`SCREEN_INTERFACE_PID`] (K98 Pro family, K80, Mercury NP PRO).
+    /// Write-only: the JS screen class has no query/receive path.
+    SeparateInterface,
+}
+
+/// Catalog screen topology for a model id (spec §1). `None` = the model
+/// has no `screen` entry — treat it as screenless (e.g. K1 Pro).
+pub fn catalog_screen(model: &str) -> Option<ScreenTopology> {
+    Some(match model {
+        "916_K95" => ScreenTopology::OnKeyboardInterface {
+            width: 160,
+            height: 80,
+        },
+        "916_K98Pro"
+        | "916_K98Pro_JP"
+        | "916_K98Pro_DE"
+        | "916_K98Pro_SE"
+        | "916_K98Pro_KR"
+        | "916_K80"
+        | "916_GravaStar_Mercury_NP_PRO"
+        | "916_K98Pro_wireLess"
+        | "916_K98Pro_JP_wireLess"
+        | "916_K98Pro_DE_wireLess"
+        | "916_K98Pro_KR_wireLess"
+        | "916_K80_wireLess"
+        | "916_GravaStar_Mercury_NP_PRO_wireLess" => ScreenTopology::SeparateInterface,
+        _ => return None,
+    })
+}
+
 /// One RGB888 triple → the two RGB565 big-endian bytes used on the wire
 /// (screen spec §4: `((r>>3)&31)<<11 | ((g>>2)&63)<<5 | ((b>>3)&31)`,
 /// high byte first; alpha is dropped).
@@ -1571,5 +1624,32 @@ mod tests {
         assert_eq!(rgb565_be(0, 0, 255), [0x00, 0x1F]);
         assert_eq!(rgb565_be(255, 255, 255), [0xFF, 0xFF]);
         assert_eq!(rgb565_be(0, 0, 0), [0x00, 0x00]);
+    }
+
+    #[test]
+    fn catalog_screen_topology() {
+        // K98 Pro family → separate HID interface (spec §1).
+        assert_eq!(
+            catalog_screen("916_K98Pro"),
+            Some(ScreenTopology::SeparateInterface)
+        );
+        assert_eq!(
+            catalog_screen("916_K98Pro_JP"),
+            Some(ScreenTopology::SeparateInterface)
+        );
+        // K95 → screen on the keyboard interface, 160×80.
+        assert_eq!(
+            catalog_screen("916_K95"),
+            Some(ScreenTopology::OnKeyboardInterface {
+                width: 160,
+                height: 80
+            })
+        );
+        // K1 Pro and unknown models have no screen entry.
+        assert_eq!(catalog_screen("916_K1_PRO"), None);
+        assert_eq!(catalog_screen("no_such_model"), None);
+        // Serde shape for the CLI JSON output.
+        let j = serde_json::to_value(ScreenTopology::SeparateInterface).unwrap();
+        assert_eq!(j["type"], "separate_interface");
     }
 }

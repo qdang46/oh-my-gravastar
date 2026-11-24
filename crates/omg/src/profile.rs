@@ -53,6 +53,7 @@ pub fn protocol_of(kind: DeviceKind) -> &'static str {
         DeviceKind::SparkPlayJoy => "sparkplayjoy",
         DeviceKind::CompxMouse => "compx",
         DeviceKind::Khub916Wired | DeviceKind::Khub916Wireless => "khub916",
+        DeviceKind::Khub916Screen => "khub916-screen",
     }
 }
 
@@ -63,6 +64,7 @@ pub fn kinds_for_protocol(protocol: &str) -> Vec<DeviceKind> {
         "compx" => vec![DeviceKind::CompxMouse],
         "sparkplayjoy" => vec![DeviceKind::SparkPlayJoy],
         "khub916" => vec![DeviceKind::Khub916Wired, DeviceKind::Khub916Wireless],
+        "khub916-screen" => vec![DeviceKind::Khub916Screen],
         _ => vec![],
     }
 }

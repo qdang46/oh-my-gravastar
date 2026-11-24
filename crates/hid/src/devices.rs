@@ -68,6 +68,14 @@ pub const KHUB916_WIRED: &[(u16, u16)] = &[
 /// interfaces under one VID/PID; only this one speaks the protocol.
 pub const KHUB916_WIRED_USAGE_PAGE_MIN: u16 = 0xff00;
 
+/// Separate screen interface of screen-capable 916 models (K98 Pro
+/// family, K80, Mercury NP PRO): VID 0x258A PID 0x01B4 (436) — the
+/// `va["916"][0]` entry of the vendor catalog
+/// (docs/protocol-khub916-screen.md §1). Write-only image target using
+/// the same 519-byte feature-report layout; the JS driver never reads
+/// replies on it.
+pub const KHUB916_SCREEN: &[(u16, u16)] = &[(0x258a, 0x01b4)];
+
 /// 2.4 GHz dongle identities from the `916_wireLess` device table
 /// (duplicates removed). VID 0x3554 PID 0xfa09 is a wireless dongle and is
 /// deliberately distinct from the wired Compx mouse PIDs.
@@ -93,6 +101,9 @@ pub enum DeviceKind {
     Khub916Wired,
     /// K1/K98 series over the 2.4 GHz dongle ("916_wireLess" protocol).
     Khub916Wireless,
+    /// Separate display interface of screen-capable 916 models
+    /// (K98 Pro family): image writes only, no query path.
+    Khub916Screen,
 }
 
 impl DeviceKind {
@@ -104,6 +115,7 @@ impl DeviceKind {
             DeviceKind::CompxMouse => "Compx mouse",
             DeviceKind::Khub916Wired => "K1-series keyboard (khub916, wired)",
             DeviceKind::Khub916Wireless => "K1-series keyboard (khub916, 2.4 GHz)",
+            DeviceKind::Khub916Screen => "K1-series screen interface (khub916)",
         }
     }
 }
@@ -121,6 +133,9 @@ pub fn classify(vid: u16, pid: u16, usage_page: u16, usage: u16) -> Option<Devic
     }
     if KHUB916_WIRED.contains(&(vid, pid)) && usage_page >= KHUB916_WIRED_USAGE_PAGE_MIN {
         return Some(DeviceKind::Khub916Wired);
+    }
+    if KHUB916_SCREEN.contains(&(vid, pid)) && usage_page >= KHUB916_WIRED_USAGE_PAGE_MIN {
+        return Some(DeviceKind::Khub916Screen);
     }
     if KHUB916_WIRELESS.contains(&(vid, pid)) {
         return Some(DeviceKind::Khub916Wireless);
@@ -219,6 +234,16 @@ mod tests {
             classify(0x3554, 0xfa09, 0, 0),
             Some(DeviceKind::Khub916Wireless)
         );
+    }
+
+    #[test]
+    fn khub916_screen_interface_matches() {
+        // K98 Pro screen: separate HID device, vendor usage page only.
+        assert_eq!(
+            classify(0x258a, 0x01b4, 0xff00, 0),
+            Some(DeviceKind::Khub916Screen)
+        );
+        assert_eq!(classify(0x258a, 0x01b4, 0x0001, 0), None);
     }
 
     #[test]
