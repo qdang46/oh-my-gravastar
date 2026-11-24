@@ -1805,3 +1805,394 @@ input[type='color'] {
 .macro-steps-table tbody tr {
   cursor: pointer;
 }
+
+/* ── Keymap Studio upgrades (bead c8y) ─────────────────────────────────
+   Layer manager tabs (User/System mode + per-layer dirty dots + per-tab
+   reset), staged-edit tools (undo/redo, layer copy) and the multi-select
+   key outline on the visualizer. */
+
+.remap-mode-bar,
+.remap-layer-bar {
+  height: 36px;
+}
+
+.remap-mode-bar .segment-item {
+  min-width: 84px;
+}
+
+/* A layer tab = segment button + tiny reset-to-read button + dirty dot. */
+.layer-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.layer-tab .segment-item {
+  flex: 1 1 auto;
+  padding-right: var(--space-4);
+}
+
+.remap-tab-dot {
+  position: absolute;
+  top: 5px;
+  right: 20px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  pointer-events: none;
+}
+
+.layer-tab-reset {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.layer-tab-reset:hover:not(:disabled) {
+  color: var(--warn);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.layer-tab-reset:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Staged-edit tools row under the keyboard toolbar. */
+.remap-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+.remap-tools .btn {
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+}
+
+.remap-copy-label {
+  margin-left: var(--space-2);
+}
+
+.remap-copy-select {
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+/* Multi-selected keys on the visualizer (Ctrl/Shift/Cmd+click). */
+.kb-key--multi {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+/* ── Lighting scenes (bead nha) ───────────────────────────────────────── */
+
+.scene-name {
+  height: var(--control-h);
+  min-width: 180px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.scene-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.scene-status {
+  min-height: 1em;
+}
+
+.scene-preview-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+  flex-wrap: wrap;
+}
+
+.scene-preview {
+  width: 240px;
+  height: 28px;
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.scene-preview-meta {
+  min-width: 0;
+}
+
+.scene-preview-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.scene-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.scene-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.scene-row.selected {
+  border-color: var(--accent);
+}
+
+.scene-swatch {
+  flex: 0 0 72px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.scene-info {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.scene-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-meta {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.scene-actions .btn {
+  height: 28px;
+  padding: 0 var(--space-3);
+  font-size: 12px;
+}
+
+/* ── Profile version history / diff (bead th0, profiles.ts) ──────────── */
+
+.prof-list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.prof-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+
+.prof-meta {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.prof-name {
+  font-weight: 600;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.prof-ts {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.prof-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.prof-btn {
+  height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.prof-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.prof-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.prof-selects {
+  align-items: center;
+}
+
+.prof-select {
+  height: var(--control-h);
+  max-width: 340px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.prof-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.prof-restore {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.prof-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+  font-size: 14px;
+}
+
+.prof-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.prof-check input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.prof-diff {
+  margin-top: var(--space-4);
+}
+
+.prof-diff-section {
+  margin: var(--space-2) 0;
+}
+
+.prof-diff-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.prof-diff-clean {
+  color: var(--muted);
+  font-size: 13px;
+  padding: var(--space-1) 0;
+}
+
+.prof-diff-line {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) 1fr 1fr;
+  gap: var(--space-2);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.prof-diff-head {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.prof-diff-path {
+  color: var(--fg-2);
+  word-break: break-word;
+}
+
+.prof-diff-before {
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.prof-diff-after {
+  color: var(--success);
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .prof-diff-line {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

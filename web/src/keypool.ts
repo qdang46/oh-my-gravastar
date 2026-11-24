@@ -9,7 +9,13 @@
  * Groups mirror the vendor `keyModelList` tabs (basicKeys /
  * windows+system / mouse / multimedia / edit+apps); the macro tab
  * is excluded — macro binding is a separate bead.
+ *
+ * Each entry also exposes the decoded HID usage id (for plain-key
+ * encodings) so the picker can search and tooltip by usage code
+ * (bead c8y).
  */
+
+import { decodeKeyValue, hidUsageLabel } from './proto/khub916.ts';
 
 export type PoolGroup = 'basic' | 'system' | 'mouse' | 'media' | 'edit';
 
@@ -19,6 +25,11 @@ export interface PoolEntry {
   /** Vendor display name. */
   name: string;
   group: PoolGroup;
+  /** HID usage id for `normal` encodings, else null (modifier-only,
+   *  macro, Fn, media/system dual encodings…). */
+  usage: number | null;
+  /** Legend for `usage` ('' when none). */
+  usageLabel: string;
 }
 
 export const POOL_GROUPS: readonly { id: PoolGroup; label: string }[] = [
@@ -30,7 +41,13 @@ export const POOL_GROUPS: readonly { id: PoolGroup; label: string }[] = [
 ] as const;
 
 /** Synthetic unassign entry (keymap value 0). */
-export const POOL_UNASSIGN: PoolEntry = { value: 0, name: '(none)', group: 'basic' };
+export const POOL_UNASSIGN: PoolEntry = {
+  value: 0,
+  name: '(none)',
+  group: 'basic',
+  usage: null,
+  usageLabel: '',
+};
 
 const RAW: readonly (readonly [number, string])[] = [
   [41, "ESC"],
@@ -260,10 +277,19 @@ function groupOf(index: number): PoolGroup {
   return 'edit';
 }
 
+/** HID usage id + legend for a pool value (null for non-`normal` kinds). */
+function usageOf(value: number): { usage: number | null; usageLabel: string } {
+  const kv = decodeKeyValue(value);
+  // usage 0 = bare modifier chord (Ctrl/Shift/Alt/Win only) — no usage key.
+  if (kv.kind !== 'normal' || kv.usage === 0) return { usage: null, usageLabel: '' };
+  return { usage: kv.usage, usageLabel: hidUsageLabel(kv.usage) };
+}
+
 export const KEY_POOL: readonly PoolEntry[] = RAW.map(([value, name], i) => ({
   value,
   name,
   group: groupOf(i),
+  ...usageOf(value),
 }));
 
 /** value → vendor name for exact pool matches (display fallback). */
