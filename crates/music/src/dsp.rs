@@ -345,6 +345,11 @@ impl Analyzer {
         })
     }
 
+    /// FFT window size in samples.
+    pub fn fft_len(&self) -> usize {
+        self.fft_size
+    }
+
     /// Samples per analysis hop (~21 ms @ 48 kHz/2048) — analyses run on
     /// audio arrival, independent of the LED frame rate.
     pub fn window_samples(&self) -> usize {

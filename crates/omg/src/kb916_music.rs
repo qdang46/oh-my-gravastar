@@ -275,7 +275,7 @@ pub fn cmd(
             "music-reactive: {} → FFT {} Hz/{} bins → cmd-8 @ {fps} fps (Ctrl-C to stop)",
             audio.describe(),
             rate,
-            analyzer.window_samples(),
+            analyzer.fft_len(),
         );
     }
 
