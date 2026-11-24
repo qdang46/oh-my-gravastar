@@ -45,7 +45,7 @@ unverified · ⬜ not implemented
 | Profile export (schema v1 JSON) | `omg profile export` | config page export | ✅ |
 | Profile import / restore | `omg profile import` | config page import | 🧪 CLI he-v2/compx only; khub916 export-only |
 | K98 Pro screen info/plan | `kb916 screen info\|plan` | — | 🧪 push/clock stubbed (no read-back) |
-| GIF light frames (cmd 8) | — | — | ⬜ |
+| GIF light frames (cmd 8) — live RGB stream + music-reactive | `kb916 light stream`, `kb916 light music` | — | ✅ live-verified on K1 Pro (LEDs animate; auto-restore) |
 | 2.4 GHz wireless dongle | — | — | 🧪 transport code done (`wireless.rs`), no hardware |
 
 ### HE keyboards — V60 / V75 / V75 Pro / V75 Lite (no hardware yet)
@@ -150,6 +150,8 @@ omg kb916 macro                      # macro region (hex dump)
 omg kb916 light get --json           # decoded lighting state (mode/speed/colours)
 omg kb916 light apply fx.json --yes  # apply a lighting JSON (see docs/lighting-schema.md)
 omg kb916 light stream --pattern rainbow --yes   # live cmd-8 RGB frames (Ctrl-C restores)
+omg kb916 light music --yes                      # music-reactive: system audio → FFT → LEDs
+omg kb916 light music --source mic --yes         # or microphone input
 omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
 omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
 ```
