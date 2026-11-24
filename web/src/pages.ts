@@ -13,6 +13,7 @@ import { renderLightingPage, destroyLightingPage } from './lighting.ts';
 import { MacroPage } from './macro.ts';
 import { AdvPage } from './advkeys.ts';
 import { renderKeysPage, destroyKeysPage } from './remap.ts';
+import { renderMusicPage, destroyMusicPage } from './music.ts';
 import { SECONDARY_PAGES, SECONDARY_RENDERERS, snapshotToJson } from './pages-secondary.ts';
 import { formatVidPid } from './hid.ts';
 
@@ -21,6 +22,7 @@ export type PageId =
   | 'keys'
   | 'macro'
   | 'advanced'
+  | 'music'
   | 'device'
   | 'basic'
   | 'config'
@@ -37,6 +39,7 @@ export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
   { id: 'keys', path: '/keys', title: 'Keys' },
   { id: 'macro', path: '/macro', title: 'Macro' },
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
+  { id: 'music', path: '/music', title: 'Music' },
   { id: 'device', path: '/device', title: 'Device' },
   // Secondary pages (bead jwb): vendor basicFunctions / configurationManagement
   // / rhythm / setting — implemented in pages-secondary.ts.
@@ -49,6 +52,7 @@ export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] =
   { id: 'keys', path: '/keys', title: 'Keys' },
   { id: 'macro', path: '/macro', title: 'Macro' },
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
+  { id: 'music', path: '/music', title: 'Music' },
   { id: 'device', path: '/device', title: 'Device' },
 ];
 
@@ -148,7 +152,7 @@ function renderDevice(root: HTMLElement): void {
     ['/setting', 'Sleep timer'],
     ['/config', 'Backup & restore'],
     ['/basic', 'Keyboard layout info'],
-    ['/rhythm', 'Music-reactive lighting'],
+    ['/music', 'Music lighting'],
   ] as const) {
     const a = el('a', '', label);
     a.href = `#${path}`;
@@ -263,6 +267,15 @@ function renderAdvanced(root: HTMLElement): void {
   advPage = new AdvPage(root);
 }
 
+// ── Music (bead 8r8 — mic-reactive cmd-8 streaming, music.ts) ──────────
+//
+// Stateful like MacroPage/AdvPage: the stream must survive state emits,
+// and navigating away stops + restores via destroy().
+
+function renderMusic(root: HTMLElement): void {
+  renderMusicPage(root);
+}
+
 // ── Router ─────────────────────────────────────────────────────────────
 
 const renderers: Record<PageId, (root: HTMLElement) => void> = {
@@ -270,6 +283,7 @@ const renderers: Record<PageId, (root: HTMLElement) => void> = {
   keys: renderKeys,
   macro: renderMacro,
   advanced: renderAdvanced,
+  music: renderMusic,
   device: renderDevice,
   ...SECONDARY_RENDERERS,
 };
@@ -300,6 +314,7 @@ export function destroyPages(): void {
   macroPage = null;
   advPage?.destroy();
   advPage = null;
+  destroyMusicPage();
   window.removeEventListener('hashchange', route);
 }
 
@@ -330,6 +345,8 @@ function route(): void {
     advPage.destroy();
     advPage = null;
   }
+  // Leaving the Music page stops the stream and restores lighting.
+  if (page !== 'music') destroyMusicPage();
   if (pageRoot) renderers[page](pageRoot);
   updateNav();
 }

@@ -13,7 +13,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use omg_music::capture::{open_source, SourceKind};
-use omg_music::{render_frame, Analyzer, Bands, FrameParams};
+use omg_music::{Analyzer, Bands, FrameParams, SpectrumViz};
 use serde_json::json;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,11 +91,11 @@ pub fn cmd(
         );
     }
 
-    let params = FrameParams {
+    let mut viz = SpectrumViz::new(FrameParams {
         sensitivity,
         brightness,
         ..FrameParams::default()
-    };
+    });
     let period = Duration::from_secs_f64(1.0 / fps);
     let deadline = duration.map(|d| Instant::now() + Duration::from_secs_f64(d));
     let started = Instant::now();
@@ -122,7 +122,7 @@ pub fn cmd(
                 beats += 1;
             }
         }
-        let frame = render_frame(&bands, started.elapsed().as_secs_f32(), &params);
+        let frame = viz.frame(&bands, started.elapsed().as_secs_f32());
         if let Err(e) = kb.write_gif_frame(&frame) {
             stream_error = Some(format!("{e:#}"));
             break;

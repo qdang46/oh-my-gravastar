@@ -9,7 +9,7 @@
 //! band energy × sensitivity; hue drifts slowly with time; a detected
 //! beat flashes the low-frequency (left) third white.
 
-use crate::dsp::{Bands, SPECTRUM_BINS};
+use crate::dsp::{Bands, BeatKind, SPECTRUM_BINS};
 
 /// Keys per keyboard (cmd-6 slot count / cmd-8 frame size ÷ 3).
 pub const KEY_SLOTS: usize = 126;
@@ -61,10 +61,332 @@ fn hsv(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 
 /// Interpolated spectrum energy at normalised key position `x` ∈ [0,1).
 fn spectrum_at(bands: &Bands, x: f32) -> f32 {
+    spectrum_pair(bands, x).0
+}
+
+/// Interpolated (energy, peak) at normalised key position `x` ∈ [0,1).
+fn spectrum_pair(bands: &Bands, x: f32) -> (f32, f32) {
     let pos = x * SPECTRUM_BINS as f32;
     let i = (pos as usize).min(SPECTRUM_BINS - 2);
     let f = pos - i as f32;
-    bands.spectrum[i] * (1.0 - f) + bands.spectrum[i + 1] * f
+    (
+        bands.spectrum[i] * (1.0 - f) + bands.spectrum[i + 1] * f,
+        bands.peak[i] * (1.0 - f) + bands.peak[i + 1] * f,
+    )
+}
+
+// ── Stateful spectrum visualizer ───────────────────────────────────────
+//
+// Classic spectrum-analyzer motion: every band has an attack/decay
+// envelope (fast attack, ~10-frame release) plus a peak cap that jumps
+// instantly and falls slowly. Without this the LEDs just dim/brighten
+// with the instantaneous FFT — no "jumping" bars.
+//
+// Colour is mapped by *frequency*, not key position: bass (left) runs
+// warm (red→orange), treble (right) cool (blue→violet), so the keyboard
+// reads as a real spectrum. A detected beat flashes the bass third.
+
+/// Per-band envelope state.
+#[derive(Clone)]
+struct BandState {
+    /// Attack/decay envelope, 0..1.
+    env: f32,
+    /// Peak cap, 0..1 (instant up, slow fall).
+    peak: f32,
+    /// Frames the peak has been falling.
+    peak_age: u16,
+}
+
+const ATTACK: f32 = 0.55;
+const DECAY: f32 = 0.86;
+const PEAK_HOLD: u16 = 8;
+const PEAK_FALL: f32 = 0.965;
+/// Hue range across the spectrum: 0.00 (red) → 0.78 (violet).
+const HUE_LOW: f32 = 0.00;
+const HUE_HIGH: f32 = 0.78;
+
+/// Stateful renderer — call [`SpectrumViz::frame`] once per LED frame.
+pub struct SpectrumViz {
+    bands: Vec<BandState>,
+    params: FrameParams,
+    /// Beat-flash decay (frames remaining of extra brightness).
+    flash: f32,
+    /// Normalised horizontal position per key slot (default: linear).
+    pos_x: Vec<f32>,
+}
+
+impl SpectrumViz {
+    pub fn new(params: FrameParams) -> Self {
+        Self {
+            bands: vec![
+                BandState {
+                    env: 0.0,
+                    peak: 0.0,
+                    peak_age: 0,
+                };
+                SPECTRUM_BINS
+            ],
+            params,
+            flash: 0.0,
+            pos_x: (0..KEY_SLOTS)
+                .map(|k| k as f32 / KEY_SLOTS as f32)
+                .collect(),
+        }
+    }
+
+    /// Override the slot→horizontal-position map (e.g. from the device
+    /// keymap). Shorter slices leave the tail linear.
+    pub fn set_positions(&mut self, pos_x: &[f32]) {
+        for (k, &x) in pos_x.iter().enumerate().take(KEY_SLOTS) {
+            self.pos_x[k] = x.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Render one frame from the latest [`Bands`]. `t` = seconds since
+    /// start (subtle hue drift only — motion comes from the envelopes).
+    pub fn frame(&mut self, bands: &Bands, t: f32) -> [u8; FRAME_BYTES] {
+        // Update per-band envelopes.
+        for (i, st) in self.bands.iter_mut().enumerate() {
+            let target = (bands.spectrum[i] * self.params.sensitivity).clamp(0.0, 1.0);
+            st.env += if target > st.env { ATTACK } else { DECAY } * (target - st.env);
+            if target > st.peak {
+                st.peak = target;
+                st.peak_age = 0;
+            } else {
+                st.peak_age += 1;
+                if st.peak_age > PEAK_HOLD {
+                    st.peak *= PEAK_FALL;
+                }
+            }
+        }
+        self.flash = if bands.beat {
+            1.0
+        } else {
+            (self.flash - 0.12).max(0.0)
+        };
+
+        // Reuse the Bands struct's peak channel for interpolated lookup.
+        let mut look = Bands {
+            peak: [0.0; SPECTRUM_BINS],
+            ..bands.clone()
+        };
+        for (i, st) in self.bands.iter().enumerate() {
+            look.peak[i] = st.peak;
+        }
+        // spectrum channel carries the envelope now.
+        for (i, st) in self.bands.iter().enumerate() {
+            look.spectrum[i] = st.env;
+        }
+
+        let mut frame = [0u8; FRAME_BYTES];
+        for k in 0..KEY_SLOTS {
+            let x = self.pos_x[k];
+            let (env, peak) = spectrum_pair(&look, x);
+            let envelope = 0.72 + 0.28 * (std::f32::consts::PI * x).sin();
+            // Bar body = envelope; peak cap adds a bright tip on top.
+            let mut v = (env * 0.85 + peak * 0.45) * envelope;
+            v += bands.bass * 0.10; // bass pulse lifts everything slightly
+            v = (v * self.params.brightness + self.flash * 0.25 * (1.0 - x)).clamp(0.0, 1.0);
+
+            // Frequency-mapped hue + slow drift.
+            let hue = HUE_LOW + (HUE_HIGH - HUE_LOW) * x + t * self.params.hue_speed * 0.15;
+            let (mut r, mut g, mut b) = if v > 0.01 {
+                hsv(hue, self.params.saturation, v)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            // Beat flash tints the bass third toward white.
+            if x < 1.0 / 3.0 && self.flash > 0.0 {
+                let f = self.flash * bands.bass;
+                r = r.max(f);
+                g = g.max(f);
+                b = b.max(f);
+            }
+            frame[k] = (r * 255.0).round().clamp(0.0, 255.0) as u8;
+            frame[KEY_SLOTS + k] = (g * 255.0).round().clamp(0.0, 255.0) as u8;
+            frame[2 * KEY_SLOTS + k] = (b * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        frame
+    }
+}
+
+// ── Beat Motion Engine ─────────────────────────────────────────────────
+//
+// Event-driven animation: each detected onset spawns an `Impact` that
+// evolves over ~0.5–1 s independently of the audio frame rate. Kick →
+// radial ring from centre, snare → horizontal sweep (alternating
+// direction), hi-hat → sparse key sparks, generic → small radial bloom.
+// A dim spectrum visualiser runs underneath as ambient base light.
+// Ages are in rendered frames (~30 fps); all motion is frame-count
+// based so it does not depend on wall-clock jitter.
+
+/// Normalised key position: x left→right, y top→bottom, both 0..1.
+pub type KeyPos = (f32, f32);
+
+struct Impact {
+    kind: BeatKind,
+    strength: f32,
+    ox: f32,
+    oy: f32,
+    /// Snare sweep direction (+1 left→right, −1 right→left).
+    dir: f32,
+    /// Frame counter value when the impact was spawned.
+    born: u32,
+    /// Per-impact seed for spark hashing.
+    seq: u32,
+}
+
+/// How long each impact kind stays alive, in frames.
+fn impact_ttl(kind: BeatKind) -> u32 {
+    match kind {
+        BeatKind::Kick => 55,
+        BeatKind::Snare => 40,
+        BeatKind::HiHat => 8,
+        BeatKind::Generic => 25,
+    }
+}
+
+/// Stateful beat-motion renderer — call [`BeatViz::frame`] per LED frame.
+pub struct BeatViz {
+    params: FrameParams,
+    /// Dim ambient spectrum base.
+    spec: SpectrumViz,
+    /// Normalised position per key slot.
+    pos: Vec<KeyPos>,
+    impacts: Vec<Impact>,
+    frame_no: u32,
+    wave_dir: f32,
+    seq: u32,
+}
+
+impl BeatViz {
+    pub fn new(params: FrameParams) -> Self {
+        let ambient = FrameParams {
+            brightness: params.brightness * 0.35,
+            ..params
+        };
+        Self {
+            params,
+            spec: SpectrumViz::new(ambient),
+            pos: (0..KEY_SLOTS)
+                .map(|k| (k as f32 / KEY_SLOTS as f32, 0.5))
+                .collect(),
+            impacts: Vec::new(),
+            frame_no: 0,
+            wave_dir: 1.0,
+            seq: 0,
+        }
+    }
+
+    /// Set real key geometry (normalised). Shorter slices keep the
+    /// linear default for the tail.
+    pub fn set_positions(&mut self, pos: &[KeyPos]) {
+        for (k, &p) in pos.iter().enumerate().take(KEY_SLOTS) {
+            self.pos[k] = (p.0.clamp(0.0, 1.0), p.1.clamp(0.0, 1.0));
+        }
+        let xs: Vec<f32> = pos.iter().map(|p| p.0).collect();
+        self.spec.set_positions(&xs);
+    }
+
+    /// Render one frame. `bands.events` are consumed into impacts.
+    pub fn frame(&mut self, bands: &Bands, t: f32) -> [u8; FRAME_BYTES] {
+        self.frame_no = self.frame_no.wrapping_add(1);
+        for ev in &bands.events {
+            self.seq = self.seq.wrapping_add(1);
+            let (ox, oy, dir) = match ev.kind {
+                BeatKind::Kick => (0.5, 0.45, 1.0),
+                BeatKind::Snare => {
+                    self.wave_dir = -self.wave_dir;
+                    (
+                        if self.wave_dir > 0.0 { -0.1 } else { 1.1 },
+                        0.5,
+                        self.wave_dir,
+                    )
+                }
+                BeatKind::HiHat => (0.0, 0.0, 1.0),
+                BeatKind::Generic => {
+                    let h = hash01(self.seq);
+                    (0.25 + 0.5 * h, 0.3 + 0.4 * hash01(self.seq ^ 0x9E37), 1.0)
+                }
+            };
+            self.impacts.push(Impact {
+                kind: ev.kind,
+                strength: ev.strength,
+                ox,
+                oy,
+                dir,
+                born: self.frame_no,
+                seq: self.seq,
+            });
+        }
+        self.impacts
+            .retain(|i| self.frame_no.wrapping_sub(i.born) < impact_ttl(i.kind));
+
+        // Ambient base from the spectrum visualiser.
+        let base = self.spec.frame(bands, t);
+        let mut out = [0u8; FRAME_BYTES];
+        for k in 0..KEY_SLOTS {
+            let (x, y) = self.pos[k];
+            let mut add = [0.0f32; 3];
+            for im in &self.impacts {
+                let age = self.frame_no.wrapping_sub(im.born) as f32;
+                let s = im.strength * self.params.brightness;
+                let (r, g, b) = match im.kind {
+                    BeatKind::Kick => {
+                        let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
+                        let radius = 0.035 * age;
+                        let ring =
+                            (-((d - radius).powi(2)) / (2.0 * 0.07f32.powi(2))).exp();
+                        let env = (-age / 24.0).exp();
+                        let i = (s * ring * env).min(1.0);
+                        (i, i * 0.72, i * 0.30)
+                    }
+                    BeatKind::Snare => {
+                        let p = im.dir * (0.045 * age - 0.15);
+                        let band = (-((x - p).powi(2)) / (2.0 * 0.05f32.powi(2))).exp();
+                        let wake = ((p - x) * im.dir).max(0.0);
+                        let trail = (-wake / 0.28).exp() * 0.35;
+                        let env = (-age / 18.0).exp();
+                        let i = (s * (band + trail) * env).min(1.0);
+                        (i * 0.35, i * 0.75, i)
+                    }
+                    BeatKind::HiHat => {
+                        // ~25% of keys spark per hat, brief and dim.
+                        let h = hash01(k as u32 ^ im.seq.wrapping_mul(0x85EBCA6B));
+                        if h > 0.25 {
+                            continue;
+                        }
+                        let i = s * (-age / 4.0).exp() * (0.4 + 0.6 * h);
+                        (i * 0.75, i * 0.45, i)
+                    }
+                    BeatKind::Generic => {
+                        let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
+                        let i =
+                            (s * (-d / 0.14).exp() * (-age / 12.0).exp()).min(1.0);
+                        (i, i * 0.9, i * 0.7)
+                    }
+                };
+                add[0] += r;
+                add[1] += g;
+                add[2] += b;
+            }
+            for c in 0..3 {
+                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0;
+                let v = (base_v + add[c]).clamp(0.0, 1.0);
+                out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
+            }
+        }
+        out
+    }
+}
+
+/// Deterministic 0..1 hash for spark selection / pseudo-random origins.
+fn hash01(n: u32) -> f32 {
+    let mut x = n.wrapping_mul(0x9E3779B1);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85EBCA6B);
+    x ^= x >> 13;
+    (x & 0xFFFF) as f32 / 65535.0
 }
 
 /// Render one frame. `t` is seconds since stream start (drives hue drift).
@@ -79,7 +401,9 @@ pub fn render_frame(bands: &Bands, t: f32, params: &FrameParams) -> [u8; FRAME_B
         let mut energy = spectrum_at(bands, x) * gain * envelope;
         // Bass pulse lifts the whole field slightly.
         energy += bands.bass * 0.15;
-        energy = energy.clamp(0.0, 1.0) * params.brightness;
+        // Gamma < 1 lifts mid-level energy so the field reads "lit" not
+        // just on transients (powf(0.75) ≈ +30% at e=0.3).
+        energy = energy.clamp(0.0, 1.0).powf(0.75) * params.brightness;
 
         // Low third flashes on beat.
         let mut r = 0.0f32;
@@ -115,6 +439,7 @@ mod tests {
             treble: 0.5,
             level: 0.8,
             beat: true,
+            ..Bands::default()
         }
     }
 
@@ -152,6 +477,26 @@ mod tests {
         let left: u32 = f[..20].iter().map(|&v| v as u32).sum();
         let right: u32 = f[226..246].iter().map(|&v| v as u32).sum();
         assert!(left > right, "left {left} should exceed right {right}");
+    }
+
+    #[test]
+    fn viz_bars_attack_then_peak_falls() {
+        let mut viz = SpectrumViz::new(FrameParams::default());
+        let mut b = Bands::default();
+        b.spectrum[0] = 1.0; // bass-only energy
+        // First frame: envelope still ramping (attack < 1), but nonzero.
+        let f1 = viz.frame(&b, 0.0);
+        let f2 = viz.frame(&b, 0.03);
+        let energy = |f: &[u8; FRAME_BYTES]| f[..30].iter().map(|&v| v as u32).sum::<u32>();
+        assert!(energy(&f2) > energy(&f1), "attack should brighten");
+        // Silence → envelope decays but peak cap holds briefly, so the
+        // field stays lit longer than the raw signal would suggest.
+        let quiet = Bands::default();
+        let mut last = f2;
+        for i in 0..12 {
+            last = viz.frame(&quiet, 0.1 + i as f32 * 0.03);
+        }
+        assert!(energy(&last) > 0, "peak cap should hold after silence");
     }
 
     #[test]

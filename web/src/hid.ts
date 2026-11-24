@@ -50,6 +50,7 @@ import {
   normalizeBlob,
 } from './proto/advkey916.ts';
 import { buildLightDataPacket, CUSTOM_LIGHT_SLOTS, type Rgb } from './proto/light.ts';
+import { GIF_FRAME_BYTES, gifFramePacket } from './proto/music.ts';
 
 // ── Device identity tables (spec §1, `Ts` table) ───────────────────────
 
@@ -420,6 +421,34 @@ export class Khub916Session {
       throw new Error('the lighting settings were not saved — the keyboard did not confirm it');
     }
     return { command: CMD.lightDataWrite, verified: true };
+  }
+
+  /**
+   * Send one cmd-8 GIF light frame (music-reactive streaming). `frame`
+   * is up to 378 bytes of planar `[R×126][G×126][B×126]`; it is wrapped
+   * in the vendor `[8,0,0,1,0,122,1]` prefix packet
+   * (`proto/music.ts::gifFramePacket`, port of `gif_frame_packet`).
+   *
+   * Fire-and-forget like every write, but with **no settle delay** —
+   * streaming needs the vendor's ~30 ms cadence, which the caller paces
+   * (port of `Khub916::write_gif_frame`). A transport error poisons the
+   * session just like `configWrite`.
+   */
+  async writeGifFrame(frame: Uint8Array): Promise<void> {
+    if (frame.length > GIF_FRAME_BYTES) {
+      throw new Error(`gif frame needs ≤ ${GIF_FRAME_BYTES} bytes, got ${frame.length}`);
+    }
+    if (this.poisoned) {
+      throw new Error(`the keyboard connection was interrupted (${this.poisonReason || 'transfer error'}) — reconnect and try again`);
+    }
+    const pkt = gifFramePacket(frame);
+    try {
+      await this.device.sendFeatureReport(this.reportId, pkt);
+    } catch (e) {
+      this.poisoned = true;
+      this.poisonReason = `gif frame write failed: ${e instanceof Error ? e.message : String(e)}`;
+      throw new Error(`the keyboard connection was interrupted (${this.poisonReason})`);
+    }
   }
 
   // ── Advanced keys (SOCD/MT/TGL — proto/advkey916.ts) ─────────────────

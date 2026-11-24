@@ -55,18 +55,6 @@ function kv(dl: HTMLElement, key: string, value: string): void {
   dl.append(dt, el('dd', '', value));
 }
 
-function comingSoon(title: string, blurb: string, facts: string[] = []): HTMLElement {
-  const { card: c, body } = card(title);
-  body.append(el('p', 'coming-soon', 'Coming soon — read-only preview.'));
-  body.append(el('p', 'hint', blurb));
-  if (facts.length) {
-    const ul = el('ul', 'fact-list');
-    for (const f of facts) ul.append(el('li', '', f));
-    body.append(ul);
-  }
-  return c;
-}
-
 function disconnectedCard(title: string, blurb: string): HTMLElement {
   const { card: c, body } = card(title);
   body.append(el('p', 'hint', blurb));
@@ -696,17 +684,21 @@ function renderConfig(root: HTMLElement): void {
 
 function renderRhythm(root: HTMLElement): void {
   root.replaceChildren();
-  root.append(
-    comingSoon(
-      'Music-reactive lighting',
-      'The vendor app can make the keyboard lights react to music, but it ' +
-        'needs their Windows companion program — a web page cannot do that part.',
-      [
-        'Keyboard-side lighting is fully available today — see the Lighting page.',
-        'Live per-key colours are visible on the Keys page.',
-      ],
+  const c = card('Music-reactive lighting');
+  c.body.append(
+    el(
+      'p',
+      'hint',
+      'Music-reactive lighting now lives on its own page — it listens through ' +
+        'your microphone and animates the keyboard lights in real time.',
     ),
   );
+  const link = el('a', '', 'Open the Music page');
+  link.href = '#/music';
+  const row = el('div', 'sec-actions');
+  row.append(link);
+  c.body.append(row);
+  root.append(c.card);
 }
 
 // ── Page: Setting (vendor setting — empty placeholder upstream) ────────

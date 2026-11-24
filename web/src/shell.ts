@@ -22,6 +22,7 @@ const ICONS: Record<PageId, string> = {
   keys: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg>',
   macro: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5M12 19h8"/></svg>',
   advanced: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/></svg>',
+  music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l10-2v11"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="15" r="2.5"/></svg>',
   device: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>',
   basic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="8" height="8" rx="1.5"/><rect x="13" y="4" width="8" height="8" rx="1.5"/><rect x="3" y="14" width="8" height="6" rx="1.5"/><rect x="13" y="14" width="8" height="6" rx="1.5"/></svg>',
   config: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h13"/><path d="M18 9l3 3-3 3"/></svg>',
@@ -105,8 +106,17 @@ export function mountShell(root: HTMLElement): void {
   topbar.append(brand, actions);
 
   const statusEl = el('p', 'status', app.status);
+  // Shown while the Music page streams cmd-8 frames (app.musicActive) —
+  // other pages' lighting writes are effectively overridden until Stop.
+  const musicBanner = el(
+    'div',
+    'music-banner',
+    'Music mode is active — the keyboard lights follow your microphone. ' +
+      'Press Stop on the Music page to restore your lighting.',
+  );
+  musicBanner.hidden = true;
   const page = el('main', 'page');
-  mainCol.append(topbar, statusEl, page);
+  mainCol.append(topbar, statusEl, musicBanner, page);
 
   const shell = el('div', 'shell');
   shell.append(sidebar, mainCol);
@@ -158,6 +168,7 @@ export function mountShell(root: HTMLElement): void {
   subscribe(() => {
     statusEl.textContent = app.status;
     statusEl.classList.toggle('error', app.statusError);
+    musicBanner.hidden = !app.musicActive;
 
     const connected = app.connected !== null;
     connectBtn.hidden = connected || app.busy;

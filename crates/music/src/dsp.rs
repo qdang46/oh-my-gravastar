@@ -26,13 +26,29 @@ const BEAT_RATIO: f32 = 1.35;
 /// every `BEAT_COOLDOWN` analyses.
 const BEAT_MIN_ENERGY: f32 = 0.02;
 const BEAT_COOLDOWN: usize = 8;
+/// Onset detection: spectral flux must exceed the trailing mean by this
+/// factor, with at least `ONSET_MIN_FLUX` absolute flux, and events are
+/// refractory for `EVENT_REFRACTORY` analyses (~130 ms @ 23 analyses/s).
+const ONSET_FLUX_RATIO: f32 = 2.0;
+const ONSET_MIN_FLUX: f32 = 0.02;
+const EVENT_REFRACTORY: usize = 3;
+const FLUX_HISTORY: usize = 32;
+/// Spectrum-bin split for onset classification (24 log bins, 30 Hz–24 kHz):
+/// bass ≈ bins 0–5, mid 6–15, treble 16–23.
+const BASS_BINS: usize = 6;
+const MID_BINS: usize = 16;
 
 /// One analysis frame: smoothed band energies (0..1), overall level and a
 /// beat flag that stays hot for one frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bands {
+    /// Onset events detected on this frame (spectral flux vs history).
+    pub events: Vec<BeatEvent>,
     /// Log-spaced spectrum energies, `SPECTRUM_BINS` entries, 0..1.
     pub spectrum: [f32; SPECTRUM_BINS],
+    /// Reserved peak-cap channel (0 from the analyser; renderers may use
+    /// it to pass per-band peak state through lookups).
+    pub peak: [f32; SPECTRUM_BINS],
     /// Bass band (20 Hz–250 Hz) energy, 0..1.
     pub bass: f32,
     /// Low-mid band (250 Hz–2 kHz), 0..1.
@@ -45,10 +61,33 @@ pub struct Bands {
     pub beat: bool,
 }
 
+/// Transient classification from per-region spectral flux.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BeatKind {
+    /// Low-frequency onset (kick drum region, ~20–150 Hz).
+    Kick,
+    /// Mid-band onset (snare/body, ~150 Hz–2 kHz).
+    Snare,
+    /// High-band onset (hi-hat/cymbals, >4 kHz).
+    HiHat,
+    /// Broadband onset not clearly attributable to one region.
+    Generic,
+}
+
+/// A detected musical event. `strength` is 0..1 (flux over adaptive
+/// threshold); the renderer turns it into an animation impulse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatEvent {
+    pub kind: BeatKind,
+    pub strength: f32,
+}
+
 impl Default for Bands {
     fn default() -> Self {
         Self {
+            events: Vec::new(),
             spectrum: [0.0; SPECTRUM_BINS],
+            peak: [0.0; SPECTRUM_BINS],
             bass: 0.0,
             mid: 0.0,
             treble: 0.0,
@@ -81,6 +120,13 @@ pub struct Analyzer {
     bass_history: Vec<f32>,
     analyses: usize,
     since_beat: usize,
+    /// Raw (unsmoothed) spectrum of the previous analysis, for spectral
+    /// flux onset detection.
+    prev_spectrum: [f32; SPECTRUM_BINS],
+    /// Recent total-flux samples for the adaptive onset threshold.
+    flux_history: Vec<f32>,
+    /// Analyses since the last emitted onset event (refractory period).
+    since_event: usize,
 }
 
 impl Analyzer {
@@ -123,6 +169,9 @@ impl Analyzer {
             bass_history: Vec::with_capacity(64),
             analyses: 0,
             since_beat: BEAT_COOLDOWN,
+            prev_spectrum: [0.0; SPECTRUM_BINS],
+            flux_history: Vec::with_capacity(64),
+            since_event: EVENT_REFRACTORY,
         })
     }
 
@@ -191,6 +240,70 @@ impl Analyzer {
         self.treble_smooth += SMOOTH_ALPHA * (treble - self.treble_smooth);
         self.level_smooth += SMOOTH_ALPHA * (level - self.level_smooth);
 
+        // Spectral flux onset detection on the raw (unsmoothed) bands:
+        // only positive magnitude changes count, so sustained bass does
+        // not retrigger. Classify the dominant rising region.
+        let mut flux = [0.0f32; 3]; // bass, mid, treble regions
+        let mut total_flux = 0.0f32;
+        for i in 0..SPECTRUM_BINS {
+            let d = spectrum[i] - self.prev_spectrum[i];
+            if d > 0.0 {
+                let region = if i < BASS_BINS {
+                    0
+                } else if i < MID_BINS {
+                    1
+                } else {
+                    2
+                };
+                flux[region] += d;
+                total_flux += d;
+            }
+        }
+        self.prev_spectrum = spectrum;
+
+        self.flux_history.push(total_flux);
+        if self.flux_history.len() > FLUX_HISTORY {
+            self.flux_history.remove(0);
+        }
+        self.since_event += 1;
+        let events = if self.flux_history.len() >= 8 && self.since_event >= EVENT_REFRACTORY {
+            let mean = self.flux_history[..self.flux_history.len() - 1]
+                .iter()
+                .sum::<f32>()
+                / (self.flux_history.len() - 1) as f32;
+            let thresh = (mean * ONSET_FLUX_RATIO).max(ONSET_MIN_FLUX);
+            if total_flux > thresh {
+                self.since_event = 0;
+                let (bi, _) = flux
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .unwrap();
+                let runner_up = flux
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != bi)
+                    .map(|(_, v)| *v)
+                    .fold(0.0f32, f32::max);
+                let dominance = flux[bi] / (flux[bi] + runner_up + 1e-6);
+                let strength = ((total_flux - thresh) / thresh).min(2.0) / 2.0;
+                let kind = if dominance < 0.6 {
+                    BeatKind::Generic
+                } else {
+                    match bi {
+                        0 => BeatKind::Kick,
+                        1 => BeatKind::Snare,
+                        _ => BeatKind::HiHat,
+                    }
+                };
+                vec![BeatEvent { kind, strength }]
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         // Beat: bass flux vs trailing average.
         self.bass_history.push(self.bass_smooth);
         if self.bass_history.len() > 43 {
@@ -213,7 +326,9 @@ impl Analyzer {
         }
 
         Some(Bands {
+            events,
             spectrum: self.spectrum_smooth,
+            peak: [0.0; SPECTRUM_BINS],
             bass: self.bass_smooth,
             mid: self.mid_smooth,
             treble: self.treble_smooth,

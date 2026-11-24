@@ -89,6 +89,15 @@ import {
   planTgl,
   scanAdvBindings,
 } from '../src/proto/advkey916.ts';
+import {
+  GIF_FRAME_BYTES,
+  GIF_FRAME_PREFIX,
+  KEY_SLOTS,
+  MusicAnalyzer,
+  SpectrumViz,
+  gifFramePacket,
+  silentBands,
+} from '../src/proto/music.ts';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -744,6 +753,62 @@ function liveProfile(): Uint8Array {
     check('keyconf be u32', kp[7] === 0x21 && kp[8] === 0x00 && kp[10] === 0x32 && kp[14] === 0x04);
     check('keyconf 5A A5 marker', kp[517] === 0x5a && kp[518] === 0xa5);
   }
+}
+
+// ── Music mode (proto/music.ts — port of light.rs gif_frame_packet +
+//    crates/music dsp/render) ───────────────────────────────────────────
+{
+  // cmd-8 packet layout (light.rs gif_frame_packet): 519-byte feature
+  // payload, vendor prefix, data at offset 7, zero padding, no marker.
+  const frame = new Uint8Array(GIF_FRAME_BYTES);
+  for (let i = 0; i < GIF_FRAME_BYTES; i++) frame[i] = i & 0xff;
+  const pkt = gifFramePacket(frame);
+  check('gif packet 519', pkt.length === 519);
+  check('gif prefix', eq([...pkt.slice(0, 7)], [...GIF_FRAME_PREFIX]));
+  check('gif data offset', pkt[7] === 0 && pkt[7 + 255] === 255 && pkt[7 + 377] === 377 % 256);
+  check('gif zero pad', pkt[519 - 1] === 0 && pkt[7 + GIF_FRAME_BYTES] === 0);
+  const short = gifFramePacket(new Uint8Array([1, 2, 3]));
+  check('gif short frame', short[7] === 1 && short[9] === 3 && short[10] === 0);
+  check('gif oversize refused', throws(() => gifFramePacket(new Uint8Array(GIF_FRAME_BYTES + 1))));
+
+  // SpectrumViz (render.rs SpectrumViz port): silence → black, loud →
+  // lit, planar R/G/B planes differ.
+  const viz = new SpectrumViz();
+  const black = viz.frame(silentBands(), 0);
+  check('viz silence black', black.every((b) => b === 0));
+  const loud = silentBands();
+  loud.spectrum.fill(0.8);
+  loud.bass = 0.9;
+  loud.mid = 0.7;
+  loud.treble = 0.5;
+  loud.level = 0.8;
+  loud.beat = true;
+  const lit = viz.frame(loud, 0);
+  check('viz frame size', lit.length === GIF_FRAME_BYTES);
+  check('viz lit nonzero', lit.some((b) => b > 0));
+  check(
+    'viz planar planes differ',
+    !eq([...lit.slice(0, KEY_SLOTS)], [...lit.slice(KEY_SLOTS, 2 * KEY_SLOTS)]) ||
+      !eq([...lit.slice(KEY_SLOTS, 2 * KEY_SLOTS)], [...lit.slice(2 * KEY_SLOTS)]),
+  );
+
+  // MusicAnalyzer: byte-frequency bands → bass/mid/treble + level.
+  const ana = new MusicAnalyzer(48_000, 2048);
+  const freq = new Uint8Array(1025);
+  // 48 kHz/2048 ≈ 23.4 Hz per bin; bass band ≈ bins 1–10.
+  for (let i = 1; i <= 10; i++) freq[i] = 255;
+  let last = ana.analyze(freq);
+  for (let i = 0; i < 10; i++) last = ana.analyze(freq);
+  check('analyzer bass dominates', last.bass > last.treble, `bass=${last.bass} treble=${last.treble}`);
+  check('analyzer level nonzero', last.level > 0, `level=${last.level}`);
+  check('analyzer spectrum bins', last.spectrum.length === 24);
+  // Broadband input → healthy overall level.
+  const loudFreq = new Uint8Array(1025).fill(128);
+  let loudLast = ana.analyze(loudFreq);
+  for (let i = 0; i < 10; i++) loudLast = ana.analyze(loudFreq);
+  check('analyzer loud level', loudLast.level > 0.3, `level=${loudLast.level}`);
+  const quiet = ana.analyze(new Uint8Array(1025));
+  check('analyzer silence level decays', quiet.level < loudLast.level);
 }
 
 function hex(v: number): string {

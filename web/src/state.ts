@@ -54,6 +54,12 @@ export const app = {
   statusError: false,
   /** True while a connect/refresh is in flight. */
   busy: false,
+  /**
+   * True while the Music page is streaming cmd-8 frames. Other pages
+   * show a "music mode active" banner; the stream always restores the
+   * previous lighting on stop (see music.ts).
+   */
+  musicActive: false,
 };
 
 type Listener = () => void;
