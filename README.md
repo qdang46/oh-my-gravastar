@@ -13,7 +13,7 @@ network, no telemetry.
 
 | Device family | Protocol | CLI | Status |
 | --- | --- | --- | --- |
-| Mercury K1 / K1 Pro / K1 Lite / K98 Pro / NP series (wired USB) | khub916 feature reports | `omg kb916` | Implemented read-only: info, keys, profile, power, light colours/data, macro dump — live-verified on a K1 Pro ([docs/protocol-khub916.md](docs/protocol-khub916.md)). Writes, screen and wireless are not wired yet |
+| Mercury K1 / K1 Pro / K1 Lite / K98 Pro / NP series (wired USB) | khub916 feature reports | `omg kb916` | Implemented: reads plus verified writes (keymap, profile fields, light colours) — live-verified on a K1 Pro ([docs/protocol-khub916.md](docs/protocol-khub916.md)). Screen info/plan and wireless transport are separate |
 | K1/K98 over 2.4 GHz dongle | khub916_wireLess (19-byte reports) | — | Code-verified only, no hardware yet (P2) |
 | Mercury HE keyboards (V60 / V75 / V75 Pro / V75 Lite …) | HE "v2" 64-byte reports, usage page `0xFFB0` | `omg kb` | Implemented: info, layout, keys, live travel, profiles, polling, OS mode, per-key performance, lighting, calibration ([docs/protocol-he-v2.md](docs/protocol-he-v2.md)) |
 | HE keyboards — SparkPlayJoy 6x21 analog | `0xFFA0:0001` framed reports | `omg kb travel-matrix` | Implemented read-only: identity proof + live 6×21 travel matrix in µm, `--watch` streams ~10 Hz ([docs/protocol-sparkplayjoy.md](docs/protocol-sparkplayjoy.md)); hardware verification pending on a V75 board |
@@ -69,7 +69,7 @@ omg kb perf get 1 2                   # performance settings of matrix row 1, co
 omg kb polling get                    # supported + active polling rates
 ```
 
-K1 / K98 series (khub916 wired protocol; read-only for now):
+K1 / K98 series (khub916 wired protocol):
 
 ```sh
 omg kb916 info                        # UUID, catalog model, firmware, screen
@@ -82,8 +82,21 @@ omg kb916 light-data                  # per-mode light blob (hex dump)
 omg kb916 macro                      # macro region (hex dump)
 ```
 
-Writes (`omg kb916 set …`), screen commands and the 916_wireLess transport
-return "not implemented" (exit code 3) — see docs/protocol-khub916.md §8.
+Writes require `--yes` and are verified by read-back (live-verified on a
+K1 Pro):
+
+```sh
+omg kb916 set key 100 0x00000004 --yes          # one key slot (read-modify-write)
+omg kb916 set keymap keys.txt --yes             # full table, one u32 per token
+omg kb916 set sleep 30 --yes                    # sleep timeout (profile byte 24)
+omg kb916 set light-mode 15 4 0 --yes           # light mode/speed/brightness
+omg kb916 set light-color 0 '#FF0000' --yes     # one custom-light slot
+```
+
+Screen commands (`omg kb916 screen …` is info/plan only — actual screen
+writes have no read-back path) and the 916_wireLess transport return
+"not implemented" (exit code 3) — see docs/protocol-khub916.md §8 and
+docs/protocol-khub916-screen.md.
 
 SparkPlayJoy analog interface (V75 / V75 Pro / V75 Lite boards expose a
 second HID interface on usage page `0xFFA0`):
@@ -141,8 +154,8 @@ omg profile import backup.json --yes       # back up, then apply + verify
 Import matches devices by protocol + VID/PID + usage page, snapshots the
 current state to `~/.local/share/oh-my-gravastar/backups/<utc-ts>/` before
 writing, and verifies every change by read-back. khub916 and SparkPlayJoy
-are export-only for now (khub916 writes are hardware-unverified;
-SparkPlayJoy has no write path).
+are export-only for now (khub916 has verified `kb916 set` writes but no
+whole-profile import mapping; SparkPlayJoy has no write path).
 
 ### JSON output
 

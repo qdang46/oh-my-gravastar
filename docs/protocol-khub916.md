@@ -2,8 +2,10 @@
 
 Status: **reversed from the vendor web configurator** (`docs/research/khub-webapp/`,
 a mirror of the khub web driver JS). The wired "916" transport is **verified live**
-against a GravaStar Mercury K1 Pro (VID 0x258a / PID 0x010c) with read-only queries;
-the wireless "916_wireLess" transport is code-verified only (no device attached).
+against a GravaStar Mercury K1 Pro (VID 0x258a / PID 0x010c) with read-only queries
+**and with the cmd 3/4/6 config writes** (keymap, profile, custom light colours —
+each sent fire-and-forget and confirmed by read-back, 2026-11-24); the wireless
+"916_wireLess" transport is code-verified only (no device attached).
 
 Vendor JS engine classes (all in `index-M8-m9qFR.js`, deobfuscated copy at
 `index-M8-m9qFR.deob.js` — generated locally, not committed):
@@ -103,9 +105,17 @@ bytes 7..  command payload (big-endian u32 key values, RGB planes, etc.)
 ```
 
 Packets are **not** length-prefixed; they are placed in the 519-byte buffer and
-zero-padded. Some payloads append a `0x5A 0xA5` trailer after the last data
-byte (key-config writes cmd 3, image data cmd 12, GIF cmd 8, SOCD/MT/TGL history
-cmd 18) — an end-of-payload marker [inferred: terminator, not checksum].
+zero-padded. Some payloads carry a `0x5A 0xA5` marker at the **end of the
+packet** — for cmd 3 it overwrites the last two payload bytes (the keymap's
+512-byte field is zero-padded first, so the marker lands inside the padding);
+the profile blob simply contains `5A A5` as its last two data bytes
+(live-verified). [inferred: end-of-data marker, not checksum — the wired
+transport has no checksum at all].
+
+**Write commands (3/4/6, and the screen cmds 11/12/13) are fire-and-forget**:
+the vendor JS calls `sendFeatureReport` and never `receiveFeatureReport` for
+them [verified from code + live]. Callers must verify writes by re-issuing
+the matching query (131/132/134).
 
 ### Response packet layout (wired) [verified live]
 
@@ -222,17 +232,36 @@ Only query commands were sent (the same ones the web driver issues on connect).
 Confirms: report-ID byte, 7-byte echoed header, big-endian u32 key values,
 `slice(7)` payload offset, variable-length responses up to 519 payload bytes.
 
-## 6. Command map — wired 916 (`Ht`) [verified from code; queries live-verified]
+### Write verification log (K1 Pro, 2026-11-24, `omg kb916 set … --yes`)
+
+The vendor JS only ever calls `sendFeatureReport` for write commands and
+never reads a reply, so writes are fire-and-forget feature reports followed
+by the matching query as read-back verify (150 ms settle, vendor command
+spacing is ~30 ms / 100 ms debounce).
+
+| write | verification |
+|---|---|
+| cmd 4 profile (`set sleep`, `set light-mode`) | `sleep 2→3→2` persisted across reads; `light-mode 15 4 0 → 15 8 12 → 15 4 0` changed profile bytes 86/87 (`00 47`→`0C 87`→`00 47`) exactly per the `findSecond255Index` record layout; full 128-byte blob read-back identical each time |
+| cmd 6 custom light (`set light-color 0`) | `#0000FF→#FF0000→#0000FF` on slot 0 (pos 8) persisted across reads |
+| cmd 3 keymap (`set key`, `set keymap`) | full-table no-op write of all 126 read entries verified; slot 100 `0x00000000→0x00000004→0x00000000` persisted across reads (`A` label appeared and cleared) |
+
+Keymap entry count resolved: the K1 Pro **read returns a fixed 126 u32
+entries** (504 payload bytes; trailing slots are zero but still returned —
+the count is model-dependent, not trimmed). The write path pads to the
+protocol's 128 slots exactly like the vendor `formatKeyPayload`
+(zero-fill to 512 B) and the verify compares zero-padded to 128 — see §8.
+
+## 6. Command map — wired 916 (`Ht`) [verified from code; queries + cmd 3/4/6 writes live-verified]
 
 Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
 `arg` = `layer & 3 | ((system ?? 0) & 1) << 2` for keymap cmds 3/131.
 
 | cmd | name | dir | tagA/B | payload | JS source |
 |---|---|---|---|---|---|
-| 3 | write key configuration | → | 248/1 | 512 B: 128 × u32 BE key values + `5A A5` trailer | `setKeyboardKeys`, `sendKeyConfiguration` |
-| 4 | write profile/config blob | → | 128/0 | ~128 B profile (see §7) | `setKeyboardSleepTime`, `setKeyboardLight` |
+| 3 | write key configuration | → | 248/1 | 512 B: u32 BE values zero-padded to 128 slots; `5A A5` **overwrites the payload's last two bytes** (packet bytes 517/518), not appended | `setKeyboardKeys`, `sendKeyConfiguration` |
+| 4 | write profile/config blob | → | 128/0 | ~128 B profile verbatim incl. its trailing `5A A5` (see §7) | `setKeyboardSleepTime`, `setKeyboardLight` |
 | 5 | write macro region | → | len&0xFF/0 | ≤512 B assembled macro table | `setKeyBoardMacroKey`, `deleteKeyBoardMacroKey`, `setKeyBoardMacroIndependent` |
-| 6 | write custom light colors | → | 122/1 | 378 B (126×R,126×G,126×B planes) | `setKeyboardCustomLightColor(Array)` |
+| 6 | write custom light colors | → | 122/1 | 378 B (126×R,126×G,126×B planes), no marker | `setKeyboardCustomLightColor(Array)` |
 | 8 | GIF light frames | → | 122/1 | 512 B frames, 7-B prefix `[8,0,0,1,0,122,1]`, data at +7 | `setGifLight` |
 | 11 | set screen time | → | 14/0 | `[0,0,0,0] + 7B datetime + week` | `setKeyBoardScreenTime` |
 | 12 | screen image data | → | 0/2 | `[0,frameIdx,chunkIdx,0,0,2] + 512 B` per frame | `setKeyBoardImg` |
@@ -347,8 +376,21 @@ are in `parseKeyboardProfile`/`waitDataPacket`/`inputReport`.
   command — likely fixed protocol version markers [inferred].
 - tagA/tagB pairs look like an expected-response channel tag; exact semantics
   unconfirmed [inferred].
-- The `0x5A 0xA5` trailer is an end marker inside payloads, not a checksum
-  (no checksum exists on the wired transport) [inferred].
+- The `0x5A 0xA5` marker sits at the **end of the 519-byte packet**: for
+  cmd 3 it overwrites the last two bytes of the zero-padded 512-byte key
+  payload (so slot 127's low half reads `5A A5` on the wire), and the
+  profile blob carries it as ordinary trailing data. It is an end-of-data
+  marker, not a checksum (no checksum exists on the wired transport)
+  [inferred; positions code-verified, live writes confirmed].
+- Keymap slot count is **model-dependent**: the K1 Pro read returns a fixed
+  126 u32 entries (trailing zero slots are still returned, not trimmed).
+  Writes always send the full 512-byte/128-slot field zero-padded; the
+  read-back verify therefore compares zero-padded to 128 entries. Other
+  models (K98) may report a different count — the same padding rule
+  applies [live-verified on K1 Pro].
+- Whether the firmware *stores* the two spare slots (126/127) or ignores
+  them is unconfirmed; values written there are not observable via cmd 131
+  on the K1 Pro [inferred].
 - Wireless input-report byte 0 role (report-ID echo vs sequence) unconfirmed;
   keepalive packets begin `0x0A 0x01 0x00 0x04 0x02` [inferred].
 - Wireless `916_wireLess` devices were not available for live test; the

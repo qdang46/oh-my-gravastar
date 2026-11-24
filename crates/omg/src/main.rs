@@ -3719,16 +3719,17 @@ fn parse_polling_rate(s: &str) -> Result<u8> {
 
 // ── khub916 keyboards (K1 / K1 Pro / K98 Pro, wired "916") ─────────────
 //
-// Read commands plus `screen info`/`screen plan`. The proto crate also
-// exposes write_keymap / write_profile / write_custom_light_colors and
-// the fire-and-forget screen writers (screen_begin/screen_frame/
-// screen_push/screen_end/set_screen_clock), but they are deliberately NOT
-// wired into the CLI: the keymap write needs a full 128-entry table while
-// the device only returns 126 entries on read (length mismatch —
-// docs/protocol-khub916.md §8), the profile field semantics are only
-// partially proven, no write has been live-verified, and screen writes
-// have no read-back path at all (docs/protocol-khub916-screen.md §2).
-// The 916_wireLess transport is a separate bead.
+// Read commands plus `screen info`/`screen plan`, and `set` writes for the
+// three documented config commands — keymap (3), profile (4) and custom
+// light colours (6). Writes are fire-and-forget feature reports (the
+// vendor JS never reads write replies) followed by a read-back verify in
+// the proto crate; every `set` subcommand requires `--yes` and validates
+// ranges before anything is sent. The keymap write zero-pads to the
+// protocol's 128 slots with the `5A A5` end marker while devices report a
+// model-dependent slot count on read (K1 Pro: 126) — the verify compares
+// zero-padded (docs/protocol-khub916.md §6/§8). Screen writes stay refused
+// (no read-back path, docs/protocol-khub916-screen.md §2) and the
+// 916_wireLess transport is a separate bead.
 
 #[derive(Subcommand)]
 enum Kb916Commands {
@@ -3772,8 +3773,8 @@ enum Kb916Commands {
     /// The 916_wireLess 2.4 GHz transport is a separate bead — always
     /// "not implemented".
     Wireless,
-    /// Writes (keymap / profile / custom light colours) are not wired
-    /// into the CLI yet — always "not implemented" (see module comment).
+    /// Writes: keymap (cmd 3), profile fields (cmd 4) and custom light
+    /// colours (cmd 6), each read-modify-write verified. Requires `--yes`.
     Set {
         #[command(subcommand)]
         command: Kb916Set,
@@ -3833,14 +3834,77 @@ enum Kb916LightColors {
 
 #[derive(Subcommand)]
 enum Kb916Set {
-    /// `omg kb916 set key <index> <keyvalue>` — pending.
-    Key { index: usize, value: String },
-    /// Full keymap write — pending.
-    Keymap,
-    /// Profile write — pending.
-    Profile,
-    /// Custom light colour write — pending.
-    LightColors,
+    /// Set one key slot: read-modify-write of the whole keymap (cmd 3,
+    /// tags 248/1). `index` is the 0-based slot of the keymap read-back
+    /// (vendor `pos = 8 + index*4`). `value` is the raw u32 key value:
+    /// `0x` hex, decimal, or `none`/`empty`/`-` for unassigned (0).
+    Key {
+        #[command(flatten)]
+        yes: Yes,
+        /// Layer bits 0-1 of the keymap argument.
+        #[arg(long, default_value_t = 0)]
+        layer: u8,
+        /// System/layout bit (<<2) of the keymap argument.
+        #[arg(long, default_value_t = 0)]
+        system: u8,
+        /// Slot index into the keymap read-back for this layer/system.
+        index: usize,
+        /// New u32 key value (`0x` hex, decimal, or `none` = 0).
+        value: String,
+    },
+    /// Replace the whole keymap from a file (`-` reads stdin): u32 values
+    /// as whitespace/comma-separated `0x` hex or decimal tokens. The count
+    /// must equal the device's keymap read length for the same
+    /// layer/system argument (K1 Pro: 126).
+    Keymap {
+        #[command(flatten)]
+        yes: Yes,
+        /// Layer bits 0-1 of the keymap argument.
+        #[arg(long, default_value_t = 0)]
+        layer: u8,
+        /// System/layout bit (<<2) of the keymap argument.
+        #[arg(long, default_value_t = 0)]
+        system: u8,
+        /// File with the key values, or `-` for stdin.
+        file: String,
+    },
+    /// Set the keyboard sleep time in seconds (profile byte 24, cmd 4 —
+    /// the vendor `setKeyboardSleepTime` path).
+    Sleep {
+        #[command(flatten)]
+        yes: Yes,
+        /// Sleep timeout in seconds (profile byte, 0-255).
+        seconds: u8,
+    },
+    /// Set the current light mode plus its per-mode speed and brightness
+    /// (profile blob, cmd 4 — the vendor `setKeyboardLight` profile path;
+    /// no per-key colour data is sent). Modes 0/19/275/277 carry no
+    /// per-mode record; other modes must fit the profile's record table.
+    LightMode {
+        #[command(flatten)]
+        yes: Yes,
+        /// Light mode index (bounded by the profile record table).
+        mode: u16,
+        /// Effect speed 0-20 (vendor limit; only the low nibble is stored).
+        speed: u8,
+        /// Brightness 0-20 (vendor limit).
+        bright: u8,
+        /// Effect type: 1 = custom-colour capable (packs type code 0),
+        /// any other value packs 7.
+        #[arg(long, default_value_t = 0)]
+        light_type: u8,
+    },
+    /// Set one custom-light colour slot (cmd 6, read-modify-write of the
+    /// 126-entry RGB plane table). `index` is the 0-based slot
+    /// (vendor `pos = 8 + index*4`); colour is `#rrggbb` or `r,g,b`.
+    LightColor {
+        #[command(flatten)]
+        yes: Yes,
+        /// Colour slot index (0..125).
+        index: usize,
+        /// `#rrggbb` or `r,g,b`.
+        color: String,
+    },
 }
 
 /// What `open_khub916` resolved to.
@@ -3926,10 +3990,6 @@ fn kb916_wireless_pending() -> &'static str {
     "the 916_wireLess transport (19-byte output reports, chunked writes, additive checksum) is a separate bead — docs/protocol-khub916.md §3/§7"
 }
 
-fn kb916_write_pending() -> &'static str {
-    "writes are not wired into the CLI yet: the keymap write needs a full 128-entry table but the device returns 126 entries on read (length mismatch, docs/protocol-khub916.md §8), profile field semantics are only partially proven, and no khub916 write has been live-verified. Pending: `set key <index> <keyvalue>` via read-modify-write of the full keymap, `set profile`, `set light-colors`"
-}
-
 /// Resolve the session for a read command, mapping the wireless selection
 /// to the unsupported exit.
 fn kb916_session(cli: &Cli) -> Result<Result<(DeviceInfo, khub::Khub916), ExitCode>> {
@@ -3951,9 +4011,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         Kb916Commands::Wireless => {
             return kb916_unsupported(cli, "916_wireLess transport", kb916_wireless_pending());
         }
-        Kb916Commands::Set { .. } => {
-            return kb916_unsupported(cli, "khub916 writes", kb916_write_pending());
-        }
+        Kb916Commands::Set { command } => return cmd_kb916_set(cli, command),
         _ => {}
     }
 
@@ -4140,6 +4198,212 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// ── khub916 writes (`kb916 set`, docs/plan.md §2 + protocol-khub916.md) ──
+//
+// Every subcommand requires `--yes` (checked before the device is even
+// opened), validates its arguments, performs a read-modify-write through
+// the proto crate, and reports the `WriteOutcome` (the proto layer already
+// read the value back and compared it). Writes are fire-and-forget feature
+// reports; the read-back IS the verification — a mismatch is an error,
+// not a silent success.
+
+/// Parse one keymap u32 value: `0x` hex, decimal, or `none`/`empty`/`-`.
+fn parse_kb916_key_value(s: &str) -> Result<u32> {
+    let t = s.trim();
+    if matches!(t, "none" | "empty" | "-") {
+        return Ok(0);
+    }
+    let (digits, radix) = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        (h, 16)
+    } else {
+        (t, 10)
+    };
+    u32::from_str_radix(digits, radix)
+        .map_err(|_| anyhow!("bad key value '{s}' (want 0x hex, decimal, or 'none')"))
+}
+
+/// Parse a keymap file: whitespace/comma-separated u32 tokens, `-` = stdin.
+fn parse_kb916_key_values(text: &str) -> Result<Vec<u32>> {
+    let values: Vec<u32> = text
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|t| !t.is_empty())
+        .map(parse_kb916_key_value)
+        .collect::<Result<_>>()?;
+    if values.is_empty() {
+        bail!("keymap file contains no values");
+    }
+    if values.len() > khub::KEYMAP_ENTRIES {
+        bail!(
+            "keymap file has {} values, max {}",
+            values.len(),
+            khub::KEYMAP_ENTRIES
+        );
+    }
+    Ok(values)
+}
+
+/// Shared tail of a `kb916 set` command: print the verified outcome.
+fn kb916_write_report(
+    cli: &Cli,
+    device: &DeviceInfo,
+    change: &str,
+    outcome: &khub::WriteOutcome,
+) -> Result<ExitCode> {
+    if cli.json {
+        print_json(&json!({
+            "device": device,
+            "change": change,
+            "command": outcome.command,
+            "verified": outcome.verified,
+        }))?;
+    } else {
+        println!(
+            "{} — write cmd {} verified by read-back",
+            change, outcome.command
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_kb916_set(cli: &Cli, set: &Kb916Set) -> Result<ExitCode> {
+    // --yes gate BEFORE any device access (docs/plan.md §2).
+    let yes = match set {
+        Kb916Set::Key { yes, .. }
+        | Kb916Set::Keymap { yes, .. }
+        | Kb916Set::Sleep { yes, .. }
+        | Kb916Set::LightMode { yes, .. }
+        | Kb916Set::LightColor { yes, .. } => yes.yes,
+    };
+    if !yes {
+        bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+    }
+    // Argument validation that needs no device.
+    let (layer, system) = match set {
+        Kb916Set::Key { layer, system, .. } | Kb916Set::Keymap { layer, system, .. } => {
+            if *layer > 3 || *system > 1 {
+                bail!("invalid keymap argument: --layer must be 0-3, --system 0-1");
+            }
+            (*layer, *system)
+        }
+        _ => (0, 0),
+    };
+
+    let (device, mut kb) = match kb916_session(cli)? {
+        Ok(s) => s,
+        Err(code) => return Ok(code),
+    };
+
+    match set {
+        Kb916Set::Key { index, value, .. } => {
+            let arg = (layer & 3) | ((system & 1) << 2);
+            let mut values = kb.key_values(arg)?;
+            if *index >= values.len() {
+                bail!(
+                    "key index {index} out of range: keymap has {} entries (arg 0x{arg:02X})",
+                    values.len()
+                );
+            }
+            let new = parse_kb916_key_value(value)?;
+            let old = values[*index];
+            values[*index] = new;
+            let change = format!(
+                "key[{index}] (pos {}) layer {layer} system {system}: 0x{old:08X} -> 0x{new:08X}",
+                8 + index * 4
+            );
+            let outcome = kb.write_keymap(layer, system, &values)?;
+            kb916_write_report(cli, &device, &change, &outcome)
+        }
+        Kb916Set::Keymap { file, .. } => {
+            let arg = (layer & 3) | ((system & 1) << 2);
+            let current = kb.key_values(arg)?;
+            let text = if file == "-" {
+                std::io::read_to_string(std::io::stdin())
+                    .map_err(|e| anyhow!("cannot read keymap from stdin: {e}"))?
+            } else {
+                std::fs::read_to_string(file)
+                    .map_err(|e| anyhow!("cannot read keymap file '{file}': {e}"))?
+            };
+            let values = parse_kb916_key_values(&text)?;
+            if values.len() != current.len() {
+                bail!(
+                    "keymap file has {} values but the device reports {} entries for arg 0x{arg:02X} — full-table writes must match the read length",
+                    values.len(),
+                    current.len()
+                );
+            }
+            let change = format!(
+                "keymap layer {layer} system {system}: {} entries replaced",
+                values.len()
+            );
+            let outcome = kb.write_keymap(layer, system, &values)?;
+            kb916_write_report(cli, &device, &change, &outcome)
+        }
+        Kb916Set::Sleep { seconds, .. } => {
+            let profile = kb.profile()?;
+            let old = profile.sleep_seconds();
+            let blob = profile.with_sleep_seconds(*seconds)?;
+            let outcome = kb.write_profile(&blob)?;
+            let change = format!(
+                "sleep time: {} -> {} s",
+                old.map(|s| s.to_string()).unwrap_or_else(|| "?".into()),
+                seconds
+            );
+            kb916_write_report(cli, &device, &change, &outcome)
+        }
+        Kb916Set::LightMode {
+            mode,
+            speed,
+            bright,
+            light_type,
+            ..
+        } => {
+            let profile = kb.profile()?;
+            let old_mode = profile.light_mode();
+            let blob = profile.with_light_mode(*mode, *speed, *bright, *light_type)?;
+            let outcome = kb.write_profile(&blob)?;
+            let change = format!(
+                "light mode: {} -> {mode} (speed {speed}, bright {bright}, type {light_type})",
+                old_mode
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "?".into())
+            );
+            kb916_write_report(cli, &device, &change, &outcome)
+        }
+        Kb916Set::LightColor { index, color, .. } => {
+            let rgb = pm::Rgb::parse(color)?;
+            let mut colors = kb.custom_light_colors()?;
+            if *index >= colors.len() {
+                bail!(
+                    "colour index {index} out of range: {} entries",
+                    colors.len()
+                );
+            }
+            let old = colors[*index];
+            colors[*index].r = rgb.r;
+            colors[*index].g = rgb.g;
+            colors[*index].b = rgb.b;
+            let change = format!(
+                "light colour[{index}] (pos {}): #{:02X}{:02X}{:02X} -> {}",
+                8 + index * 4,
+                old.r,
+                old.g,
+                old.b,
+                rgb.to_hex()
+            );
+            let wire: Vec<khub::Rgb> = colors
+                .iter()
+                .map(|c| khub::Rgb {
+                    r: c.r,
+                    g: c.g,
+                    b: c.b,
+                })
+                .collect();
+            let outcome = kb.write_custom_light_colors(&wire)?;
+            kb916_write_report(cli, &device, &change, &outcome)
+        }
+    }
 }
 
 // ── khub916 screen (docs/protocol-khub916-screen.md) ──────────────────

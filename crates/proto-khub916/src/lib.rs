@@ -22,8 +22,14 @@
 //!
 //! - reads: device info (130), keymap (131), profile (132), macro region
 //!   (133), custom light colours (134), power (135), light colour data (138)
-//! - writes: keymap (3), profile/config (4), custom light colours (6) —
-//!   each performs a read-back verify before reporting success.
+//! - writes: keymap (3), profile/config (4), custom light colours (6)
+//!
+//! Write transport detail (vendor-verified): the JS driver only ever calls
+//! `sendFeatureReport` for these commands and **never reads a reply**, so
+//! they are sent fire-and-forget via [`Link::feature_write`] — exactly like
+//! the screen commands — followed by a settle delay and a read-back verify
+//! through the matching query command. A mismatch returns `Err` without
+//! poisoning the session (the write landed but the data differs).
 //!
 //! Screen commands (11 clock sync, 12 frame data, 13 begin/end — see
 //! `docs/protocol-khub916-screen.md`) are implemented as explicit named
@@ -68,7 +74,8 @@ pub mod wireless;
 pub const FEATURE_PAYLOAD_BYTES: usize = 519;
 /// Echoed request header length; payload starts right after it.
 const HEADER_LEN: usize = 7;
-/// Keymap write payload: 128 × u32 BE plus the `5A A5` end marker.
+/// Keymap write payload: 128 u32 slots (512 B) zero-padded; the `5A A5`
+/// end marker overwrites the payload's last two bytes (spec §6, vendor JS).
 pub const KEYMAP_ENTRIES: usize = 128;
 /// Custom-light write payload: 126 R + 126 G + 126 B plane bytes.
 pub const CUSTOM_LIGHT_ENTRIES: usize = 126;
@@ -77,6 +84,10 @@ pub const CUSTOM_LIGHT_ENTRIES: usize = 126;
 /// are blocking control transfers, so this bounds retries, not the syscall.
 const TRANSPORT_TIMEOUT: Duration = Duration::from_millis(3000);
 const MAX_ATTEMPTS: usize = 3;
+/// Settle delay between a fire-and-forget config write and its read-back
+/// verify. The vendor JS serializes commands ~30 ms apart and debounces
+/// writes by 100 ms; 150 ms covers both margins.
+const WRITE_SETTLE: Duration = Duration::from_millis(150);
 
 // Command opcodes (decimal values from spec §6).
 const CMD_KEYMAP_WRITE: u8 = 3;
@@ -495,6 +506,77 @@ impl Profile {
     pub fn sleep_seconds(&self) -> Option<u8> {
         self.raw.get(24).copied()
     }
+
+    /// Vendor `setKeyboardSleepTime`: returns a copy of the blob with
+    /// `profile[24] = seconds` (spec §6). Everything else — including the
+    /// trailing `5A A5` marker the blob carries — is preserved verbatim.
+    pub fn with_sleep_seconds(&self, seconds: u8) -> Result<Vec<u8>> {
+        if self.raw.len() <= 24 {
+            bail!(
+                "khub916 profile too short for sleep field: {} bytes",
+                self.raw.len()
+            );
+        }
+        let mut v = self.raw.clone();
+        v[24] = seconds;
+        Ok(v)
+    }
+
+    /// Vendor `setKeyboardLight` profile path (the `type != 1 || !color`
+    /// branch — no per-key colour data is sent): returns a copy of the blob
+    /// with the current light mode at `raw[9..11]` and, for non-special
+    /// modes, the per-mode brightness/speed record written at
+    /// `base + mode*2 - 2` / `base + mode*2 - 1` where `base` is just past
+    /// the first `FF FF` pair (`findSecond255Index`, spec §6).
+    ///
+    /// `speed`/`bright` are vendor-limited to ≤ 20; only `speed & 15` is
+    /// stored. `light_type == 1` packs type code `0`, anything else `7`.
+    /// Modes `0, 19, 275, 277` are special and get no per-mode record.
+    /// The mode must fit the blob's record table or this bails *before*
+    /// anything is sent.
+    pub fn with_light_mode(
+        &self,
+        mode: u16,
+        speed: u8,
+        bright: u8,
+        light_type: u8,
+    ) -> Result<Vec<u8>> {
+        if speed > 20 || bright > 20 {
+            bail!("khub916 light mode: speed/brightness must be ≤ 20 (vendor limit)");
+        }
+        if self.raw.len() < 11 {
+            bail!(
+                "khub916 profile too short for light mode: {} bytes",
+                self.raw.len()
+            );
+        }
+        let mut v = self.raw.clone();
+        v[9] = ((mode & 0xFF00) >> 8) as u8;
+        v[10] = (mode & 0x00FF) as u8;
+        // findSecond255Index: base = index just past the first FF FF pair.
+        let base = v
+            .windows(2)
+            .position(|w| w == [0xFF, 0xFF])
+            .map(|i| i + 2)
+            .ok_or_else(|| anyhow!("khub916 profile: no FF FF marker (config table missing)"))?;
+        const SPECIAL_MODES: [u16; 4] = [0, 19, 275, 277];
+        if !SPECIAL_MODES.contains(&mode) {
+            // Record offsets are mode-indexed: bright at base+2m-2,
+            // packed speed/type at base+2m-1. Both must exist in the blob.
+            let bright_at = base as i64 + 2 * mode as i64 - 2;
+            let packed_at = bright_at + 1;
+            if bright_at < 0 || packed_at as usize >= v.len() {
+                bail!(
+                    "khub916 light mode {mode} out of range for this profile ({} bytes, table base {base})",
+                    v.len()
+                );
+            }
+            let packed = ((speed & 15) << 4) | if light_type == 1 { 0 } else { 7 };
+            v[bright_at as usize] = bright;
+            v[packed_at as usize] = packed;
+        }
+        Ok(v)
+    }
 }
 
 /// Result of a verified write: the mutation was sent AND the matching read
@@ -732,38 +814,75 @@ impl Khub916 {
 
     // ── Writes (inferred from vendor JS; every one read-back verified) ──
 
-    /// Write the full 128-entry keymap (cmd 3, tags 248/1). `layer`/`system`
-    /// pack into `arg = layer & 3 | (system & 1) << 2`. Payload = 512 bytes
-    /// of u32 BE values + `5A A5` end marker (spec §6).
+    /// Fire-and-forget config write (cmd 3/4/6). The vendor JS never reads
+    /// a reply to write commands — only `sendFeatureReport` — so this uses
+    /// [`Link::feature_write`], not the echo-checked [`Self::transact`].
+    /// Callers must follow with a read-back verify.
+    fn config_write(&mut self, pkt: &[u8; FEATURE_PAYLOAD_BYTES]) -> Result<()> {
+        self.guard(|s| {
+            s.link
+                .feature_write(s.report_id, pkt)
+                .map_err(|e| anyhow!("khub916 config feature write failed: {e:#}"))?;
+            // Let the firmware commit before the verify read (vendor
+            // spacing is ~30 ms/command, debounce 100 ms).
+            std::thread::sleep(WRITE_SETTLE);
+            Ok(())
+        })
+    }
+
+    /// Write the keymap (cmd 3, tags 248/1). `layer`/`system` pack into
+    /// `arg = layer & 3 | (system & 1) << 2`. `values` is the u32 BE key
+    /// list — at most [`KEYMAP_ENTRIES`] (128); shorter lists are zero
+    /// padded exactly like the vendor `formatKeyPayload`.
     ///
-    /// Verify: re-reads cmd 131 with the same arg and requires the returned
-    /// u32 list to equal `values` exactly (length included). A mismatch
-    /// returns `Err` — the session is *not* poisoned (the write landed, the
-    /// data differs).
+    /// Wire layout (vendor-verified): a fixed 512-byte payload — the u32 BE
+    /// values zero-padded to 512 bytes — whose **last two bytes are
+    /// overwritten with the `5A A5` end marker** (packet bytes 517/518 =
+    /// payload bytes 510/511). The device reports a model-dependent slot
+    /// count on read (K1 Pro: 126 of the 128 protocol slots), so the
+    /// read-back verify compares both sides zero-padded to 128 entries.
+    ///
+    /// Verify: re-reads cmd 131 with the same arg; every slot must match
+    /// (missing tail entries count as 0). A mismatch returns `Err` — the
+    /// session is *not* poisoned (the write landed, the data differs).
     pub fn write_keymap(&mut self, layer: u8, system: u8, values: &[u32]) -> Result<WriteOutcome> {
-        if values.len() != KEYMAP_ENTRIES {
+        if values.is_empty() || values.len() > KEYMAP_ENTRIES {
             bail!(
-                "khub916 keymap write needs exactly {KEYMAP_ENTRIES} values, got {}",
+                "khub916 keymap write needs 1..={KEYMAP_ENTRIES} values, got {}",
                 values.len()
             );
         }
         let arg = (layer & 3) | ((system & 1) << 2);
-        let mut payload = Vec::with_capacity(KEYMAP_ENTRIES * 4 + 2);
-        for v in values {
-            payload.extend_from_slice(&v.to_be_bytes());
+        // Vendor formatKeyPayload: u32 BE values, zero-pad to 512, then the
+        // packet's last two bytes become the 5A A5 end marker.
+        let mut payload = [0u8; KEYMAP_ENTRIES * 4];
+        for (i, v) in values.iter().enumerate() {
+            payload[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
         }
-        payload.extend_from_slice(&[0x5A, 0xA5]);
+        payload[KEYMAP_ENTRIES * 4 - 2] = 0x5A;
+        payload[KEYMAP_ENTRIES * 4 - 1] = 0xA5;
         let pkt = Self::packet(CMD_KEYMAP_WRITE, arg, 0xF8, 0x01, &payload)?;
-        self.guard(|s| {
-            s.transact(&pkt)?;
-            let back = s.key_values(arg)?;
-            if back != values {
-                bail!("khub916 keymap write not verified: read-back differs");
-            }
-            Ok(WriteOutcome {
-                command: CMD_KEYMAP_WRITE,
-                verified: true,
-            })
+        // Steps are guarded individually: a transport/framing error poisons
+        // the session, but a read-back *mismatch* is a data error — the
+        // write landed, the session stays usable (docs above).
+        self.config_write(&pkt)?;
+        let back = self.key_values(arg)?;
+        if back.len() > KEYMAP_ENTRIES {
+            bail!(
+                "khub916 keymap read-back has {} entries (> {KEYMAP_ENTRIES})",
+                back.len()
+            );
+        }
+        // Compare zero-padded to the full 128-slot table: devices report
+        // only their populated slot count (K1 Pro: 126).
+        let matches = (0..KEYMAP_ENTRIES)
+            .all(|i| values.get(i).copied().unwrap_or(0) == back.get(i).copied().unwrap_or(0));
+        if !matches {
+            bail!("khub916 keymap write not verified: read-back differs");
+        }
+        Ok(WriteOutcome {
+            command: CMD_KEYMAP_WRITE,
+            verified: true,
         })
     }
 
@@ -776,16 +895,14 @@ impl Khub916 {
             bail!("khub916 profile write: bad length {}", profile.len());
         }
         let pkt = Self::packet(CMD_PROFILE_WRITE, 0x00, 0x80, 0x00, profile)?;
-        self.guard(|s| {
-            s.transact(&pkt)?;
-            let back = s.query(CMD_PROFILE_READ, 0x00, 0x80, 0x00)?;
-            if back != profile {
-                bail!("khub916 profile write not verified: read-back differs");
-            }
-            Ok(WriteOutcome {
-                command: CMD_PROFILE_WRITE,
-                verified: true,
-            })
+        self.config_write(&pkt)?;
+        let back = self.profile()?;
+        if back.raw.as_slice() != profile {
+            bail!("khub916 profile write not verified: read-back differs");
+        }
+        Ok(WriteOutcome {
+            command: CMD_PROFILE_WRITE,
+            verified: true,
         })
     }
 
@@ -811,21 +928,19 @@ impl Khub916 {
             payload.push(c.b);
         }
         let pkt = Self::packet(CMD_CUSTOM_LIGHT_WRITE, 0x00, 0x7A, 0x01, &payload)?;
-        self.guard(|s| {
-            s.transact(&pkt)?;
-            let back = s.custom_light_colors()?;
-            let matches = back.len() == colors.len()
-                && back
-                    .iter()
-                    .zip(colors)
-                    .all(|(b, w)| (b.r, b.g, b.b) == (w.r, w.g, w.b));
-            if !matches {
-                bail!("khub916 custom light write not verified: read-back differs");
-            }
-            Ok(WriteOutcome {
-                command: CMD_CUSTOM_LIGHT_WRITE,
-                verified: true,
-            })
+        self.config_write(&pkt)?;
+        let back = self.custom_light_colors()?;
+        let matches = back.len() == colors.len()
+            && back
+                .iter()
+                .zip(colors)
+                .all(|(b, w)| (b.r, b.g, b.b) == (w.r, w.g, w.b));
+        if !matches {
+            bail!("khub916 custom light write not verified: read-back differs");
+        }
+        Ok(WriteOutcome {
+            command: CMD_CUSTOM_LIGHT_WRITE,
+            verified: true,
         })
     }
 }
@@ -1651,5 +1766,220 @@ mod tests {
         // Serde shape for the CLI JSON output.
         let j = serde_json::to_value(ScreenTopology::SeparateInterface).unwrap();
         assert_eq!(j["type"], "separate_interface");
+    }
+
+    // ── Config writes (cmd 3/4/6; fire-and-forget + read-back verify) ──
+
+    /// Keymap read echo for `arg`: header + N × u32 BE.
+    fn keymap_read_response(arg: u8, values: &[u32]) -> Vec<u8> {
+        let mut r = vec![0x83, arg, 0x00, 0x01, 0x00, 0xF8, 0x01];
+        for v in values {
+            r.extend_from_slice(&v.to_be_bytes());
+        }
+        r
+    }
+
+    fn profile_read_response(blob: &[u8]) -> Vec<u8> {
+        let mut r = vec![0x84, 0x00, 0x00, 0x01, 0x00, 0x80, 0x00];
+        r.extend_from_slice(blob);
+        r
+    }
+
+    fn custom_light_read_response(planes: &[u8]) -> Vec<u8> {
+        let mut r = vec![0x86, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01];
+        r.extend_from_slice(planes);
+        r
+    }
+
+    #[test]
+    fn keymap_write_packet_layout() {
+        // 126 values like the K1 Pro reports; verify read-back echoes them.
+        let values: Vec<u32> = (0..126).map(|i| 0x1000 + i).collect();
+        let link = MockLink::new(vec![Ok(keymap_read_response(0, &values))]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let outcome = kb.write_keymap(0, 0, &values).unwrap();
+        assert!(outcome.verified);
+        assert_eq!(outcome.command, CMD_KEYMAP_WRITE);
+
+        let sh = shared.borrow();
+        // Exactly one fire-and-forget feature write + one read-back query.
+        assert_eq!(sh.feature_writes.len(), 1);
+        assert_eq!(sh.sent.len(), 1);
+        let (id, pkt) = &sh.feature_writes[0];
+        assert_eq!(*id, 6);
+        assert_eq!(&pkt[..7], &[3, 0, 0, 1, 0, 0xF8, 0x01]);
+        // 512-byte payload: values BE, zero pad, 5A A5 as the last two
+        // packet bytes (vendor formatKeyPayload + end marker).
+        assert_eq!(pkt.len(), FEATURE_PAYLOAD_BYTES);
+        for (i, v) in values.iter().enumerate() {
+            assert_eq!(&pkt[7 + i * 4..7 + i * 4 + 4], &v.to_be_bytes());
+        }
+        assert!(pkt[7 + 126 * 4..FEATURE_PAYLOAD_BYTES - 2]
+            .iter()
+            .all(|&b| b == 0));
+        assert_eq!(pkt[FEATURE_PAYLOAD_BYTES - 2], 0x5A);
+        assert_eq!(pkt[FEATURE_PAYLOAD_BYTES - 1], 0xA5);
+        // The verify query is cmd 131 arg 0.
+        assert_eq!(&sh.sent[0].1[..7], &[0x83, 0, 0, 1, 0, 0xF8, 0x01]);
+    }
+
+    #[test]
+    fn keymap_write_accepts_128_and_padded_readback() {
+        // Full 128-slot write; device reports all 128 back.
+        let values: Vec<u32> = (0..128).map(|i| i * 7).collect();
+        let link = MockLink::new(vec![Ok(keymap_read_response(0, &values))]);
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb.write_keymap(0, 0, &values).unwrap().verified);
+    }
+
+    #[test]
+    fn keymap_write_verify_tolerates_shorter_readback() {
+        // Sent 126 values; device read-back returns only 120 entries where
+        // the last 6 sent values are zero — padded compare must pass.
+        let mut values = vec![0u32; 126];
+        values[0] = 0x29;
+        values[119] = 0x2A;
+        // entries 120..125 are already 0.
+        let back: Vec<u32> = values[..120].to_vec();
+        let link = MockLink::new(vec![Ok(keymap_read_response(0, &back))]);
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb.write_keymap(0, 0, &values).unwrap().verified);
+    }
+
+    #[test]
+    fn keymap_write_verify_mismatch_is_error_not_poison() {
+        let values: Vec<u32> = vec![0x29; 126];
+        let mut back = values.clone();
+        back[5] = 0x35; // differs
+        let link = MockLink::new(vec![Ok(keymap_read_response(0, &back))]);
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb.write_keymap(0, 0, &values).is_err());
+        assert!(!kb.is_poisoned());
+    }
+
+    #[test]
+    fn keymap_write_rejects_bad_lengths_and_arg_encoding() {
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb.write_keymap(0, 0, &[]).is_err());
+        assert!(kb.write_keymap(0, 0, &vec![0u32; 129]).is_err());
+        assert!(shared.borrow().feature_writes.is_empty());
+        // arg = layer&3 | (system&1)<<2 → layer 2, system 1 → 0b110 = 6.
+        let values = vec![0x29u32; 4];
+        let link2 = MockLink::new(vec![Ok(keymap_read_response(6, &values))]);
+        let shared2 = link2.shared();
+        let mut kb2 = Khub916::new(Box::new(link2), 6);
+        assert!(kb2.write_keymap(2, 1, &values).unwrap().verified);
+        let sh = shared2.borrow();
+        assert_eq!(sh.feature_writes[0].1[1], 6);
+    }
+
+    #[test]
+    fn profile_write_packet_and_verify() {
+        // 128-byte blob ending in the 5A A5 marker like the live K1 Pro.
+        let mut blob = vec![0u8; 128];
+        blob[56] = 0xFF;
+        blob[57] = 0xFF;
+        blob[9] = 0;
+        blob[10] = 15;
+        blob[24] = 7;
+        blob[126] = 0x5A;
+        blob[127] = 0xA5;
+        let link = MockLink::new(vec![Ok(profile_read_response(&blob))]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let outcome = kb.write_profile(&blob).unwrap();
+        assert!(outcome.verified);
+        assert_eq!(outcome.command, CMD_PROFILE_WRITE);
+        let sh = shared.borrow();
+        let (_, pkt) = &sh.feature_writes[0];
+        assert_eq!(&pkt[..7], &[4, 0, 0, 1, 0, 0x80, 0x00]);
+        assert_eq!(&pkt[7..7 + blob.len()], &blob[..]);
+        assert!(pkt[7 + blob.len()..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn custom_light_write_planes_and_verify() {
+        let colors: Vec<Rgb> = (0..CUSTOM_LIGHT_ENTRIES)
+            .map(|i| Rgb {
+                r: (i % 256) as u8,
+                g: (255 - i % 256) as u8,
+                b: (i * 3 % 256) as u8,
+            })
+            .collect();
+        // Build the expected 378-byte read-back payload.
+        let mut planes = vec![0u8; CUSTOM_LIGHT_ENTRIES * 3];
+        for (i, c) in colors.iter().enumerate() {
+            planes[i] = c.r;
+            planes[CUSTOM_LIGHT_ENTRIES + i] = c.g;
+            planes[2 * CUSTOM_LIGHT_ENTRIES + i] = c.b;
+        }
+        let link = MockLink::new(vec![Ok(custom_light_read_response(&planes))]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let outcome = kb.write_custom_light_colors(&colors).unwrap();
+        assert!(outcome.verified);
+        assert_eq!(outcome.command, CMD_CUSTOM_LIGHT_WRITE);
+        let sh = shared.borrow();
+        let (_, pkt) = &sh.feature_writes[0];
+        assert_eq!(&pkt[..7], &[6, 0, 0, 1, 0, 0x7A, 0x01]);
+        assert_eq!(&pkt[7..7 + planes.len()], &planes[..]);
+        // Wrong count refused before any packet is built.
+        assert!(kb.write_custom_light_colors(&colors[..125]).is_err());
+    }
+
+    #[test]
+    fn profile_with_sleep_seconds() {
+        let mut blob = vec![0u8; 128];
+        blob[24] = 9;
+        blob[126] = 0x5A;
+        blob[127] = 0xA5;
+        let p = Profile { raw: blob.clone() };
+        let v = p.with_sleep_seconds(42).unwrap();
+        assert_eq!(v[24], 42);
+        assert_eq!(&v[..24], &blob[..24]);
+        assert_eq!(&v[25..], &blob[25..]); // marker and rest preserved
+        assert!(Profile { raw: vec![0u8; 24] }
+            .with_sleep_seconds(1)
+            .is_err());
+    }
+
+    #[test]
+    fn profile_with_light_mode_layout() {
+        // Mirror the live K1 Pro blob: FF FF at 56-57 → table base 58.
+        let mut blob = vec![0u8; 128];
+        blob[56] = 0xFF;
+        blob[57] = 0xFF;
+        blob[9] = 0;
+        blob[10] = 15; // current mode
+        blob[126] = 0x5A;
+        blob[127] = 0xA5;
+        let p = Profile { raw: blob };
+        // Mode 15, speed 4, bright 10, type 0 → packed (4<<4)|7 = 0x47 at
+        // base+2*15-1 = 87, bright at 86.
+        let v = p.with_light_mode(15, 4, 10, 0).unwrap();
+        assert_eq!(v[9], 0);
+        assert_eq!(v[10], 15);
+        assert_eq!(v[86], 10);
+        assert_eq!(v[87], 0x47);
+        // type 1 packs 0 instead of 7.
+        let v1 = p.with_light_mode(15, 4, 10, 1).unwrap();
+        assert_eq!(v1[87], 0x40);
+        // Special mode 0: mode bytes change, no record write (byte 58/59
+        // stay untouched even though mode 0 would index them).
+        let vs = p.with_light_mode(0, 20, 20, 0).unwrap();
+        assert_eq!(vs[10], 0);
+        assert_eq!(&vs[58..60], &[0, 0]);
+        // Out-of-range mode and vendor speed/bright limits bail early.
+        assert!(p.with_light_mode(100, 4, 10, 0).is_err());
+        assert!(p.with_light_mode(15, 21, 10, 0).is_err());
+        assert!(p.with_light_mode(15, 4, 21, 0).is_err());
+        // Blob without the FF FF marker is rejected.
+        let bad = Profile {
+            raw: vec![0u8; 128],
+        };
+        assert!(bad.with_light_mode(1, 1, 1, 0).is_err());
     }
 }

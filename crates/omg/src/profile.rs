@@ -21,9 +21,9 @@
 //!
 //! Per-device `state` is protocol-specific and captures every readable
 //! setting (see the `*_state` functions). Writes on import go through each
-//! proto crate's setters with read-back verification; khub916 and
-//! sparkplayjoy are never written (khub916 proto writes are
-//! hardware-unverified, sparkplayjoy is read-only).
+//! proto crate's setters with read-back verification; khub916 stays
+//! export-only (no whole-profile import mapping — individual writes are
+//! `omg kb916 set …`) and sparkplayjoy is never written (read-only).
 
 use std::path::Path;
 
@@ -38,8 +38,11 @@ use serde_json::{json, Map, Value};
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Human-readable reason khub916 entries are never written on import.
+/// (The proto write commands themselves are live-verified on a K1 Pro and
+/// exposed as `omg kb916 set …`; whole-profile import mapping is not
+/// implemented, so entries stay export-only.)
 pub const KHUB916_WRITE_SKIP: &str =
-    "khub916 writes not yet safe: proto writes are hardware-unverified (docs/protocol-khub916.md §8); this protocol is export-only for now";
+    "khub916 profile import is not implemented; use `omg kb916 set` for individual verified writes (docs/protocol-khub916.md)";
 
 /// SparkPlayJoy has no write path at all (read-only protocol).
 pub const SPARK_WRITE_SKIP: &str = "sparkplayjoy protocol is read-only; nothing to apply";
