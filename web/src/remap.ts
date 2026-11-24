@@ -40,6 +40,13 @@ import {
   type PoolGroup,
 } from './keypool.ts';
 import { StagedEdits } from './remap-edit.ts';
+import {
+  buildKeymapDiff,
+  diffSummary,
+  diffValueLabel,
+  keymapArgLabel,
+  type KeymapDiff,
+} from './keymap-diff.ts';
 import { confirmDialog } from './modal.ts';
 import './remap.css';
 
@@ -74,6 +81,8 @@ let searchHadFocus = false;
 let systemMode = false;
 /** True while a write is in flight (buttons disabled). */
 let busy = false;
+/** Whether the "Review changes" diff panel is expanded (survives rebuilds). */
+let diffOpen = false;
 
 let keysView: KeyboardView | null = null;
 let keysUnsub: (() => void) | null = null;
@@ -281,6 +290,65 @@ function confirmWrite(title: string, lines: string[], confirmLabel: string): Pro
   });
 }
 
+/** Max rows rendered per key set in the diff panel (rest summarised). */
+const DIFF_ROW_CAP = 60;
+
+/**
+ * Render the full-system staged-changes diff (bead xbp) into `body`:
+ * one section per keymap arg with staged edits, each row
+ * "Key N (name): old → new". Rebuilt from live `StagedEdits` state on
+ * every sync, so stage/undo/redo/clear are always reflected.
+ */
+function renderDiffPanel(
+  body: HTMLElement,
+  diff: KeymapDiff,
+  blocks: readonly KeyBlock[],
+): void {
+  body.replaceChildren();
+  if (diff.totalChanges === 0) {
+    body.append(el('p', 'hint', 'No unsaved key changes — the keyboard matches what is shown.'));
+    return;
+  }
+  body.append(
+    el(
+      'p',
+      'hint',
+      `${diffSummary(diff)} will be written when you press Save on that key set. ` +
+        'Only the key set shown on the tabs is written at a time — switch tabs to review and save the others.',
+    ),
+  );
+  for (const group of diff.groups) {
+    const section = el('div', 'keydiff-group');
+    const head = el(
+      'p',
+      'keydiff-head',
+      `${keymapArgLabel(group.arg)} — ${group.changes.length} change${group.changes.length === 1 ? '' : 's'}`,
+    );
+    section.append(head);
+    const list = el('ul', 'keydiff-list');
+    const shown = group.changes.slice(0, DIFF_ROW_CAP);
+    for (const c of shown) {
+      const name = blockNameFor(blocks, c.index);
+      const li = el('li', 'keydiff-line');
+      li.append(
+        el('span', 'keydiff-key', `Key ${c.index}${name ? ` (${name})` : ''}`),
+        el('span', 'keydiff-old', diffValueLabel(c.oldValue) || 'nothing'),
+        el('span', 'keydiff-arrow', '→'),
+        el('span', 'keydiff-new', diffValueLabel(c.newValue) || 'nothing'),
+      );
+      li.title = `${hex8(c.oldValue)} → ${hex8(c.newValue)}`;
+      list.append(li);
+    }
+    if (group.changes.length > shown.length) {
+      list.append(
+        el('li', 'keydiff-line keydiff-more', `…and ${group.changes.length - shown.length} more`),
+      );
+    }
+    section.append(list);
+    body.append(section);
+  }
+}
+
 /**
  * Read-modify-write `changes` into the current arg's keymap and verify.
  * Only the listed slots are taken from pending — other pending edits stay
@@ -333,9 +401,22 @@ async function applyAll(): Promise<void> {
     oldValue: committedValue(arg, index),
     newValue,
   }));
+  // System-level preview (bead xbp): summary of ALL staged edits across
+  // every key set, generated from the same diff the Review panel shows.
+  const diff = buildKeymapDiff(edits, committedValue);
+  const scopeLines =
+    diff.affectedArgs > 1
+      ? [
+          `This Save writes only ${keymapArgLabel(arg)} — the changes on the other key sets stay staged.`,
+        ]
+      : [];
   const ok = await confirmWrite(
     `Save ${changes.length} key change(s)?`,
-    changes.map((c) => describeChange(c, blocks)),
+    [
+      `Pending overall: ${diffSummary(diff)}.`,
+      ...scopeLines,
+      ...changes.map((c) => describeChange(c, blocks)),
+    ],
     'Save to keyboard',
   );
   if (ok) await writeChanges(pending);
@@ -347,9 +428,13 @@ async function applyOne(index: number): Promise<void> {
   if (newValue === undefined || busy) return;
   const { blocks } = blocksForModel();
   const c: PendingChange = { index, oldValue: committedValue(arg, index), newValue };
+  const diff = buildKeymapDiff(edits, committedValue);
   const ok = await confirmWrite(
     `Change key ${index}${blockNameFor(blocks, index) ? ` (${blockNameFor(blocks, index)})` : ''}?`,
-    [describeChange(c, blocks)],
+    [
+      `Pending overall: ${diffSummary(diff)}.`,
+      describeChange(c, blocks),
+    ],
     'Save to keyboard',
   );
   if (ok) await writeChanges(new Map([[index, newValue]]));
@@ -476,12 +561,16 @@ export function renderKeysPage(root: HTMLElement): void {
   toolbar.append(modeBar, layerBar);
 
   const pendingBadge = el('span', 'chip remap-pending', '');
+  const reviewBtn = el('button', 'btn remap-review', 'Review changes');
+  reviewBtn.type = 'button';
+  reviewBtn.title =
+    'Show a full-system diff of every unsaved key change across all key sets (bead xbp)';
   const applyBtn = el('button', 'btn btn-primary remap-apply', 'Save');
   applyBtn.type = 'button';
   const discardBtn = el('button', 'btn remap-discard', 'Discard');
   discardBtn.type = 'button';
   discardBtn.title = 'Drop all unsaved changes on this key set (undoable)';
-  toolbar.append(pendingBadge, applyBtn, discardBtn);
+  toolbar.append(pendingBadge, reviewBtn, applyBtn, discardBtn);
   kbody.append(toolbar);
   if (note) kbody.append(el('p', 'hint warn', note));
 
@@ -625,7 +714,14 @@ export function renderKeysPage(root: HTMLElement): void {
   const grid = el('div', 'pool-grid');
   pbody.append(grid);
 
-  root.append(kc, pc);
+  // ── Review-changes diff card (bead xbp) ────────────────────────────
+  // Full-system preview of every staged edit across all key sets; content
+  // is rebuilt from live StagedEdits state inside syncPage.
+  const { card: dc, body: dbody } = card('Pending changes');
+  dc.classList.add('keydiff-card');
+  dc.hidden = !diffOpen;
+
+  root.append(kc, dc, pc);
 
   // ── Wiring that needs the assembled DOM ────────────────────────────
 
@@ -698,6 +794,15 @@ export function renderKeysPage(root: HTMLElement): void {
     const count = pending.size;
     pendingBadge.textContent = count > 0 ? `${count} unsaved` : '';
     pendingBadge.hidden = count === 0;
+
+    // Full-system diff preview (bead xbp) — rebuilt every sync so it
+    // always reflects the current staged state (stage/undo/redo/clear).
+    const diff = buildKeymapDiff(edits, committedValue);
+    reviewBtn.textContent =
+      diff.totalChanges > 0 ? `Review changes (${diff.totalChanges})` : 'Review changes';
+    reviewBtn.disabled = busy || diff.totalChanges === 0;
+    if (diffOpen) renderDiffPanel(dbody, diff, blocks);
+
     applyBtn.disabled = busy || count === 0;
     applyBtn.textContent = busy ? 'Saving…' : count > 0 ? `Save all (${count})` : 'Save';
     discardBtn.disabled = busy || count === 0;
@@ -756,6 +861,14 @@ export function renderKeysPage(root: HTMLElement): void {
 
     if (searchHadFocus && document.activeElement !== search) search.focus();
   };
+
+  reviewBtn.addEventListener('click', () => {
+    diffOpen = !diffOpen;
+    dc.hidden = !diffOpen;
+    if (diffOpen) {
+      renderDiffPanel(dbody, buildKeymapDiff(edits, committedValue), blocks);
+    }
+  });
 
   applyBtn.addEventListener('click', () => void applyAll());
   discardBtn.addEventListener('click', () => {

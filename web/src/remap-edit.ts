@@ -77,6 +77,11 @@ export class StagedEdits {
     return this.pending.get(arg)?.size ?? 0;
   }
 
+  /** Args (keymap domain 0–7) with staged edits, ascending. */
+  pendingArgs(): number[] {
+    return [...this.pending.keys()].sort((a, b) => a - b);
+  }
+
   /** Slot indices with staged edits on `arg`, ascending. */
   pendingIndices(arg: number): number[] {
     return [...(this.pending.get(arg)?.keys() ?? [])].sort((a, b) => a - b);
