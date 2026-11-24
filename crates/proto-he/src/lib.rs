@@ -302,6 +302,20 @@ impl HigherKeyParams {
             Self::Rs(_) => HK_RS,
         }
     }
+
+    /// Every keycode carried by this config (for blacklist checks).
+    pub fn key_codes(&self) -> Vec<u16> {
+        match self {
+            Self::None => Vec::new(),
+            Self::Dks(d) => d.kcs.to_vec(),
+            Self::Mpt(m) => m.kcs.to_vec(),
+            Self::Mt(m) => m.kcs.to_vec(),
+            Self::Tgl(t) => vec![t.kcs],
+            Self::End(e) => e.kcs.to_vec(),
+            Self::Socd(s) => s.kcs.to_vec(),
+            Self::Rs(r) => r.kcs.to_vec(),
+        }
+    }
 }
 
 /// Decoded HigherKey state of one key (read reply or write echo).
@@ -332,8 +346,8 @@ pub struct MacroAction {
 }
 
 /// Keycodes that must never be written (long-press = factory reset /
-/// calibration). Enforced on keymap and macro write paths.
-fn keycode_blacklisted(code: u16) -> bool {
+/// calibration). Enforced on keymap, higher-key and macro write paths.
+pub fn keycode_blacklisted(code: u16) -> bool {
     matches!(code, 0xF200 | 0xF203)
 }
 
@@ -984,6 +998,12 @@ impl HeKeyboard {
         col: u8,
         params: &HigherKeyParams,
     ) -> Result<Vec<HigherKeyConfig>> {
+        for kc in params.key_codes() {
+            ensure!(
+                !keycode_blacklisted(kc),
+                "higher-key keycode {kc:#06x} is blacklisted"
+            );
+        }
         let mut out = Vec::new();
         for pkt in higher_key_packets(row, col, params) {
             let d = self.req(&pkt)?;
@@ -1674,6 +1694,143 @@ mod tests {
                 macro_number: 300
             }
         );
+    }
+
+    // ── Link-level tests (mock transport) ──────────────────────────────
+
+    /// Scripted link for `transfer()`-based commands: `write` captures the
+    /// report, `read` pops queued replies. Zero-duration reads (the
+    /// stale-report drain inside `transfer`) always answer `None` so the
+    /// queue is only consumed by real waits.
+    #[derive(Default)]
+    struct MockShared {
+        written: Vec<Vec<u8>>,
+        reads: std::collections::VecDeque<std::result::Result<Option<Vec<u8>>, String>>,
+    }
+
+    /// Scripted link for `transfer()`-based commands: `write` captures the
+    /// report, `read` pops queued replies. Zero-duration reads (the
+    /// stale-report drain inside `transfer`) always answer `None` so the
+    /// queue is only consumed by real waits.
+    struct MockLink {
+        shared: std::rc::Rc<std::cell::RefCell<MockShared>>,
+    }
+
+    impl MockLink {
+        fn new(reads: Vec<std::result::Result<Vec<u8>, String>>) -> Self {
+            Self {
+                shared: std::rc::Rc::new(std::cell::RefCell::new(MockShared {
+                    reads: reads.into_iter().map(|r| r.map(Some)).collect(),
+                    ..Default::default()
+                })),
+            }
+        }
+
+        /// Clone of the shared state — call before boxing the link.
+        fn shared(&self) -> std::rc::Rc<std::cell::RefCell<MockShared>> {
+            self.shared.clone()
+        }
+    }
+
+    impl Link for MockLink {
+        fn write(&mut self, _report_id: u8, data: &[u8]) -> Result<()> {
+            self.shared.borrow_mut().written.push(data.to_vec());
+            Ok(())
+        }
+        fn read(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>> {
+            if timeout.is_zero() {
+                return Ok(None);
+            }
+            match self.shared.borrow_mut().reads.pop_front() {
+                Some(Ok(r)) => Ok(r),
+                Some(Err(e)) => Err(anyhow::anyhow!(e)),
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// Pads a request packet into a 64-byte echo reply.
+    fn echo_reply(pkt: &[u8]) -> Vec<u8> {
+        let mut r = vec![0u8; 64];
+        r[..pkt.len()].copy_from_slice(pkt);
+        r
+    }
+
+    #[test]
+    fn higher_key_read_roundtrip() {
+        let mut d = [0u8; 64];
+        d[0] = HIGHER_KEY;
+        d[1] = HK_READ;
+        d[2] = 1;
+        d[3] = 2;
+        d[4] = HK_MT;
+        d[5..7].copy_from_slice(&0x1234u16.to_le_bytes());
+        d[7..9].copy_from_slice(&0x5678u16.to_le_bytes());
+        d[9..11].copy_from_slice(&0x00ABu16.to_le_bytes());
+        let link = MockLink::new(vec![Ok(d.to_vec())]);
+        let shared = link.shared();
+        let mut kb = HeKeyboard::new(Box::new(link));
+        let cfg = kb.higher_key(1, 2, HK_MT).unwrap();
+        assert_eq!(
+            cfg,
+            HigherKeyConfig::Mt {
+                row: 1,
+                col: 2,
+                params: MtParams {
+                    kcs: [0x1234, 0x5678],
+                    time: 0x00AB,
+                },
+            }
+        );
+        assert_eq!(shared.borrow().written.len(), 1);
+    }
+
+    #[test]
+    fn set_higher_key_socd_sends_two_packets_and_reads_echo() {
+        let p = HigherKeyParams::Socd(SocdParams {
+            row2: 3,
+            col2: 7,
+            kcs: [0x001E, 0x001F],
+            delay: 100,
+            direction: SocdDirection::PriorityA,
+        });
+        let pkts = higher_key_packets(1, 2, &p);
+        let link = MockLink::new(vec![Ok(echo_reply(&pkts[0])), Ok(echo_reply(&pkts[1]))]);
+        let shared = link.shared();
+        let mut kb = HeKeyboard::new(Box::new(link));
+        let echoes = kb.set_higher_key(1, 2, &p).unwrap();
+        assert_eq!(echoes.len(), 2);
+        assert!(matches!(echoes[0], HigherKeyConfig::Socd { .. }));
+        assert!(matches!(echoes[1], HigherKeyConfig::Socd { .. }));
+        // Exactly the two cross-linked write packets were sent (each
+        // padded to a 64-byte report by `request_matching`).
+        let w = shared.borrow();
+        assert_eq!(w.written.len(), 2);
+        for (i, pkt) in pkts.iter().enumerate() {
+            assert_eq!(&w.written[i][..pkt.len()], &pkt[..]);
+            assert!(w.written[i][pkt.len()..].iter().all(|&b| b == 0));
+        }
+    }
+
+    #[test]
+    fn set_higher_key_rejects_blacklisted_keycode() {
+        for kc in [0xF200u16, 0xF203] {
+            let p = HigherKeyParams::Tgl(TglParams { kcs: kc, time: 1 });
+            let link = MockLink::new(vec![]);
+            let shared = link.shared();
+            let mut kb = HeKeyboard::new(Box::new(link));
+            assert!(kb.set_higher_key(0, 0, &p).is_err());
+            assert!(shared.borrow().written.is_empty());
+        }
+    }
+
+    #[test]
+    fn set_key_code_rejects_blacklisted_keycode() {
+        let link = MockLink::new(vec![]);
+        let shared = link.shared();
+        let mut kb = HeKeyboard::new(Box::new(link));
+        assert!(kb.set_key_code(0, 0, 0, 0xF200).is_err());
+        assert!(shared.borrow().written.is_empty());
     }
 }
 

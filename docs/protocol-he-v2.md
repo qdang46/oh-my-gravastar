@@ -77,7 +77,20 @@ key.
 
 On the V60 Pro the keys sit in matrix rows 1–5; row 0 is empty ✔.
 
-CLI: `omg kb layout`, `omg kb keys <layer> <row>`.
+CLI: `omg kb layout`, `omg kb keys get [--layer L] [--row R [--col C]]`
+(dump / row / single key), `omg kb keys set <row> <col> <keycode> --yes`
+(`03 04`), `omg kb keys set-row <row> <21 codes> --yes` (`03 02`),
+`omg kb keys default <system> <func> <row>` (`03 06`). All writes are
+read-back verified; `0xF200`/`0xF203` are rejected on every write path.
+
+The vendor-JS-only category-3 writes (`03 02`/`03 04`/`03 06`), all of
+category 6 (HigherKey: `06 01`/`06 02`, modes none/DKS/MPT/MT/TGL/END/
+SOCD/RS — SOCD and RS are cross-linked two-packet writes) and category 7
+(Macro: `07 01`–`07 04`, ≤ 15 actions per page, `02 0E` space info) are
+implemented in `omg-proto-he` but **hardware-unverified** — inferred from
+the vendor v2 web driver (`docs/research/he-macros-research.md`). CLI:
+`omg kb hk get|set`, `omg kb macro list|get|set` (writes need `--yes`,
+read-back verified, same blacklist).
 
 ## Live travel (category 4 read)
 

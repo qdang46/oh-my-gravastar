@@ -52,7 +52,16 @@ HE keyboard (needs an HE v2 board such as a Mercury V75):
 ```sh
 omg kb info --json                    # firmware, board id, build time
 omg kb layout                         # physical geometry + layer-0 key labels
-omg kb keys 0 1                       # raw keycodes of layer 0, matrix row 1
+omg kb keys get --row 1               # raw keycodes of layer 0, matrix row 1
+omg kb keys get --row 1 --col 2       # single key (03 03)
+omg kb keys set 1 2 0x1E --yes        # write one keycode (03 04, read-back verified)
+omg kb keys set-row 1 <21 codes> --yes  # whole row (03 02)
+omg kb keys default 1 2 3             # factory-default row (03 06)
+omg kb hk get 1 2 --mode tgl          # advanced-key config (hardware-unverified)
+omg kb hk set 1 2 --mode socd --kcs 30,31 --delay 100 --row2 1 --col2 3 --yes
+omg kb macro list                     # macro slots + storage info
+omg kb macro get 3                    # macro 3 header + action pages
+omg kb macro set 3 --yes 10:0x1E 20:0x1E:up 30:0x04  # delay:keycode[:up] actions
 omg kb live 1                         # live per-key travel (mm) + actuation
 omg kb lighting-areas                 # list lighting zones
 omg kb light get 0                    # zone 0 settings + 8-colour palette

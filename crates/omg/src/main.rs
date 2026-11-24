@@ -1196,8 +1196,28 @@ enum KbCommands {
     Info,
     /// Physical key geometry plus layer-0 keycodes resolved to labels.
     Layout,
-    /// Raw 21 keycodes of one matrix row on a layer.
-    Keys { layer: u8, row: u8 },
+    /// Keymap keycodes: read rows/keys/defaults, write single keys or
+    /// whole rows. Writes require `--yes` and are read back verified.
+    /// Category-3 commands are hardware-unverified on boards without the
+    /// upstream-verified firmware.
+    Keys {
+        #[command(subcommand)]
+        command: KbKeys,
+    },
+    /// Advanced-key (HigherKey) configs: dual-key, multi-tap, toggle,
+    /// SOCD and rapid-swap behaviour per key. Hardware-unverified
+    /// (inferred from the vendor v2 web driver).
+    Hk {
+        #[command(subcommand)]
+        command: KbHk,
+    },
+    /// Macro slots: list headers, read action pages, write a macro as
+    /// delay+keycode actions (15 actions per page). Hardware-unverified
+    /// (inferred from the vendor v2 web driver).
+    Macro {
+        #[command(subcommand)]
+        command: KbMacro,
+    },
     /// Live per-key travel (mm) and actuation state of one matrix row.
     Live { row: u8 },
     /// Profiles: count and active profile; switch the active profile.
@@ -1247,6 +1267,170 @@ enum KbCommands {
         /// Stream travel samples every ~100 ms instead of one shot.
         #[arg(long)]
         watch: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbKeys {
+    /// Read keycodes. `--row` reads one matrix row (21 codes, `03 01`);
+    /// `--row` + `--col` reads a single key (`03 03`); neither dumps every
+    /// matrix row that has keys on `--layer`. `default` is separate.
+    Get {
+        /// Keymap layer (default 0).
+        #[arg(long, default_value_t = 0)]
+        layer: u8,
+        /// Matrix row; omit to dump all rows that have keys.
+        #[arg(long)]
+        row: Option<u8>,
+        /// Single key column 0..=20; requires `--row` (`03 03`).
+        #[arg(long, requires = "row")]
+        col: Option<u8>,
+    },
+    /// Write one key's keycode (`03 04`). Requires `--yes`; the key is
+    /// read back and verified. `0xF200`/`0xF203` are rejected.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        /// Keymap layer (default 0).
+        #[arg(long, default_value_t = 0)]
+        layer: u8,
+        row: u8,
+        /// Column 0..=20.
+        col: u8,
+        /// Keycode: decimal or 0x-hex (e.g. `0x1E`, `30`).
+        code: String,
+    },
+    /// Write all 21 keycodes of one matrix row (`03 02`). Requires
+    /// `--yes`; the row is read back and verified.
+    SetRow {
+        #[command(flatten)]
+        yes: Yes,
+        /// Keymap layer (default 0).
+        #[arg(long, default_value_t = 0)]
+        layer: u8,
+        row: u8,
+        /// Exactly 21 keycodes (decimal or 0x-hex), columns 0..=20.
+        /// Unused columns are `0`.
+        codes: Vec<String>,
+    },
+    /// Factory-default keycodes of one row for a system/function
+    /// selector (`03 06`; selector byte = system << 4 | func).
+    Default {
+        /// System selector nibble 0..=15.
+        system: u8,
+        /// Function selector nibble 0..=15.
+        func: u8,
+        row: u8,
+    },
+}
+
+/// `--mode` value parser shared by `hk get`/`hk set`.
+fn hk_mode_id(s: &str) -> Result<u8> {
+    Ok(match s {
+        "none" => he::HK_NONE,
+        "dks" => he::HK_DKS,
+        "mpt" => he::HK_MPT,
+        "mt" => he::HK_MT,
+        "tgl" => he::HK_TGL,
+        "end" => he::HK_END,
+        "socd" => he::HK_SOCD,
+        "rs" => he::HK_RS,
+        other => bail!("invalid higher-key mode '{other}' (none|dks|mpt|mt|tgl|end|socd|rs)"),
+    })
+}
+
+#[derive(Subcommand)]
+enum KbHk {
+    /// Read one key's advanced-key config (`06 01`). `--mode` selects the
+    /// config bank to query; the reply carries the stored mode.
+    Get {
+        row: u8,
+        /// Column 0..=20.
+        col: u8,
+        #[arg(long, value_parser = ["none", "dks", "mpt", "mt", "tgl", "end", "socd", "rs"])]
+        mode: String,
+    },
+    /// Write one key's advanced-key config (`06 02`). SOCD and RS are
+    /// cross-linked two-key writes. Requires `--yes`; the primary key is
+    /// read back and verified. Keycodes `0xF200`/`0xF203` are rejected.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        row: u8,
+        /// Column 0..=20.
+        col: u8,
+        #[command(flatten)]
+        params: HkSet,
+    },
+}
+
+/// Parameters of `hk set`; which ones are required depends on `--mode`.
+#[derive(Args)]
+struct HkSet {
+    #[arg(long, value_parser = ["none", "dks", "mpt", "mt", "tgl", "end", "socd", "rs"])]
+    mode: String,
+    /// Keycodes, comma-separated (decimal or 0x-hex): dks = 4, mpt = 3,
+    /// mt/end/socd/rs = 2, tgl = 1.
+    #[arg(long)]
+    kcs: Option<String>,
+    /// DKS trigger points, comma-separated raw bytes 0..=255 (exactly 4).
+    #[arg(long)]
+    trps: Option<String>,
+    /// Deadband distances in mm, comma-separated: dks = 2, mpt = 3.
+    #[arg(long)]
+    dbs: Option<String>,
+    /// Raw u16 time for mt/tgl (units unverified).
+    #[arg(long)]
+    time: Option<u16>,
+    /// Raw u16 delay for end/socd/rs.
+    #[arg(long)]
+    delay: Option<u16>,
+    /// SOCD/RS partner key row (requires `--col2`).
+    #[arg(long, requires = "col2")]
+    row2: Option<u8>,
+    /// SOCD/RS partner key column.
+    #[arg(long)]
+    col2: Option<u8>,
+    /// SOCD direction: cover (default), priority-a, priority-b, neutral.
+    #[arg(long, value_parser = ["cover", "priority-a", "priority-b", "neutral"])]
+    direction: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum KbMacro {
+    /// Macro storage capacity (`02 0E`) plus the mode header of every
+    /// slot below `macro_count`.
+    List,
+    /// Read one macro slot: mode header (`07 01`) plus action pages
+    /// (`07 03`, up to 15 actions each). `--offset` reads a single page.
+    Get {
+        /// Macro slot id.
+        id: u8,
+        /// Read only this action page instead of all pages implied by
+        /// the header's action count.
+        #[arg(long)]
+        offset: Option<u8>,
+    },
+    /// Write a macro slot: mode header (`07 02`) plus action pages
+    /// (`07 04`, 15 actions per page, offsets 0..). Requires `--yes`;
+    /// header and pages are read back and verified. Action format:
+    /// `delay:keycode[:up|down]` — delay is a raw u16 (units
+    /// unverified), `up` sets the release flag. Keycodes
+    /// `0xF200`/`0xF203` are rejected.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        /// Macro slot id.
+        id: u8,
+        /// Repeat count written to the header (default 1).
+        #[arg(long, default_value_t = 1)]
+        rep_num: u16,
+        /// Header mode byte (default 0; UI semantics unverified).
+        #[arg(long, default_value_t = 0)]
+        mode: u8,
+        /// Actions `delay:keycode[:up|down]`, at most 3840 (256 pages).
+        #[arg(required = true)]
+        actions: Vec<String>,
     },
 }
 
@@ -1572,29 +1756,9 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        KbCommands::Keys { layer, row } => {
-            let Some((device, mut kb)) = open_kb(cli)? else {
-                return kb_absent(cli);
-            };
-            let codes = kb.key_codes(*layer, *row)?;
-            let entries: Vec<serde_json::Value> = codes
-                .iter()
-                .enumerate()
-                .map(|(col, &c)| json!({ "col": col, "code": format!("0x{c:04X}"), "label": omg_model::key_label(c, false) }))
-                .collect();
-            if cli.json {
-                print_json(
-                    &json!({ "device": device, "layer": layer, "row": row, "keys": entries }),
-                )?;
-            } else {
-                for (col, &c) in codes.iter().enumerate() {
-                    if c != 0 {
-                        println!("col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
-                    }
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        KbCommands::Keys { command } => cmd_kb_keys(cli, command),
+        KbCommands::Hk { command } => cmd_kb_hk(cli, command),
+        KbCommands::Macro { command } => cmd_kb_macro(cli, command),
         KbCommands::Live { row } => {
             let Some((device, mut kb)) = open_kb(cli)? else {
                 return kb_absent(cli);
@@ -1936,6 +2100,814 @@ fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
             }
         }
         KbCommands::TravelMatrix { watch } => cmd_kb_travel(cli, *watch),
+    }
+}
+
+// ── HE keyboard: keymap writes, higher keys, macros ────────────────────
+//
+// Category-3 write commands are upstream-verified on the V60 Pro; the
+// category-6/7 (higher-key/macro) paths are inferred from the vendor v2
+// web driver and remain hardware-unverified (docs/protocol-he-v2.md).
+
+/// Parse one keycode: decimal or 0x-hex; blacklist checked early so a
+/// bad value fails before the device is even opened.
+fn parse_keycode(s: &str) -> Result<u16> {
+    let v = parse_maybe_hex(s.trim())
+        .map_err(|_| anyhow!("invalid keycode '{s}' (want decimal or 0x-hex)"))?;
+    if he::keycode_blacklisted(v) {
+        bail!("keycode {v:#06x} is blacklisted (0xF200/0xF203)");
+    }
+    Ok(v)
+}
+
+fn csv_u16(s: &str) -> Result<Vec<u16>> {
+    s.split(',')
+        .map(|p| parse_keycode(p.trim()))
+        .collect::<Result<Vec<_>>>()
+}
+
+fn csv_u8(s: &str) -> Result<Vec<u8>> {
+    s.split(',')
+        .map(|p| {
+            let v = parse_maybe_hex(p.trim())
+                .map_err(|_| anyhow!("invalid byte '{p}' in list"))?;
+            u8::try_from(v).map_err(|_| anyhow!("value {v} out of byte range in '{s}'"))
+        })
+        .collect()
+}
+
+fn csv_f32(s: &str) -> Result<Vec<f32>> {
+    s.split(',')
+        .map(|p| {
+            p.trim()
+                .parse::<f32>()
+                .map_err(|_| anyhow!("invalid number '{p}' in '{s}'"))
+        })
+        .collect()
+}
+
+/// Build the category-6 params from `hk set` flags, validating that every
+/// required parameter for the mode is present (and no irrelevant ones).
+fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
+    let present: Vec<&str> = [
+        ("kcs", a.kcs.is_some()),
+        ("trps", a.trps.is_some()),
+        ("dbs", a.dbs.is_some()),
+        ("time", a.time.is_some()),
+        ("delay", a.delay.is_some()),
+        ("row2", a.row2.is_some()),
+        ("col2", a.col2.is_some()),
+        ("direction", a.direction.is_some()),
+    ]
+    .into_iter()
+    .filter(|&(_, p)| p)
+    .map(|(n, _)| n)
+    .collect();
+    let reject_extras = |allowed: &[&str]| -> Result<()> {
+        let bad: Vec<&str> = present
+            .iter()
+            .copied()
+            .filter(|n| !allowed.contains(n))
+            .collect();
+        if !bad.is_empty() {
+            bail!(
+                "parameter(s) {} not used by --mode {}",
+                bad.iter().map(|n| format!("--{n}")).collect::<Vec<_>>().join(", "),
+                a.mode
+            );
+        }
+        Ok(())
+    };
+    let req = |name: &str| -> Result<&str> {
+        match name {
+            "kcs" => a.kcs.as_deref(),
+            "trps" => a.trps.as_deref(),
+            "dbs" => a.dbs.as_deref(),
+            _ => None,
+        }
+        .ok_or_else(|| anyhow!("--mode {} requires --{name}", a.mode))
+    };
+    let req_u16 = |name: &str, v: Option<u16>| -> Result<u16> {
+        v.ok_or_else(|| anyhow!("--mode {} requires --{name}", a.mode))
+    };
+    let kcs = |n: usize| -> Result<Vec<u16>> {
+        let v = csv_u16(req("kcs")?)?;
+        if v.len() != n {
+            bail!("--kcs for mode {} needs exactly {n} values, got {}", a.mode, v.len());
+        }
+        Ok(v)
+    };
+    // Comma list of exactly `n` keycodes → fixed array (padded modes use
+    // the full [u16; 4] only for DKS).
+    let kc_arr = |v: &[u16], n: usize| -> [u16; 4] {
+        let mut out = [0u16; 4];
+        out[..n].copy_from_slice(&v[..n]);
+        out
+    };
+
+    match a.mode.as_str() {
+        "none" => {
+            reject_extras(&[])?;
+            Ok(he::HigherKeyParams::None)
+        }
+        "dks" => {
+            reject_extras(&["kcs", "trps", "dbs"])?;
+            let k = kcs(4)?;
+            let t = csv_u8(req("trps")?)?;
+            if t.len() != 4 {
+                bail!("--trps for mode dks needs exactly 4 values, got {}", t.len());
+            }
+            let d = csv_f32(req("dbs")?)?;
+            if d.len() != 2 {
+                bail!("--dbs for mode dks needs exactly 2 values, got {}", d.len());
+            }
+            let mut trps = [0u8; 4];
+            trps.copy_from_slice(&t);
+            Ok(he::HigherKeyParams::Dks(he::DksParams {
+                kcs: kc_arr(&k, 4),
+                trps,
+                dbs: [d[0], d[1]],
+            }))
+        }
+        "mpt" => {
+            reject_extras(&["kcs", "dbs"])?;
+            let k = kcs(3)?;
+            let d = csv_f32(req("dbs")?)?;
+            if d.len() != 3 {
+                bail!("--dbs for mode mpt needs exactly 3 values, got {}", d.len());
+            }
+            let mut kcs3 = [0u16; 3];
+            kcs3.copy_from_slice(&k);
+            Ok(he::HigherKeyParams::Mpt(he::MptParams {
+                kcs: kcs3,
+                dbs: [d[0], d[1], d[2]],
+            }))
+        }
+        "mt" => {
+            reject_extras(&["kcs", "time"])?;
+            let k = kcs(2)?;
+            let time = req_u16("time", a.time)?;
+            Ok(he::HigherKeyParams::Mt(he::MtParams {
+                kcs: [k[0], k[1]],
+                time,
+            }))
+        }
+        "tgl" => {
+            reject_extras(&["kcs", "time"])?;
+            let k = kcs(1)?;
+            let time = req_u16("time", a.time)?;
+            Ok(he::HigherKeyParams::Tgl(he::TglParams {
+                kcs: k[0],
+                time,
+            }))
+        }
+        "end" => {
+            reject_extras(&["kcs", "delay"])?;
+            let k = kcs(2)?;
+            let delay = req_u16("delay", a.delay)?;
+            Ok(he::HigherKeyParams::End(he::EndParams {
+                kcs: [k[0], k[1]],
+                delay,
+            }))
+        }
+        "socd" => {
+            reject_extras(&["kcs", "delay", "row2", "col2", "direction"])?;
+            let k = kcs(2)?;
+            let delay = req_u16("delay", a.delay)?;
+            let (row2, col2) = hk_partner(a)?;
+            let direction = match a.direction.as_deref().unwrap_or("cover") {
+                "cover" => he::SocdDirection::Cover,
+                "priority-a" => he::SocdDirection::PriorityA,
+                "priority-b" => he::SocdDirection::PriorityB,
+                "neutral" => he::SocdDirection::Neutral,
+                other => bail!("invalid --direction '{other}'"),
+            };
+            Ok(he::HigherKeyParams::Socd(he::SocdParams {
+                row2,
+                col2,
+                kcs: [k[0], k[1]],
+                delay,
+                direction,
+            }))
+        }
+        "rs" => {
+            reject_extras(&["kcs", "delay", "row2", "col2"])?;
+            let k = kcs(2)?;
+            let delay = req_u16("delay", a.delay)?;
+            let (row2, col2) = hk_partner(a)?;
+            Ok(he::HigherKeyParams::Rs(he::RsParams {
+                row2,
+                col2,
+                kcs: [k[0], k[1]],
+                delay,
+            }))
+        }
+        other => bail!("invalid higher-key mode '{other}'"),
+    }
+}
+
+/// Partner key coordinates for the cross-linked SOCD/RS writes.
+fn hk_partner(a: &HkSet) -> Result<(u8, u8)> {
+    let row2 = a
+        .row2
+        .ok_or_else(|| anyhow!("--mode {} requires --row2 and --col2", a.mode))?;
+    let col2 = a
+        .col2
+        .ok_or_else(|| anyhow!("--mode {} requires --row2 and --col2", a.mode))?;
+    if col2 > 20 {
+        bail!("partner column {col2} out of range 0..=20");
+    }
+    Ok((row2, col2))
+}
+
+/// Human-readable one-line description of a higher-key config.
+fn hk_kcs_text(kcs: &[u16]) -> String {
+    kcs.iter()
+        .map(|c| format!("0x{c:04X}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn hk_config_text(c: &he::HigherKeyConfig) -> String {
+    match c {
+        he::HigherKeyConfig::None { .. } => "none".to_string(),
+        he::HigherKeyConfig::Dks { params, .. } => format!(
+            "dks kcs=[{}] trps={:?} dbs={:?} mm",
+            hk_kcs_text(&params.kcs),
+            params.trps,
+            params.dbs
+        ),
+        he::HigherKeyConfig::Mpt { params, .. } => format!(
+            "mpt kcs=[{}] dbs={:?} mm",
+            hk_kcs_text(&params.kcs),
+            params.dbs
+        ),
+        he::HigherKeyConfig::Mt { params, .. } => format!(
+            "mt kcs=[{}] time={}",
+            hk_kcs_text(&params.kcs),
+            params.time
+        ),
+        he::HigherKeyConfig::Tgl { params, .. } => {
+            format!("tgl kc=0x{:04X} time={}", params.kcs, params.time)
+        }
+        he::HigherKeyConfig::End { params, .. } => format!(
+            "end kcs=[{}] delay={}",
+            hk_kcs_text(&params.kcs),
+            params.delay
+        ),
+        he::HigherKeyConfig::Socd { params, .. } => format!(
+            "socd partner=r{}c{} kcs=[{}] delay={} dir={:?}",
+            params.row2,
+            params.col2,
+            hk_kcs_text(&params.kcs),
+            params.delay,
+            params.direction
+        ),
+        he::HigherKeyConfig::Rs { params, .. } => format!(
+            "rs partner=r{}c{} kcs=[{}] delay={}",
+            params.row2,
+            params.col2,
+            hk_kcs_text(&params.kcs),
+            params.delay
+        ),
+    }
+}
+
+fn hk_params_text(p: &he::HigherKeyParams) -> String {
+    match p {
+        he::HigherKeyParams::None => "none".to_string(),
+        he::HigherKeyParams::Dks(d) => format!(
+            "dks kcs=[{}] trps={:?} dbs={:?} mm",
+            hk_kcs_text(&d.kcs),
+            d.trps,
+            d.dbs
+        ),
+        he::HigherKeyParams::Mpt(m) => format!(
+            "mpt kcs=[{}] dbs={:?} mm",
+            hk_kcs_text(&m.kcs),
+            m.dbs
+        ),
+        he::HigherKeyParams::Mt(m) => {
+            format!("mt kcs=[{}] time={}", hk_kcs_text(&m.kcs), m.time)
+        }
+        he::HigherKeyParams::Tgl(t) => format!("tgl kc=0x{:04X} time={}", t.kcs, t.time),
+        he::HigherKeyParams::End(e) => format!(
+            "end kcs=[{}] delay={}",
+            hk_kcs_text(&e.kcs),
+            e.delay
+        ),
+        he::HigherKeyParams::Socd(s) => format!(
+            "socd partner=r{}c{} kcs=[{}] delay={} dir={:?}",
+            s.row2,
+            s.col2,
+            hk_kcs_text(&s.kcs),
+            s.delay,
+            s.direction
+        ),
+        he::HigherKeyParams::Rs(r) => format!(
+            "rs partner=r{}c{} kcs=[{}] delay={}",
+            r.row2,
+            r.col2,
+            hk_kcs_text(&r.kcs),
+            r.delay
+        ),
+    }
+}
+
+/// Does a read-back config equal the params just written (mode + payload;
+/// row/col are checked by the caller's key selection)?
+fn hk_same(c: &he::HigherKeyConfig, p: &he::HigherKeyParams) -> bool {
+    use he::{HigherKeyConfig as C, HigherKeyParams as P};
+    match (c, p) {
+        (C::None { .. }, P::None) => true,
+        (C::Dks { params, .. }, P::Dks(want)) => params == want,
+        (C::Mpt { params, .. }, P::Mpt(want)) => params == want,
+        (C::Mt { params, .. }, P::Mt(want)) => params == want,
+        (C::Tgl { params, .. }, P::Tgl(want)) => params == want,
+        (C::End { params, .. }, P::End(want)) => params == want,
+        (C::Socd { params, .. }, P::Socd(want)) => params == want,
+        (C::Rs { params, .. }, P::Rs(want)) => params == want,
+        _ => false,
+    }
+}
+
+/// Parse one `delay:keycode[:up|down]` macro action. `encode()` runs the
+/// proto-layer range/blacklist checks before any device contact.
+fn parse_macro_action(s: &str) -> Result<he::MacroAction> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if !(2..=3).contains(&parts.len()) {
+        bail!("bad action '{s}' (want delay:keycode[:up|down])");
+    }
+    let delay: u16 = parts[0]
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("bad delay in action '{s}' (raw u16, units unverified)"))?;
+    let key_code = parse_keycode(parts[1])?;
+    let status = match parts.get(2).copied() {
+        None | Some("down") | Some("press") => false,
+        Some("up") => true,
+        Some(other) => bail!("bad action flag '{other}' in '{s}' (up|down)"),
+    };
+    let a = he::MacroAction {
+        status,
+        delay,
+        key_code,
+    };
+    a.encode()?;
+    Ok(a)
+}
+
+fn macro_action_json(a: &he::MacroAction) -> serde_json::Value {
+    json!({
+        "status": a.status,
+        "delay": a.delay,
+        "keycode": format!("0x{:04X}", a.key_code),
+        "label": omg_model::key_label(a.key_code, false),
+    })
+}
+
+fn keycode_entries(codes: &[u16; 21]) -> Vec<serde_json::Value> {
+    codes
+        .iter()
+        .enumerate()
+        .map(|(col, &c)| {
+            json!({ "col": col, "code": format!("0x{c:04X}"), "label": omg_model::key_label(c, false) })
+        })
+        .collect()
+}
+
+fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
+    match command {
+        KbKeys::Get { layer, row, col } => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            if let (Some(r), Some(c)) = (row, col) {
+                let code = kb.key_code(*layer, *r, *c)?;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device, "layer": layer, "row": r, "col": c,
+                        "keycode": format!("0x{code:04X}"),
+                        "label": omg_model::key_label(code, false),
+                    }))?;
+                } else {
+                    println!(
+                        "layer {layer} r{r} c{c}: 0x{code:04X}  {}",
+                        omg_model::key_label(code, false)
+                    );
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            if let Some(r) = row {
+                let codes = kb.key_codes(*layer, *r)?;
+                let entries = keycode_entries(&codes);
+                if cli.json {
+                    print_json(
+                        &json!({ "device": device, "layer": layer, "row": r, "keys": entries }),
+                    )?;
+                } else {
+                    for (col, &c) in codes.iter().enumerate() {
+                        if c != 0 {
+                            println!("col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                        }
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            // No row: dump every matrix row that has keys on this layer.
+            let slots = kb.key_slots()?;
+            let mut rows: Vec<u8> = slots.iter().map(|s| s.row).collect();
+            rows.sort_unstable();
+            rows.dedup();
+            let mut out_rows: Vec<serde_json::Value> = Vec::new();
+            for r in rows {
+                let codes = kb.key_codes(*layer, r)?;
+                if cli.json {
+                    out_rows.push(json!({ "row": r, "keys": keycode_entries(&codes) }));
+                } else {
+                    println!("row {r}:");
+                    for (col, &c) in codes.iter().enumerate() {
+                        if c != 0 {
+                            println!("  col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                        }
+                    }
+                }
+            }
+            if cli.json {
+                print_json(&json!({ "device": device, "layer": layer, "rows": out_rows }))?;
+            } else if out_rows.is_empty() {
+                println!("no keys reported (layer {layer})");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbKeys::Set {
+            yes,
+            layer,
+            row,
+            col,
+            code,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            if *col > 20 {
+                bail!("column {col} out of range 0..=20");
+            }
+            let code_v = parse_keycode(code)?;
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            kb.set_key_code(*layer, *row, *col, code_v)?;
+            let actual = kb.key_code(*layer, *row, *col)?;
+            let verified = actual == code_v;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "change": format!("layer {layer} r{row} c{col} keycode -> 0x{code_v:04X}"),
+                    "expected": format!("0x{code_v:04X}"),
+                    "actual": format!("0x{actual:04X}"),
+                    "verified": verified,
+                }))?;
+            } else {
+                println!("layer {layer} r{row} c{col} keycode -> 0x{code_v:04X}");
+                println!("verified: {verified}");
+            }
+            Ok(if verified {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        KbKeys::SetRow {
+            yes,
+            layer,
+            row,
+            codes,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            if codes.len() != 21 {
+                bail!("set-row needs exactly 21 keycodes, got {}", codes.len());
+            }
+            let mut parsed = [0u16; 21];
+            for (i, s) in codes.iter().enumerate() {
+                parsed[i] = parse_keycode(s)?;
+            }
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            kb.set_key_codes(*layer, *row, &parsed)?;
+            let actual = kb.key_codes(*layer, *row)?;
+            let verified = actual == parsed;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "change": format!("layer {layer} row {row} keycodes -> {}", keycode_entries(&parsed).iter().filter(|e| e["code"] != "0x0000").count()),
+                    "expected": parsed.iter().map(|c| format!("0x{c:04X}")).collect::<Vec<_>>(),
+                    "actual": actual.iter().map(|c| format!("0x{c:04X}")).collect::<Vec<_>>(),
+                    "verified": verified,
+                }))?;
+            } else {
+                println!("layer {layer} row {row}: 21 keycodes written");
+                println!("verified: {verified}");
+                if !verified {
+                    for (col, (&w, &a)) in parsed.iter().zip(actual.iter()).enumerate() {
+                        if w != a {
+                            println!("  col {col}: wrote 0x{w:04X}, read 0x{a:04X}");
+                        }
+                    }
+                }
+            }
+            Ok(if verified {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        KbKeys::Default {
+            system,
+            func,
+            row,
+        } => {
+            if *system > 15 || *func > 15 {
+                bail!("system/func are nibbles and must be 0..=15");
+            }
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let layout = kb.default_key_layout(*system, *func, *row)?;
+            let entries = keycode_entries(&layout.key_codes);
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "system": system, "func": func, "row": row,
+                    "keys": entries,
+                }))?;
+            } else {
+                println!("default layout system {system} func {func} row {row}:");
+                for (col, &c) in layout.key_codes.iter().enumerate() {
+                    if c != 0 {
+                        println!("  col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn cmd_kb_hk(cli: &Cli, command: &KbHk) -> Result<ExitCode> {
+    match command {
+        KbHk::Get { row, col, mode } => {
+            let mode_id = hk_mode_id(mode)?;
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let cfg = kb.higher_key(*row, *col, mode_id)?;
+            if cli.json {
+                print_json(&json!({
+                    "device": device, "row": row, "col": col,
+                    "requested_mode": mode, "config": cfg,
+                }))?;
+            } else {
+                println!("r{row} c{col}: {}", hk_config_text(&cfg));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbHk::Set {
+            yes,
+            row,
+            col,
+            params,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            if *col > 20 {
+                bail!("column {col} out of range 0..=20");
+            }
+            let params = hk_params(params)?;
+            // Blacklist fails before the device is opened.
+            for kc in params.key_codes() {
+                if he::keycode_blacklisted(kc) {
+                    bail!("keycode {kc:#06x} is blacklisted (0xF200/0xF203)");
+                }
+            }
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let echoes = kb.set_higher_key(*row, *col, &params)?;
+            let expected_packets = if matches!(
+                params,
+                he::HigherKeyParams::Socd(_) | he::HigherKeyParams::Rs(_)
+            ) {
+                2
+            } else {
+                1
+            };
+            let actual = kb.higher_key(*row, *col, params.mode())?;
+            let verified = echoes.len() == expected_packets && hk_same(&actual, &params);
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "row": row, "col": col,
+                    "change": hk_params_text(&params),
+                    "expected": params,
+                    "echoes": echoes,
+                    "actual": actual,
+                    "verified": verified,
+                }))?;
+            } else {
+                println!("r{row} c{col}: {}", hk_params_text(&params));
+                println!("read-back: {}", hk_config_text(&actual));
+                println!("verified: {verified}");
+            }
+            Ok(if verified {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+    }
+}
+
+fn cmd_kb_macro(cli: &Cli, command: &KbMacro) -> Result<ExitCode> {
+    match command {
+        KbMacro::List => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let space = kb.macro_space_info()?;
+            let mut entries: Vec<serde_json::Value> = Vec::new();
+            for id in 0..space.macro_count {
+                match kb.macro_mode(id) {
+                    Ok(m) => entries.push(json!({
+                        "id": id, "valid": m.valid, "act_num": m.act_num,
+                        "rep_num": m.rep_num, "mode": m.mode,
+                    })),
+                    Err(e) => entries.push(json!({ "id": id, "error": format!("{e:#}") })),
+                }
+            }
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "space": space,
+                    "macros": entries,
+                }))?;
+            } else {
+                println!(
+                    "macro storage: count {} number {} (naming unverified)",
+                    space.macro_count, space.macro_number
+                );
+                for e in &entries {
+                    if let Some(err) = e.get("error") {
+                        println!("  slot {}: unreadable ({})", e["id"], err.as_str().unwrap_or("?"));
+                    } else {
+                        println!(
+                            "  slot {}: {} actions, rep {}, mode {}{}",
+                            e["id"], e["act_num"], e["rep_num"], e["mode"],
+                            if e["valid"] == json!(true) { "" } else { " (invalid)" }
+                        );
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbMacro::Get { id, offset } => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let m = kb.macro_mode(*id)?;
+            let mut pages: Vec<he::MacroPage> = Vec::new();
+            let mut truncated = false;
+            if let Some(off) = offset {
+                pages.push(kb.macro_data(*id, *off)?);
+            } else {
+                // Pages implied by the header's action count, capped at the
+                // u8 page offset the protocol carries.
+                let n = (m.act_num as usize).div_ceil(15).min(256);
+                truncated = (m.act_num as usize).div_ceil(15) > 256;
+                for off in 0..n {
+                    pages.push(kb.macro_data(*id, off as u8)?);
+                }
+            }
+            let page_json: Vec<serde_json::Value> = pages
+                .iter()
+                .map(|p| {
+                    json!({
+                        "offset": p.offset,
+                        "actions": p.actions.iter().map(macro_action_json).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            if cli.json {
+                print_json(&json!({
+                    "device": device, "macro": m, "pages": page_json,
+                    "truncated": truncated,
+                }))?;
+            } else {
+                println!(
+                    "macro {}: {} actions, rep {}, mode {}{}",
+                    m.macro_id,
+                    m.act_num,
+                    m.rep_num,
+                    m.mode,
+                    if m.valid { "" } else { " (invalid)" }
+                );
+                for p in &pages {
+                    println!("  page {}:", p.offset);
+                    for a in &p.actions {
+                        println!(
+                            "    delay {:<6} 0x{:04X} {}{}",
+                            a.delay,
+                            a.key_code,
+                            omg_model::key_label(a.key_code, false),
+                            if a.status { " [up]" } else { "" }
+                        );
+                    }
+                }
+                if truncated {
+                    println!("  (page list truncated at 256 pages)");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbMacro::Set {
+            yes,
+            id,
+            rep_num,
+            mode,
+            actions,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            let parsed: Vec<he::MacroAction> = actions
+                .iter()
+                .map(|s| parse_macro_action(s))
+                .collect::<Result<_>>()?;
+            let n_pages = parsed.len().div_ceil(15);
+            if n_pages > 256 {
+                bail!(
+                    "{} actions need {} pages; the u8 page offset caps macros at 3840 actions",
+                    parsed.len(),
+                    n_pages
+                );
+            }
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            // Data pages first, header last so `valid` flips only after
+            // the payload landed.
+            for (off, chunk) in parsed.chunks(15).enumerate() {
+                kb.set_macro_data(*id, off as u8, chunk)?;
+            }
+            let want = he::MacroMode {
+                macro_id: *id,
+                valid: true,
+                act_num: parsed.len() as u16,
+                rep_num: *rep_num,
+                mode: *mode,
+            };
+            kb.set_macro_mode(&want)?;
+            // Read-back verify: header plus every written page.
+            let m = kb.macro_mode(*id)?;
+            let mut verified = m.macro_id == want.macro_id
+                && m.valid == want.valid
+                && m.act_num == want.act_num
+                && m.rep_num == want.rep_num
+                && m.mode == want.mode;
+            for (off, chunk) in parsed.chunks(15).enumerate() {
+                let page = kb.macro_data(*id, off as u8)?;
+                for (i, &a) in chunk.iter().enumerate() {
+                    if page.actions.get(i) != Some(&a) {
+                        verified = false;
+                    }
+                }
+            }
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "change": format!("macro {} -> {} actions, rep {}, mode {}", id, parsed.len(), rep_num, mode),
+                    "expected": want,
+                    "actual": m,
+                    "verified": verified,
+                }))?;
+            } else {
+                println!(
+                    "macro {id}: {} actions in {} page(s), rep {rep_num}, mode {mode}",
+                    parsed.len(),
+                    n_pages
+                );
+                println!("verified: {verified}");
+            }
+            Ok(if verified {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
     }
 }
 
@@ -3940,5 +4912,175 @@ fn parse_maybe_hex(s: &str) -> std::result::Result<u16, std::num::ParseIntError>
         u16::from_str_radix(s, 16)
     } else {
         s.parse()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hkset(mode: &str) -> HkSet {
+        HkSet {
+            mode: mode.to_string(),
+            kcs: None,
+            trps: None,
+            dbs: None,
+            time: None,
+            delay: None,
+            row2: None,
+            col2: None,
+            direction: None,
+        }
+    }
+
+    #[test]
+    fn parse_keycode_formats_and_blacklist() {
+        assert_eq!(parse_keycode("30").unwrap(), 0x1E);
+        assert_eq!(parse_keycode("0x1e").unwrap(), 0x1E);
+        assert_eq!(parse_keycode("f101").unwrap(), 0xF101);
+        assert!(parse_keycode("0xF200").is_err());
+        assert!(parse_keycode("0xF203").is_err());
+        assert!(parse_keycode("xyz").is_err());
+    }
+
+    #[test]
+    fn macro_action_parse_delay_keycode_flag() {
+        let a = parse_macro_action("10:0x1E").unwrap();
+        assert_eq!(
+            a,
+            he::MacroAction {
+                status: false,
+                delay: 10,
+                key_code: 0x1E
+            }
+        );
+        let a = parse_macro_action("300:30:up").unwrap();
+        assert!(a.status && a.delay == 300 && a.key_code == 30);
+        let a = parse_macro_action("5:0x04:down").unwrap();
+        assert!(!a.status);
+        assert!(parse_macro_action("10:0xF200").is_err()); // blacklisted
+        assert!(parse_macro_action("40000:4").is_err()); // delay > 32767
+        assert!(parse_macro_action("10").is_err());
+        assert!(parse_macro_action("10:4:bogus").is_err());
+    }
+
+    #[test]
+    fn hk_params_builds_each_mode() {
+        // none: no params allowed.
+        assert!(matches!(
+            hk_params(&hkset("none")).unwrap(),
+            he::HigherKeyParams::None
+        ));
+        let mut a = hkset("none");
+        a.time = Some(1);
+        assert!(hk_params(&a).is_err());
+
+        // dks: 4 kcs + 4 trps + 2 dbs.
+        let mut a = hkset("dks");
+        a.kcs = Some("4,5,6,7".into());
+        a.trps = Some("10,20,30,40".into());
+        a.dbs = Some("1.5,2.5".into());
+        match hk_params(&a).unwrap() {
+            he::HigherKeyParams::Dks(d) => {
+                assert_eq!(d.kcs, [4, 5, 6, 7]);
+                assert_eq!(d.trps, [10, 20, 30, 40]);
+                assert_eq!(d.dbs, [1.5, 2.5]);
+            }
+            _ => panic!("expected dks"),
+        }
+        // Missing trps fails; wrong kc count fails.
+        let mut bad = hkset("dks");
+        bad.kcs = Some("4,5".into());
+        assert!(hk_params(&bad).is_err());
+
+        // mt: 2 kcs + time.
+        let mut a = hkset("mt");
+        a.kcs = Some("0x1E,0x1F".into());
+        a.time = Some(0x1234);
+        match hk_params(&a).unwrap() {
+            he::HigherKeyParams::Mt(m) => {
+                assert_eq!(m.kcs, [0x1E, 0x1F]);
+                assert_eq!(m.time, 0x1234);
+            }
+            _ => panic!("expected mt"),
+        }
+        // delay is not an mt parameter.
+        a.delay = Some(1);
+        assert!(hk_params(&a).is_err());
+
+        // tgl: 1 kc + time.
+        let mut a = hkset("tgl");
+        a.kcs = Some("9".into());
+        a.time = Some(7);
+        assert!(matches!(
+            hk_params(&a).unwrap(),
+            he::HigherKeyParams::Tgl(_)
+        ));
+
+        // socd: partner + direction.
+        let mut a = hkset("socd");
+        a.kcs = Some("30,31".into());
+        a.delay = Some(100);
+        a.row2 = Some(3);
+        a.col2 = Some(7);
+        a.direction = Some("priority-a".into());
+        match hk_params(&a).unwrap() {
+            he::HigherKeyParams::Socd(s) => {
+                assert_eq!((s.row2, s.col2), (3, 7));
+                assert_eq!(s.direction, he::SocdDirection::PriorityA);
+            }
+            _ => panic!("expected socd"),
+        }
+        // rs rejects --direction.
+        let mut a = hkset("rs");
+        a.kcs = Some("30,31".into());
+        a.delay = Some(100);
+        a.row2 = Some(3);
+        a.col2 = Some(7);
+        a.direction = Some("cover".into());
+        assert!(hk_params(&a).is_err());
+        a.direction = None;
+        assert!(matches!(
+            hk_params(&a).unwrap(),
+            he::HigherKeyParams::Rs(_)
+        ));
+
+        // blacklisted keycodes rejected while building params.
+        let mut a = hkset("mt");
+        a.kcs = Some("0xF200,4".into());
+        a.time = Some(1);
+        assert!(hk_params(&a).is_err());
+    }
+
+    #[test]
+    fn hk_same_compares_mode_and_params() {
+        let p = he::HigherKeyParams::Socd(he::SocdParams {
+            row2: 3,
+            col2: 7,
+            kcs: [30, 31],
+            delay: 100,
+            direction: he::SocdDirection::PriorityB,
+        });
+        let cfg = he::HigherKeyConfig::Socd {
+            row: 1,
+            col: 2,
+            params: he::SocdParams {
+                row2: 3,
+                col2: 7,
+                kcs: [30, 31],
+                delay: 100,
+                direction: he::SocdDirection::PriorityB,
+            },
+        };
+        assert!(hk_same(&cfg, &p));
+        let mut other = cfg;
+        if let he::HigherKeyConfig::Socd { params, .. } = &mut other {
+            params.delay = 99;
+        }
+        assert!(!hk_same(&other, &p));
+        assert!(!hk_same(
+            &he::HigherKeyConfig::None { row: 1, col: 2 },
+            &p
+        ));
     }
 }
