@@ -8,7 +8,8 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
-use omg_hid::{find_devices, DeviceInfo, DeviceKind};
+use omg_hid::{find_devices, DeviceInfo, DeviceKind, NoAnswer};
+use omg_proto_he as he;
 use omg_proto_mouse as pm;
 use serde_json::json;
 
@@ -36,6 +37,13 @@ enum Commands {
     Devices,
     /// Diagnostic probe of a device (read-only; stub until protocols land).
     Probe,
+    /// GravaStar Mercury HE keyboards (v2 64-byte report protocol).
+    /// Factory reset, firmware update, settings wipe, gamepad mode and
+    /// restart commands are not implemented by design (docs/plan.md §2).
+    Kb {
+        #[command(subcommand)]
+        command: KbCommands,
+    },
     /// GravaStar mice with a Compx chipset (Mercury M/X series).
     Mouse {
         #[command(subcommand)]
@@ -228,6 +236,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.command {
         Commands::Devices => cmd_devices(cli),
         Commands::Probe => cmd_probe(cli),
+        Commands::Kb { command } => cmd_kb(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
     }
 }
@@ -762,6 +771,1217 @@ fn readback_field(c: &pm::MouseConfig, a: &MouseAction) -> serde_json::Value {
         MouseAction::SensorMode(mode) => json!(if mode.as_str() == "lp" { 0 } else { 1 }),
         MouseAction::Button(slot, _, _) => json!(c.buttons[*slot]),
     }
+}
+
+// ── HE keyboard (v2 protocol) ──────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum KbCommands {
+    /// Firmware version, protocol, board id and build time.
+    Info,
+    /// Physical key geometry plus layer-0 keycodes resolved to labels.
+    Layout,
+    /// Raw 21 keycodes of one matrix row on a layer.
+    Keys {
+        layer: u8,
+        row: u8,
+    },
+    /// Live per-key travel (mm) and actuation state of one matrix row.
+    Live {
+        row: u8,
+    },
+    /// Profiles: count and active profile; switch the active profile.
+    Profile {
+        #[command(subcommand)]
+        command: KbProfile,
+    },
+    /// Polling rate: list supported rates / switch rate (restarts keyboard).
+    Polling {
+        #[command(subcommand)]
+        command: KbPolling,
+    },
+    /// OS mode: Windows or macOS key layout.
+    Os {
+        #[command(subcommand)]
+        command: KbOs,
+    },
+    /// Per-key actuation / rapid-trigger settings.
+    Perf {
+        #[command(subcommand)]
+        command: KbPerf,
+    },
+    /// Lighting zones: effect settings and the 8-colour palette.
+    Light {
+        #[command(subcommand)]
+        command: KbLight,
+    },
+    /// List the keyboard's lighting zones and their effect counts.
+    LightingAreas,
+    /// Finest rapid-trigger step in millimetres.
+    RtPrecision,
+    /// Lighting sleep timeout in minutes (0 = never).
+    LightSleep {
+        #[command(subcommand)]
+        command: KbLightSleep,
+    },
+    /// Travel calibration: `start` begins, `stop` finishes. A device
+    /// operation — the keyboard recalibrates its hall sensors.
+    Calibration {
+        #[command(subcommand)]
+        command: KbCalibration,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbProfile {
+    /// Show the profile count and the active profile.
+    /// (Per-profile names are not exposed by the v2 protocol port.)
+    Get,
+    /// Switch the active profile. Requires `--yes`; read back and verified.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        /// Profile index, 0-based, must be < profile count.
+        index: u8,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbPolling {
+    /// Show the supported rates and the active one.
+    Get,
+    /// Set the polling rate (`8k|4k|2k|1k|500|250|125`). Requires `--yes`.
+    /// The keyboard restarts afterwards and may drop off the bus, so a
+    /// missing read-back answer is reported as unverified, not an error.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        rate: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbOs {
+    /// Show the OS mode (0 = Windows, 1 = macOS).
+    Get,
+    /// Set the OS mode. Requires `--yes`; read back and verified.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        #[arg(value_parser = ["windows", "macos"])]
+        os: String,
+    },
+}
+
+/// Shared arguments of `perf set` / `perf set-all`.
+#[derive(Args, Clone)]
+struct PerfWrite {
+    /// `fixed` = actuation point, `rt` = rapid trigger.
+    #[arg(long, value_parser = ["fixed", "rt"])]
+    mode: String,
+    /// Actuation depth in mm: `normal_press` for fixed mode,
+    /// `rt_first_touch` for rapid trigger. Must be > 0 and ≤ the switch's
+    /// maximum travel (3.5 mm for UFO switches, else 3.4 mm).
+    #[arg(long)]
+    actuation: f32,
+    /// Rapid-trigger first-touch depth in mm (rt mode).
+    #[arg(long)]
+    rt_first: Option<f32>,
+    /// Rapid-trigger press sensitivity in mm.
+    #[arg(long)]
+    rt_press: Option<f32>,
+    /// Rapid-trigger release sensitivity in mm.
+    #[arg(long)]
+    rt_release: Option<f32>,
+    /// Top (press) deadzone in mm, 0..=1.0.
+    #[arg(long)]
+    dz_press: Option<f32>,
+    /// Bottom (release) deadzone in mm, 0..=1.0.
+    #[arg(long)]
+    dz_release: Option<f32>,
+}
+
+#[derive(Subcommand)]
+enum KbPerf {
+    /// Read one key's performance settings.
+    Get {
+        row: u8,
+        col: u8,
+    },
+    /// Write one key's performance settings (read-modify-write: the
+    /// switch echo fields are carried from the read, never invented).
+    /// Requires `--yes`; read back and verified.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        #[command(flatten)]
+        write: PerfWrite,
+        row: u8,
+        col: u8,
+    },
+    /// Apply the same settings to every key slot (~5 ms between writes,
+    /// like the official driver). Requires `--yes`; every key is read
+    /// back and verified.
+    SetAll {
+        #[command(flatten)]
+        yes: Yes,
+        #[command(flatten)]
+        write: PerfWrite,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbLight {
+    /// Read one lighting zone's settings and palette.
+    Get {
+        area: u8,
+    },
+    /// Change one lighting zone. Every flag is optional; at least one
+    /// change is required. Requires `--yes`; read back and verified.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        area: u8,
+        /// Turn the zone on.
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Turn the zone off.
+        #[arg(long)]
+        off: bool,
+        /// Effect mode id (valid ids depend on the zone).
+        #[arg(long)]
+        mode: Option<u8>,
+        /// Brightness 0-100 %.
+        #[arg(long)]
+        brightness: Option<u8>,
+        /// Effect speed 0-100 %.
+        #[arg(long)]
+        speed: Option<u8>,
+        /// Direction: `fwd` (0) or `back` (1).
+        #[arg(long, value_parser = ["fwd", "back"])]
+        direction: Option<String>,
+        /// Palette colour index 0-7.
+        #[arg(long)]
+        color: Option<u8>,
+    },
+    /// The zone's 8-colour palette.
+    Palette {
+        #[command(subcommand)]
+        command: KbPalette,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbPalette {
+    /// Show the 8 palette colours as #rrggbb.
+    Get {
+        area: u8,
+    },
+    /// Replace palette entries: the given colours overwrite entries
+    /// 0..n and the remaining entries keep their current values.
+    /// Requires `--yes`; read back and verified.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        area: u8,
+        /// 1-8 colours as #rrggbb.
+        colors: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbLightSleep {
+    /// Show the lighting sleep timeout in minutes (0 = never).
+    Get,
+    /// Set the lighting sleep timeout. Requires `--yes`; valid values are
+    /// the official driver's options (0,1,2,3,5,10,15,20,25,30,45,60,120).
+    /// Read back and verified.
+    Set {
+        #[command(flatten)]
+        yes: Yes,
+        minutes: u16,
+    },
+}
+
+#[derive(Subcommand)]
+enum KbCalibration {
+    /// Begin travel calibration (device operation: the keyboard
+    /// recalibrates its hall sensors). Requires `--yes`.
+    Start {
+        #[command(flatten)]
+        yes: Yes,
+    },
+    /// Finish travel calibration. Requires `--yes`.
+    Stop {
+        #[command(flatten)]
+        yes: Yes,
+    },
+}
+
+/// Open the HE keyboard: explicit `--device` must resolve to an HE v2
+/// interface (a K1 Pro / khub916 device is rejected clearly), otherwise
+/// the single connected HE keyboard is auto-selected.
+fn open_kb(cli: &Cli) -> Result<Option<(DeviceInfo, he::HeKeyboard)>> {
+    let devices = find_devices()?;
+    let device = if let Some(sel) = cli.device.as_deref() {
+        let matches: Vec<&DeviceInfo> = devices.iter().filter(|d| device_matches(d, sel)).collect();
+        match matches.len() {
+            0 => return Ok(None),
+            1 => {
+                let d = matches[0];
+                if d.kind != DeviceKind::HeKeyboardV2 {
+                    bail!(
+                        "{} ({}) is {}, not an HE keyboard — `omg kb` only drives the HE v2 protocol",
+                        d.vid_pid(),
+                        d.path,
+                        d.kind.label()
+                    );
+                }
+                d.clone()
+            }
+            n => bail!("selector '{sel}' matches {n} devices; be more specific"),
+        }
+    } else {
+        let kbs: Vec<DeviceInfo> = devices
+            .into_iter()
+            .filter(|d| d.kind == DeviceKind::HeKeyboardV2)
+            .collect();
+        match select_device(&kbs, None)? {
+            Some(d) => d.clone(),
+            None => return Ok(None),
+        }
+    };
+    let link = device.open_link()?;
+    Ok(Some((device, he::HeKeyboard::new(Box::new(link)))))
+}
+
+fn kb_absent(cli: &Cli) -> Result<ExitCode> {
+    if cli.json {
+        print_json(&json!({ "error": "no HE keyboard (v2 protocol) detected (omg devices lists what was found)" }))?;
+    } else {
+        println!("no HE keyboard (v2 protocol) detected (omg devices lists what was found)");
+    }
+    Ok(no_device())
+}
+
+fn cmd_kb(cli: &Cli, command: &KbCommands) -> Result<ExitCode> {
+    match command {
+        KbCommands::Info => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let info = kb.info()?;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "info": {
+                        "firmware": info.firmware,
+                        "pcb": info.pcb,
+                        "build_time": info.build_time,
+                        "protocol": info.protocol,
+                        "board_id": info.board_id,
+                    },
+                }))?;
+            } else {
+                println!("{}", device.vid_pid());
+                println!("firmware:    {}", info.firmware);
+                println!("pcb:         {}", info.pcb);
+                println!("build time:  {}", info.build_time);
+                println!("protocol:    {}", info.protocol);
+                println!("board id:    0x{:08X}", info.board_id);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbCommands::Layout => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let slots = kb.key_slots()?;
+            // Layer-0 keycodes for every row that has keys.
+            let mut rows: Vec<u8> = slots.iter().map(|s| s.row).collect();
+            rows.sort_unstable();
+            rows.dedup();
+            let mut codes: std::collections::BTreeMap<u8, [u16; 21]> = Default::default();
+            for &row in &rows {
+                codes.insert(row, kb.key_codes(0, row)?);
+            }
+            struct Row {
+                row: u8,
+                col: u8,
+                x: f32,
+                y: f32,
+                size: u8,
+                w: f32,
+                h: f32,
+                code: u16,
+                label: String,
+            }
+            let keys: Vec<Row> = slots
+                .iter()
+                .map(|s| {
+                    let code = codes.get(&s.row).map(|c| c[s.col as usize]).unwrap_or(0);
+                    let (w, h, _) = omg_model::key_size(s.size);
+                    Row {
+                        row: s.row,
+                        col: s.col,
+                        x: s.x,
+                        y: s.y,
+                        size: s.size,
+                        w,
+                        h,
+                        code,
+                        label: omg_model::key_label(code, false),
+                    }
+                })
+                .collect();
+            if cli.json {
+                let v: Vec<serde_json::Value> = keys
+                    .iter()
+                    .map(|k| {
+                        json!({
+                            "row": k.row, "col": k.col,
+                            "x": k.x, "y": k.y, "size": k.size,
+                            "w": k.w, "h": k.h,
+                            "keycode": format!("0x{:04X}", k.code),
+                            "label": k.label,
+                        })
+                    })
+                    .collect();
+                print_json(&json!({ "device": device, "layer": 0, "keys": v }))?;
+            } else {
+                println!("{} keys (layer 0):", keys.len());
+                for k in &keys {
+                    println!(
+                        "  r{} c{:<2} {:<10} {:.2}x{:.2}u @({:.2},{:.2}) 0x{:04X} size {}",
+                        k.row, k.col, k.label, k.w, k.h, k.x, k.y, k.code, k.size
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbCommands::Keys { layer, row } => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let codes = kb.key_codes(*layer, *row)?;
+            let entries: Vec<serde_json::Value> = codes
+                .iter()
+                .enumerate()
+                .map(|(col, &c)| json!({ "col": col, "code": format!("0x{c:04X}"), "label": omg_model::key_label(c, false) }))
+                .collect();
+            if cli.json {
+                print_json(&json!({ "device": device, "layer": layer, "row": row, "keys": entries }))?;
+            } else {
+                for (col, &c) in codes.iter().enumerate() {
+                    if c != 0 {
+                        println!("col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbCommands::Live { row } => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let live = kb.live_row(*row)?;
+            if cli.json {
+                let cols: Vec<serde_json::Value> = live
+                    .iter()
+                    .enumerate()
+                    .map(|(col, &(t, a))| json!({ "col": col, "travel_mm": t, "actuated": a }))
+                    .collect();
+                print_json(&json!({ "device": device, "row": row, "keys": cols }))?;
+            } else {
+                println!("row {row} (travel mm / actuated):");
+                for (col, &(t, a)) in live.iter().enumerate() {
+                    if t > 0.0005 || a {
+                        println!("  col {col:<2} {t:>6.3}  {}", if a { "ACTUATED" } else { "" });
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbCommands::Profile { command } => match command {
+            KbProfile::Get => {
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                let count = kb.profile_count()?;
+                let active = kb.profile()?;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "count": count,
+                        "active": active,
+                        "name": serde_json::Value::Null,
+                        "name_supported": false,
+                    }))?;
+                } else {
+                    println!("profiles: {} (active: {})", count, active + 1);
+                    println!("note: per-profile names are not exposed by the v2 protocol");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            KbProfile::Set { yes, index } => {
+                if !yes.yes {
+                    bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+                }
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                let count = kb.profile_count()?;
+                if *index >= count {
+                    bail!("profile index {index} out of range (0..{})", count.saturating_sub(1));
+                }
+                kb.set_profile(*index)?;
+                let actual = kb.profile()?;
+                let verified = actual == *index;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "change": format!("active profile -> {}", index + 1),
+                        "expected": index,
+                        "actual": actual,
+                        "verified": verified,
+                    }))?;
+                } else {
+                    println!("active profile -> {}", index + 1);
+                    println!("verified: {verified}");
+                }
+                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            }
+        },
+        KbCommands::Polling { command } => match command {
+            KbPolling::Get => {
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                let current = kb.report_rate()?;
+                let supported = kb.report_rates()?;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "current_id": current,
+                        "current": rate_name(current),
+                        "supported_ids": supported,
+                        "supported": supported.iter().map(|&i| rate_name(i)).collect::<Vec<_>>(),
+                    }))?;
+                } else {
+                    println!("polling: {} Hz ({})", rate_hz(current), rate_name(current));
+                    println!("supported: {}", supported.iter().map(|&i| rate_name(i)).collect::<Vec<_>>().join(", "));
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            KbPolling::Set { yes, rate } => {
+                if !yes.yes {
+                    bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+                }
+                let id = parse_polling_rate(rate)?;
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                let supported = kb.report_rates()?;
+                if !supported.contains(&id) {
+                    bail!(
+                        "{} Hz is not in this keyboard's supported list ({})",
+                        rate_hz(id),
+                        supported.iter().map(|&i| rate_name(i)).collect::<Vec<_>>().join(", ")
+                    );
+                }
+                kb.set_report_rate(id)?; // NoAnswer tolerated: the keyboard restarts
+                // Read back; a restarted keyboard may not answer in time.
+                let (actual, verified) = match kb.report_rate() {
+                    Ok(v) => (json!(v), json!(v == id)),
+                    Err(e) if e.is::<NoAnswer>() => (json!("no answer (keyboard restarted)"), serde_json::Value::Null),
+                    Err(e) => return Err(e),
+                };
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "change": format!("polling rate -> {} Hz", rate_hz(id)),
+                        "expected": id,
+                        "actual": actual,
+                        "verified": verified,
+                    }))?;
+                } else {
+                    println!("polling rate -> {} Hz", rate_hz(id));
+                    println!("note: the keyboard restarts after this change");
+                    println!("verified: {}", verified);
+                }
+                Ok(if verified == json!(false) { ExitCode::from(1) } else { ExitCode::SUCCESS })
+            }
+        },
+        KbCommands::Os { command } => match command {
+            KbOs::Get => {
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                let v = kb.system()?;
+                let name = if v == 0 { "windows" } else { "macos" };
+                if cli.json {
+                    print_json(&json!({ "device": device, "os": name, "os_id": v }))?;
+                } else {
+                    println!("os mode: {name}");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            KbOs::Set { yes, os } => {
+                if !yes.yes {
+                    bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+                }
+                let v = if os == "windows" { 0 } else { 1 };
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                kb.set_system(v)?;
+                let actual = kb.system()?;
+                let verified = actual == v;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "change": format!("os mode -> {os}"),
+                        "expected": os,
+                        "actual": actual,
+                        "verified": verified,
+                    }))?;
+                } else {
+                    println!("os mode -> {os}");
+                    println!("verified: {verified}");
+                }
+                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            }
+        },
+        KbCommands::Perf { command } => cmd_kb_perf(cli, command),
+        KbCommands::Light { command } => cmd_kb_light(cli, command),
+        KbCommands::LightingAreas => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let areas = kb.lighting_areas()?;
+            if cli.json {
+                let v: Vec<serde_json::Value> =
+                    areas.iter().map(|a| json!({ "index": a.index, "effects": a.count })).collect();
+                print_json(&json!({ "device": device, "areas": v }))?;
+            } else if areas.is_empty() {
+                println!("no lighting areas reported");
+            } else {
+                for a in &areas {
+                    println!("area {}: {} effects", a.index, a.count);
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbCommands::RtPrecision => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let mm = kb.rt_precision()?;
+            if cli.json {
+                print_json(&json!({ "device": device, "rt_precision_mm": mm }))?;
+            } else {
+                println!("rapid-trigger precision: {:.3} mm", mm);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbCommands::LightSleep { command } => match command {
+            KbLightSleep::Get => {
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                let minutes = kb.lighting_sleep()?;
+                if cli.json {
+                    print_json(&json!({ "device": device, "light_sleep_minutes": minutes }))?;
+                } else {
+                    println!(
+                        "lighting sleep: {}",
+                        if minutes == 0 { "never".to_string() } else { format!("{minutes} min") }
+                    );
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            KbLightSleep::Set { yes, minutes } => {
+                if !yes.yes {
+                    bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+                }
+                if !omg_model::LIGHT_SLEEP_MINUTES.contains(minutes) {
+                    bail!(
+                        "invalid sleep timeout {minutes} min (valid: {:?})",
+                        omg_model::LIGHT_SLEEP_MINUTES
+                    );
+                }
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                kb.set_lighting_sleep(*minutes)?;
+                let actual = kb.lighting_sleep()?;
+                let verified = actual == *minutes;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "change": format!("lighting sleep -> {minutes} min"),
+                        "expected": minutes,
+                        "actual": actual,
+                        "verified": verified,
+                    }))?;
+                } else {
+                    println!("lighting sleep -> {minutes} min");
+                    println!("verified: {verified}");
+                }
+                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            }
+        },
+        KbCommands::Calibration { command } => {
+            let (yes, start) = match command {
+                KbCalibration::Start { yes } => (yes, true),
+                KbCalibration::Stop { yes } => (yes, false),
+            };
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            match kb.calibration(start) {
+                Ok(()) => {
+                    if cli.json {
+                        print_json(&json!({
+                            "device": device,
+                            "change": if start { "calibration start" } else { "calibration stop" },
+                            "sent": true,
+                            "verified": serde_json::Value::Null,
+                        }))?;
+                    } else {
+                        println!("calibration {} sent", if start { "start" } else { "stop" });
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) if e.is::<NoAnswer>() => {
+                    // The keyboard may be busy recalibrating; the command
+                    // was sent, there is just no read-back path.
+                    if cli.json {
+                        print_json(&json!({
+                            "device": device,
+                            "change": if start { "calibration start" } else { "calibration stop" },
+                            "sent": true,
+                            "verified": serde_json::Value::Null,
+                            "note": "no answer (keyboard busy recalibrating)",
+                        }))?;
+                    } else {
+                        println!("calibration {} sent (no answer — keyboard busy recalibrating)", if start { "start" } else { "stop" });
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+// ── HE keyboard: performance ───────────────────────────────────────────
+
+/// Parsed `perf set` / `perf set-all` arguments.
+struct PerfSpec {
+    mode: u8,
+    actuation: f32,
+    rt_first: Option<f32>,
+    rt_press: Option<f32>,
+    rt_release: Option<f32>,
+    dz_press: Option<f32>,
+    dz_release: Option<f32>,
+}
+
+fn perf_spec(w: &PerfWrite) -> Result<PerfSpec> {
+    Ok(PerfSpec {
+        mode: if w.mode == "rt" { he::MODE_RAPID } else { he::MODE_FIXED },
+        actuation: w.actuation,
+        rt_first: w.rt_first,
+        rt_press: w.rt_press,
+        rt_release: w.rt_release,
+        dz_press: w.dz_press,
+        dz_release: w.dz_release,
+    })
+}
+
+/// Validate ranges and apply the spec on top of a read-modify-write base.
+/// The switch echo fields (axis/calibrate/axis_v2_id/axis_range_max/
+/// axis_coefficient) and untouched distances are carried from `base`.
+fn apply_perf_spec(base: &he::KeyPerf, spec: &PerfSpec) -> Result<(he::KeyPerf, Vec<String>)> {
+    let limit = omg_model::max_travel(base.axis_v2_id);
+    let mut changes = Vec::new();
+    let check_travel = |name: &str, v: f32| -> Result<()> {
+        if !(v > 0.0 && v <= limit) {
+            bail!("{name} {v} mm out of range for this switch (0 < v ≤ {limit} mm)");
+        }
+        Ok(())
+    };
+    let check_dz = |name: &str, v: f32| -> Result<()> {
+        if !(0.0..=omg_model::DEADZONE_MAX).contains(&v) {
+            bail!("{name} {v} mm out of range 0..={:.1} mm", omg_model::DEADZONE_MAX);
+        }
+        Ok(())
+    };
+    check_travel("actuation", spec.actuation)?;
+    for (name, v) in [
+        ("rt-first", spec.rt_first),
+        ("rt-press", spec.rt_press),
+        ("rt-release", spec.rt_release),
+    ]
+    .into_iter()
+    .filter_map(|(n, v)| v.map(|v| (n, v)))
+    {
+        check_travel(name, v)?;
+    }
+    for (name, v) in [("dz-press", spec.dz_press), ("dz-release", spec.dz_release)]
+        .into_iter()
+        .filter_map(|(n, v)| v.map(|v| (n, v)))
+    {
+        check_dz(name, v)?;
+    }
+
+    let mut p = *base;
+    let mode_name = |m: u8| if m == he::MODE_RAPID { "rt" } else { "fixed" };
+    if p.mode != spec.mode {
+        changes.push(format!("mode {} -> {}", mode_name(p.mode), mode_name(spec.mode)));
+        p.mode = spec.mode;
+    }
+    // --actuation drives the mode's primary depth.
+    let (field, old) = if spec.mode == he::MODE_FIXED {
+        ("normal_press", p.normal_press)
+    } else {
+        ("rt_first_touch", p.rt_first_touch)
+    };
+    let new = spec.actuation;
+    if (old - new).abs() > 0.0005 {
+        changes.push(format!("{field} {old:.3} -> {new:.3} mm"));
+    }
+    if spec.mode == he::MODE_FIXED {
+        p.normal_press = new;
+    } else {
+        p.rt_first_touch = new;
+    }
+    let set_opt = |dst: &mut f32, name: &str, v: Option<f32>, changes: &mut Vec<String>| {
+        if let Some(v) = v {
+            if (*dst - v).abs() > 0.0005 {
+                changes.push(format!("{name} {dst:.3} -> {v:.3} mm"));
+            }
+            *dst = v;
+        }
+    };
+    set_opt(&mut p.rt_first_touch, "rt_first_touch", spec.rt_first, &mut changes);
+    set_opt(&mut p.rt_press, "rt_press", spec.rt_press, &mut changes);
+    set_opt(&mut p.rt_release, "rt_release", spec.rt_release, &mut changes);
+    set_opt(&mut p.press_deadzone, "press_deadzone", spec.dz_press, &mut changes);
+    set_opt(&mut p.release_deadzone, "release_deadzone", spec.dz_release, &mut changes);
+    if changes.is_empty() {
+        changes.push("no effective change".to_string());
+    }
+    Ok((p, changes))
+}
+
+fn perf_json(p: &he::KeyPerf) -> serde_json::Value {
+    json!({
+        "mode": if p.mode == he::MODE_RAPID { "rt" } else { "fixed" },
+        "mode_id": p.mode,
+        "normal_press": p.normal_press,
+        "normal_release": p.normal_release,
+        "rt_first_touch": p.rt_first_touch,
+        "rt_press": p.rt_press,
+        "rt_release": p.rt_release,
+        "press_deadzone": p.press_deadzone,
+        "release_deadzone": p.release_deadzone,
+        "axis": p.axis,
+        "calibrate": p.calibrate,
+        "axis_v2_id": p.axis_v2_id,
+        "axis_range_max": p.axis_range_max,
+        "axis_coefficient": p.axis_coefficient,
+        "max_travel_mm": omg_model::max_travel(p.axis_v2_id),
+    })
+}
+
+fn cmd_kb_perf(cli: &Cli, command: &KbPerf) -> Result<ExitCode> {
+    match command {
+        KbPerf::Get { row, col } => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let p = kb.key_perf(*row, *col)?;
+            if cli.json {
+                print_json(&json!({ "device": device, "row": row, "col": col, "perf": perf_json(&p) }))?;
+            } else {
+                println!("key r{row} c{col}:");
+                println!("  mode:            {}", if p.mode == he::MODE_RAPID { "rapid trigger" } else { "fixed actuation" });
+                println!("  actuation:       {:.3} mm", if p.mode == he::MODE_RAPID { p.rt_first_touch } else { p.normal_press });
+                println!("  normal press:    {:.3} mm", p.normal_press);
+                println!("  normal release:  {:.3} mm", p.normal_release);
+                println!("  rt first touch:  {:.3} mm", p.rt_first_touch);
+                println!("  rt press:        {:.3} mm", p.rt_press);
+                println!("  rt release:      {:.3} mm", p.rt_release);
+                println!("  deadzone:        {:.3} / {:.3} mm", p.press_deadzone, p.release_deadzone);
+                println!(
+                    "  switch:          id {} axis {} cal {} range {} coeff {} (max {:.1} mm)",
+                    p.axis_v2_id,
+                    p.axis,
+                    p.calibrate,
+                    p.axis_range_max,
+                    p.axis_coefficient,
+                    omg_model::max_travel(p.axis_v2_id)
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbPerf::Set { yes, write, row, col } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            let spec = perf_spec(write)?;
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let base = kb.key_perf(*row, *col)?;
+            let (new, changes) = apply_perf_spec(&base, &spec)?;
+            kb.set_key_perf(*row, *col, &new)?;
+            let actual = kb.key_perf(*row, *col)?;
+            let verified = actual == new;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "row": row, "col": col,
+                    "change": changes.join("; "),
+                    "expected": perf_json(&new),
+                    "actual": perf_json(&actual),
+                    "verified": verified,
+                }))?;
+            } else {
+                println!("key r{row} c{col}: {}", changes.join("; "));
+                println!("verified: {verified}");
+                if !verified {
+                    println!("expected: {}", serde_json::to_string(&perf_json(&new))?);
+                    println!("actual:   {}", serde_json::to_string(&perf_json(&actual))?);
+                }
+            }
+            Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+        KbPerf::SetAll { yes, write } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            let spec = perf_spec(write)?;
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            let slots = kb.key_slots()?;
+            let mut expected: Vec<((u8, u8), he::KeyPerf)> = Vec::with_capacity(slots.len());
+            let mut failures: Vec<serde_json::Value> = Vec::new();
+            for s in &slots {
+                // Read-modify-write per key, like the official driver.
+                let written = kb.key_perf(s.row, s.col).and_then(|base| {
+                    let (new, _) = apply_perf_spec(&base, &spec)?;
+                    kb.set_key_perf(s.row, s.col, &new)?;
+                    Ok(new)
+                });
+                match written {
+                    Ok(new) => {
+                        expected.push(((s.row, s.col), new));
+                        // Rate-limit like the official driver (~5 ms/key).
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(e) => failures.push(json!({ "row": s.row, "col": s.col, "stage": "write", "error": format!("{e:#}") })),
+                }
+            }
+            // Read-back verify pass over the keys that were written.
+            let mut verified_count = 0usize;
+            for ((row, col), want) in &expected {
+                match kb.key_perf(*row, *col) {
+                    Ok(actual) if actual == *want => verified_count += 1,
+                    Ok(_) => failures.push(json!({ "row": row, "col": col, "stage": "verify", "error": "read-back mismatch" })),
+                    Err(e) => failures.push(json!({ "row": row, "col": col, "stage": "verify", "error": format!("{e:#}") })),
+                }
+            }
+            let total = slots.len();
+            let written = expected.len();
+            let ok = failures.is_empty() && verified_count == total;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "keys": total,
+                    "written": written,
+                    "verified": verified_count,
+                    "failures": failures,
+                    "mode": if spec.mode == he::MODE_RAPID { "rt" } else { "fixed" },
+                    "actuation": spec.actuation,
+                }))?;
+            } else {
+                println!("perf set-all: {written}/{total} keys written, {verified_count} verified");
+                for f in &failures {
+                    println!(
+                        "  r{} c{} [{}]: {}",
+                        f["row"], f["col"], f["stage"].as_str().unwrap_or("?"), f["error"].as_str().unwrap_or("?")
+                    );
+                }
+            }
+            Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+    }
+}
+
+// ── HE keyboard: lighting ──────────────────────────────────────────────
+
+fn light_json(l: &he::LightingBase) -> serde_json::Value {
+    json!({
+        "on": l.on,
+        "mode": l.mode,
+        "brightness": l.brightness,
+        "speed": l.speed,
+        "direction": if l.direction == 0 { "fwd" } else { "back" },
+        "direction_id": l.direction,
+        "color_index": l.color_index,
+    })
+}
+
+fn rgb_hex(c: &he::Rgb) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
+}
+
+fn parse_rgb_hex(s: &str) -> Result<he::Rgb> {
+    let t = s.trim().strip_prefix('#').unwrap_or(s.trim());
+    if t.len() != 6 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("invalid colour '{s}' (want #rrggbb)");
+    }
+    let v = u32::from_str_radix(t, 16).map_err(|_| anyhow!("invalid colour '{s}'"))?;
+    Ok(he::Rgb { r: ((v >> 16) & 0xff) as u8, g: ((v >> 8) & 0xff) as u8, b: (v & 0xff) as u8 })
+}
+
+/// Check that `area` is a zone the keyboard reported (when it reports any).
+fn check_light_area(kb: &mut he::HeKeyboard, area: u8) -> Result<()> {
+    let areas = kb.lighting_areas()?;
+    if !areas.is_empty() && !areas.iter().any(|a| a.index == area) {
+        bail!(
+            "lighting area {area} not present (areas: {})",
+            areas.iter().map(|a| a.index.to_string()).collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn cmd_kb_light(cli: &Cli, command: &KbLight) -> Result<ExitCode> {
+    match command {
+        KbLight::Get { area } => {
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            check_light_area(&mut kb, *area)?;
+            let l = kb.lighting(*area)?;
+            let palette = kb.palette(*area)?;
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "area": area,
+                    "lighting": light_json(&l),
+                    "palette": palette.iter().map(rgb_hex).collect::<Vec<_>>(),
+                }))?;
+            } else {
+                let lj = light_json(&l);
+                println!(
+                    "area {area}: {} mode {} brightness {}% speed {}% dir {} color {}",
+                    if l.on { "on " } else { "off" },
+                    l.mode,
+                    l.brightness,
+                    l.speed,
+                    lj["direction"].as_str().unwrap_or("?"),
+                    l.color_index
+                );
+                println!("palette: {}", palette.iter().map(rgb_hex).collect::<Vec<_>>().join(" "));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        KbLight::Set {
+            yes,
+            area,
+            on,
+            off,
+            mode,
+            brightness,
+            speed,
+            direction,
+            color,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            if !(*on || *off || mode.is_some() || brightness.is_some() || speed.is_some() || direction.is_some() || color.is_some()) {
+                bail!("nothing to change — pass at least one of --on/--off/--mode/--brightness/--speed/--direction/--color");
+            }
+            if let Some(b) = brightness {
+                if *b > 100 {
+                    bail!("brightness {b} out of range 0..=100");
+                }
+            }
+            if let Some(s) = speed {
+                if *s > 100 {
+                    bail!("speed {s} out of range 0..=100");
+                }
+            }
+            if let Some(c) = color {
+                if *c > 7 {
+                    bail!("color index {c} out of range 0..=7");
+                }
+            }
+            let Some((device, mut kb)) = open_kb(cli)? else {
+                return kb_absent(cli);
+            };
+            check_light_area(&mut kb, *area)?;
+            let mut l = kb.lighting(*area)?;
+            let before = light_json(&l);
+            if *on {
+                l.on = true;
+            }
+            if *off {
+                l.on = false;
+            }
+            if let Some(m) = mode {
+                // Validate against the zone's supported effect ids.
+                let areas = kb.lighting_areas()?;
+                let count = areas.iter().find(|a| a.index == *area).map(|a| a.count).unwrap_or(0);
+                let zone = omg_model::lighting_zone(*area, count);
+                if !zone.modes.iter().any(|zm| zm.id == *m) {
+                    bail!(
+                        "mode {m} not valid for lighting area {area} (valid: {})",
+                        zone.modes.iter().map(|zm| zm.id.to_string()).collect::<Vec<_>>().join(", ")
+                    );
+                }
+                l.mode = *m;
+            }
+            if let Some(b) = brightness {
+                l.brightness = *b;
+            }
+            if let Some(s) = speed {
+                l.speed = *s;
+            }
+            if let Some(d) = direction {
+                l.direction = if d == "fwd" { 0 } else { 1 };
+            }
+            if let Some(c) = color {
+                l.color_index = *c;
+            }
+            kb.set_lighting(*area, &l)?;
+            let actual = kb.lighting(*area)?;
+            let verified = actual == l;
+            let after = light_json(&actual);
+            let describe = |v: &serde_json::Value| {
+                format!(
+                    "on={} mode={} bright={} speed={} dir={} color={}",
+                    v["on"], v["mode"], v["brightness"], v["speed"], v["direction"], v["color_index"]
+                )
+            };
+            if cli.json {
+                print_json(&json!({
+                    "device": device,
+                    "area": area,
+                    "before": before,
+                    "expected": light_json(&l),
+                    "actual": after,
+                    "verified": verified,
+                }))?;
+            } else {
+                println!("lighting area {area}: {} -> {}", describe(&before), describe(&after));
+                println!("verified: {verified}");
+            }
+            Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+        KbLight::Palette { command } => match command {
+            KbPalette::Get { area } => {
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                check_light_area(&mut kb, *area)?;
+                let palette = kb.palette(*area)?;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "area": area,
+                        "palette": palette.iter().map(|c| json!({
+                            "hex": rgb_hex(c), "r": c.r, "g": c.g, "b": c.b,
+                        })).collect::<Vec<_>>(),
+                    }))?;
+                } else {
+                    for (i, c) in palette.iter().enumerate() {
+                        println!("  {i}: {}", rgb_hex(c));
+                    }
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            KbPalette::Set { yes, area, colors } => {
+                if !yes.yes {
+                    bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+                }
+                if colors.is_empty() || colors.len() > 8 {
+                    bail!("palette set needs 1-8 colours (got {})", colors.len());
+                }
+                let parsed: Vec<he::Rgb> = colors.iter().map(|c| parse_rgb_hex(c)).collect::<Result<_>>()?;
+                let Some((device, mut kb)) = open_kb(cli)? else {
+                    return kb_absent(cli);
+                };
+                check_light_area(&mut kb, *area)?;
+                let mut palette = kb.palette(*area)?;
+                for (i, c) in parsed.iter().enumerate() {
+                    palette[i] = *c;
+                }
+                kb.set_palette(*area, &palette)?;
+                let actual = kb.palette(*area)?;
+                let verified = actual == palette;
+                if cli.json {
+                    print_json(&json!({
+                        "device": device,
+                        "area": area,
+                        "change": format!("palette entries 0..{} -> {}", parsed.len() - 1, colors.join(" ")),
+                        "expected": palette.iter().map(rgb_hex).collect::<Vec<_>>(),
+                        "actual": actual.iter().map(rgb_hex).collect::<Vec<_>>(),
+                        "verified": verified,
+                    }))?;
+                } else {
+                    println!("palette area {area}: entries 0..{} set", parsed.len() - 1);
+                    println!("verified: {verified}");
+                }
+                Ok(if verified { ExitCode::SUCCESS } else { ExitCode::from(1) })
+            }
+        },
+    }
+}
+
+fn rate_name(id: u8) -> String {
+    he::REPORT_RATES
+        .get(id as usize)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("id {id}"))
+}
+
+fn rate_hz(id: u8) -> u32 {
+    match id {
+        0 => 8000,
+        1 => 4000,
+        2 => 2000,
+        3 => 1000,
+        4 => 500,
+        5 => 250,
+        6 => 125,
+        _ => 0,
+    }
+}
+
+fn parse_polling_rate(s: &str) -> Result<u8> {
+    let t = s.trim().to_lowercase();
+    let id = match t.as_str() {
+        "8k" | "8000" => 0,
+        "4k" | "4000" => 1,
+        "2k" | "2000" => 2,
+        "1k" | "1000" => 3,
+        "500" => 4,
+        "250" => 5,
+        "125" => 6,
+        _ => bail!("invalid polling rate '{s}' (want 8k|4k|2k|1k|500|250|125)"),
+    };
+    Ok(id)
 }
 
 // ── device selection ───────────────────────────────────────────────────
