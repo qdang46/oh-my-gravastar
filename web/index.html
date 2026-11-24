@@ -3,58 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f1115" />
+    <meta name="theme-color" content="#0b0d0e" />
     <title>oh-my-gravastar</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <main class="app">
-      <header>
-        <h1>oh-my-gravastar</h1>
-        <p class="sub">GravaStar keyboard configurator &middot; khub916 wired (read-only MVP)</p>
-        <p id="status" class="status">Checking WebHID support&hellip;</p>
-      </header>
-
-      <section class="card">
-        <div class="row">
-          <button id="connect" type="button">Connect keyboard</button>
-          <button id="disconnect" type="button" hidden>Disconnect</button>
-          <button id="refresh" type="button" hidden>Refresh</button>
-        </div>
-        <p class="hint">
-          Requires Chrome or Edge with WebHID. Wired K1/K98-series keyboards only
-          (916 protocol); the 2.4&nbsp;GHz dongle is not supported yet.
-        </p>
-      </section>
-
-      <section id="device-card" class="card" hidden>
-        <h2>Device</h2>
-        <dl id="device-info" class="kv"></dl>
-      </section>
-
-      <section id="keymap-card" class="card" hidden>
-        <h2>Keymap <span id="keymap-arg" class="dim"></span></h2>
-        <div id="layer-buttons" class="row"></div>
-        <div id="keymap-grid" class="keygrid"></div>
-      </section>
-
-      <section id="lights-card" class="card" hidden>
-        <h2>Custom light colours</h2>
-        <div id="light-grid" class="lightgrid"></div>
-      </section>
-
-      <section id="raw-card" class="card" hidden>
-        <h2>Profile / raw regions</h2>
-        <dl id="raw-info" class="kv"></dl>
-      </section>
-
-      <footer class="foot">
-        <p>Read-only MVP: this page only issues query commands (130/131/132/133/134/135/138).
-        No settings are written to the keyboard.</p>
-      </footer>
-    </main>
+    <div id="app"></div>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

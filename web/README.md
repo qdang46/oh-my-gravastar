@@ -67,16 +67,29 @@ npm run smoke      # node >= 22.18, native TS type stripping
 
 ```
 web/
-  index.html          single page
-  src/main.ts         UI wiring + render
-  src/hid.ts          WebHID types usage: filters, collection pick,
-                      report-id probe, Khub916Session (transact + reads)
+  index.html            single page (#app mount)
+  src/main.ts           entry — mounts the shell, registers sw.js (prod)
+  src/shell.ts          vendor MainLayout clone: collapsible sidebar nav
+                        (device name + icon items + tooltips), topbar with
+                        brand/connect/disconnect/refresh, status line
+  src/pages.ts          hash router + page renderers (home, lighting, keys,
+                        macro, advanced, device); unimplemented pages are
+                        read-only placeholders
+  src/state.ts          shared app state: connect/refresh/disconnect,
+                        snapshot (info/power/profile/light/macro/colors),
+                        layer keymap cache
+  src/keyboard.ts       DOM-grid keyboard visualizer (per-key RGB from
+                        cmd 134, live keymap labels, luminance contrast)
+  src/k1pro-layout.ts   K1 Pro key geometry table (vendor keycodeConfig
+                        port; pos = 8 + n*4 keymap domain)
+  src/hid.ts            WebHID types usage: filters, collection pick,
+                        report-id probe, Khub916Session (transact + reads)
   src/proto/khub916.ts  pure protocol: packet builders/parsers, UUID
-                      catalog, key-value decode + EN labels
-  src/webhid.d.ts     minimal WebHID ambient types
-  src/style.css       dark theme
-  public/             manifest.webmanifest, icon.svg, sw.js (offline)
-  scripts/smoke.ts    node smoke test of the pure functions
+                        catalog, key-value decode + EN labels
+  src/webhid.d.ts       minimal WebHID ambient types
+  src/style.css         design tokens + component styles (docs/web-ui-plan.md §1)
+  public/               manifest.webmanifest, icon.svg, sw.js (offline)
+  scripts/smoke.ts      node smoke test of the pure functions
 ```
 
 `src/proto/khub916.ts` is a TypeScript port of
