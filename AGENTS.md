@@ -34,6 +34,9 @@ crates/
                    CLI: `omg kb travel-matrix`)
   model/           omg-model — key labels, key sizes, lighting mode tables
   omg/             the `omg` CLI binary (clap derive)
+web/               WebHID PWA (Vite + TS). A write surface too — the §Safety
+                   contract applies, with a confirm dialog + snapshot
+                   (web/src/safety/) standing in for `--yes`
 docs/
   plan.md                    scope, protocol map, milestones, safety contract
   platforms.md               per-OS HID notes + troubleshooting
@@ -73,6 +76,20 @@ nothing internal and must never send protocol commands.
 5. No credentials/tokens/serial numbers in logs or JSON unless
    `--include-serial` is passed (flag is reserved in plan.md; do not emit
    serials in the meantime).
+6. **Whole-table writes need a trustworthy base.** Read-modify-write of a
+   full table (keymap, macro region, light blob, adv-key history) may only
+   proceed when the base read succeeded, is the expected length, and every
+   slot decodes to a **known** tag. A short, empty or failed read is an
+   ABORT — never substitute `?? []`, `unwrap_or_default`, or zeros. Writing
+   a table built on a guessed base is how a layer silently gets wiped.
+7. **Unknown tag ⇒ read-only, byte-preserved.** If the decoder cannot name
+   a value (tag not in `docs/protocol-*.md`), that slot is opaque: carry it
+   through byte-identical, never render it as editable, and never let a UI
+   or CLI default it to 0. Adding a tag means documenting it first.
+8. **Read-back verify ≠ semantic preservation.** It proves the bytes
+   landed, not that the rest of the table still means what it did. Any
+   claim that an edit only touched some slots must be backed by comparing
+   every untouched slot against the **original** read.
 
 ## Conventions
 
@@ -93,6 +110,11 @@ nothing internal and must never send protocol commands.
   (code-verified / synthetic-tested / live-verified).
 - Docs: protocol specs in `docs/` with a provenance note when adapted from
   upstream; vendor JS mirror in `docs/research/khub-webapp/` is read-only.
+- Tag/value tables in `docs/protocol-*.md` carry a row for **unknown, seen
+  on hardware** and keep the raw values. A table may only be called
+  *complete* when a committed capture backs it — a table that claims
+  completeness while missing a tag sends the next implementer straight
+  into §Safety 7.
 
 ## Checks
 
@@ -102,6 +124,9 @@ Lean checks only — do not add heavy CI locally:
 cargo build
 cargo clippy
 cargo test
+npm --prefix web run build     # tsc + vite build
+npm --prefix web run smoke
+npm --prefix web test
 ```
 
 `cargo fmt` is not enforced; match surrounding style. Windows-only CI is the
@@ -138,10 +163,21 @@ cmd-8 as **hardware-unverified for long sessions**.
   - `omg kb916 reset --kind 2 --yes` — reset all keymap layers.
   - `omg kb916 light apply <json> --yes` — restore a known-good
     lighting config (docs/lighting-schema.md).
-- **Fn combos are firmware-handled**, not protocol-visible: if Fn dies
-  while typing/Hub still work, it is NOT a keymap/config problem —
-  suspect firmware wedge first (resets above), hardware only as last
-  resort after exhausting software recovery.
+- **Fn combos ARE protocol-visible** (corrected 2026-11-25): the Fn layer
+  is keymap arg `0x01` and reads back normally. Before blaming firmware,
+  read it (`omg kb916 keys --layer 1`) and check the affected slots. Live
+  K1 Pro read showed slot 4 (L_Shift) and slot 79 (Backspace) as
+  `0x00000000` while every other Fn key carried a tag-`0x08` action value —
+  i.e. "Fn+Shift does nothing" is a **zeroed keymap slot**, not a wedge.
+  `omg kb916 reset --yes` destroys these values; never use it to diagnose.
+  Only after the Fn layer reads clean should a firmware wedge be suspected.
+- **Tag `0x08` is undocumented** as of 2026-11-25. It appears on the whole
+  Fn layer (`0x08020000`, `0x08030100`, `0x08030200`, `0x08040001`, …) but
+  is missing from the tag table in `docs/protocol-khub916.md` §6 — where
+  the decoder has no case for it, so it surfaces as `Unknown`. Until that
+  tag is reversed and written down, Fn-layer values are **opaque**: per
+  §Safety 7 they must be preserved byte-identical and must not be offered
+  as editable in the remap UI.
 - Any new always-on daemon or long-lived HID writer must install a
   signal handler that restores device state on SIGINT **and** SIGTERM,
   and must document what happens if it is killed ungracefully.

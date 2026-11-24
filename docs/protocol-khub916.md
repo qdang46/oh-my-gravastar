@@ -283,7 +283,7 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
 `be()` decodes each u32:
 
 - bits 31..24 = type tag: `0` normal, `3` macro, `7` secondary-layer key,
-  `32` SOCD, `33` MT, `34` TGL
+  `8` **unknown / Fn-layer action** (see below), `32` SOCD, `33` MT, `34` TGL
 - macro (tag 3): bits 23..16 = macroType `h`, bits 15..8 = macroNum `x`,
   bits 7..0 = macroIndex `v` → key value string `"0x03"+h+x+v` (hex, padded)
 - normal: `value = (modifiers << 16) | HID_usage` where modifier bits are
@@ -296,6 +296,17 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
   variants selected by `keyType`).
 - `pos = 8 + n*4` (key index → config/light table position),
   `effect_pos = 8 + n*3`, `light_pos = 8 + n*1`.
+- Tag `8` [live-observed 2026-11-25, semantics unknown]: the whole K1 Pro
+  Fn layer (arg `0x01`) uses it. Observed values and the physical key they
+  sit on — `0x08020000` Tab, `0x08030100` F6/Up, `0x08030200` F5/Down,
+  `0x08030201` `>.`, `0x08040001` `<,`, `0x08040100` Right, `0x08040200`
+  Left, `0x08000000` `\|`, `0x08000001` R_Shift. Not produced by any
+  vendor `case` in `be()` and absent from the `Ca` pool, so the vendor UI
+  cannot assign it — but firmware stores and acts on it. Bit layout
+  unproven. Treat as opaque: preserve byte-identical and never default to
+  0 (AGENTS.md §Safety 7). Note `0x00000000` in an Fn-layer slot means the
+  Fn combo does nothing — e.g. K1 Pro slots 4 (L_Shift) and 79 (Backspace)
+  read 0 on 2026-11-25, which is the "Fn+Shift doesn't work" symptom.
 - Combo keys (tag 0, special value list): bits encode two keys —
   `value = (keyA_mods | keyB_mods) << 16 | keyC_usage` (approx; see
   `setKeyboardComboKey`).

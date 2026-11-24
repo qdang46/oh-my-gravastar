@@ -20,20 +20,26 @@ from vendor JS / ported), *live-verified* (K1 Pro, 2026-11-24),
 
 ### 1.1 Keymap value tag space (u32 BE, bits 31..24)
 
-Complete tag space recoverable from the vendor decoder `be()`
+Keymap value tags recovered from the vendor decoder `be()`
 (`docs/research/khub-webapp/index-M8-m9qFR.deob.js`, ~offset 26248) and
-`crates/proto-khub916/src/lib.rs::decode_key_value` (lines 384–410):
+`crates/proto-khub916/src/lib.rs::decode_key_value` (lines 384–410).
+**Not complete** — see the `0x08` row.
 
 | tag (bits 31..24) | vendor name | meaning | evidence |
 |---|---|---|---|
 | `0x00` | — (normal / "CB") | `(modifier_bits << 16) \| HID_usage`; also encodes **combo chords** and mouse/media keys | `protocol-khub916.md` §6 "Key value encoding"; decoder `case 0` marks known chord values `type:"CB"` |
 | `0x03` | `M` | macro reference: bits 23..16 type `h`, 15..8 number `x`, 7..0 index `v` → `"0x03"+h+x+v` | decoder `case 3`; `macroIndex` extraction in `getKeyBoardMacroIndex` |
 | `0x07` | `S` | "secondary-layer key" — shown only when the system arg ≠ 0; **semantics unconfirmed** | decoder `case 7: a!=0 && (u="S")`; `KeyValue::SecondaryLayer` (`lib.rs:363`) |
+| `0x08` | — | **unknown, seen on hardware.** Dominates the K1 Pro Fn layer (arg `0x01`): `0x08020000` Tab, `0x08030100` F6/Up, `0x08030200` F5/Down, `0x08030201` `>.`, `0x08040001` `<,`, `0x08040100` Right, `0x08040200` Left, `0x08000000` `\|`, `0x08000001` R_Shift. Bit layout unproven — the `0x08 02/03/04` and low-byte patterns suggest rows, not HID usages | live read 2026-11-25 (`omg kb916 keys --layer 1`); no `case 8` in vendor decoder `be()`, no entry in the `Ca` pool |
 | `0x0D` | — | Fn layer key: bits 23..16 = layer (`0x0D000000`=Fn, `0x0D010000`=Fn1) | decoder `case` via `0x0D`; `lib.rs:353`; live keymap read slot 0 = `0x00000029`… `0x0D…` rows |
 | `0x20` | `SOCD` | SOCD adv-key binding (slot index bits 16..23 + direction param) | decoder `case 32`; `advkey.rs:63` |
 | `0x21` | `MT` | Mod-Tap / hold-tap binding (+ `time` in low 16 bits, 10 ms units) | decoder `case 33`; `advkey.rs:64` |
 | `0x22` | `TGL` | toggle/continuous-trigger binding | decoder `case 34`; `advkey.rs:65` |
 | other | — | `KeyValue::Unknown`, kept verbatim | `lib.rs:378` |
+
+Per AGENTS.md §Safety 7, `0x08` slots are opaque: preserve byte-identical,
+do not expose them as editable, and do not default them to 0 in any
+read-modify-write.
 
 The vendor UI's advanced-key page (`AdvancedKey-YMbKTFT4.js`,
 `index-cV1Bl4gC.js` `keyModel` list id 1–4) exposes **exactly four**
