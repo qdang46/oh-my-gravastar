@@ -13,7 +13,7 @@ network, no telemetry.
 
 | Device family | Protocol | CLI | Status |
 | --- | --- | --- | --- |
-| Mercury K1 / K1 Pro / K1 Lite / K98 Pro / NP series (wired USB) | khub916 feature reports | `omg devices` detects; commands pending | Protocol reversed & live-verified ([docs/protocol-khub916.md](docs/protocol-khub916.md)); Rust module + CLI in progress (beads F5b/F5c) |
+| Mercury K1 / K1 Pro / K1 Lite / K98 Pro / NP series (wired USB) | khub916 feature reports | `omg kb916` | Implemented read-only: info, keys, profile, power, light colours/data, macro dump — live-verified on a K1 Pro ([docs/protocol-khub916.md](docs/protocol-khub916.md)). Writes, screen and wireless are not wired yet |
 | K1/K98 over 2.4 GHz dongle | khub916_wireLess (19-byte reports) | — | Code-verified only, no hardware yet (P2) |
 | Mercury HE keyboards (V60 / V75 / V75 Pro / V75 Lite …) | HE "v2" 64-byte reports, usage page `0xFFB0` | `omg kb` | Implemented: info, layout, keys, live travel, profiles, polling, OS mode, per-key performance, lighting, calibration ([docs/protocol-he-v2.md](docs/protocol-he-v2.md)) |
 | HE keyboards — SparkPlayJoy 6x21 analog | `0xFFA0:0001` framed reports | `omg kb travel-matrix` | Implemented read-only: identity proof + live 6×21 travel matrix in µm, `--watch` streams ~10 Hz ([docs/protocol-sparkplayjoy.md](docs/protocol-sparkplayjoy.md)); hardware verification pending on a V75 board |
@@ -59,6 +59,22 @@ omg kb light get 0                    # zone 0 settings + 8-colour palette
 omg kb perf get 1 2                   # performance settings of matrix row 1, col 2
 omg kb polling get                    # supported + active polling rates
 ```
+
+K1 / K98 series (khub916 wired protocol; read-only for now):
+
+```sh
+omg kb916 info                        # UUID, catalog model, firmware, screen
+omg kb916 keys                        # full keymap decoded to labels (126 entries)
+omg kb916 keys --layer 1 --system 1   # other layer/system read argument
+omg kb916 profile get                 # light mode, sleep seconds, raw 128-byte blob
+omg kb916 power                       # battery % and raw status flags
+omg kb916 light-colors get            # 126 per-key RGB colours
+omg kb916 light-data                  # per-mode light blob (hex dump)
+omg kb916 macro                      # macro region (hex dump)
+```
+
+Writes (`omg kb916 set …`), screen commands and the 916_wireLess transport
+return "not implemented" (exit code 3) — see docs/protocol-khub916.md §8.
 
 SparkPlayJoy analog interface (V75 / V75 Pro / V75 Lite boards expose a
 second HID interface on usage page `0xFFA0`):
