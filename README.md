@@ -149,6 +149,7 @@ omg kb916 light-data                  # per-mode light blob (hex dump)
 omg kb916 macro                      # macro region (hex dump)
 omg kb916 light get --json           # decoded lighting state (mode/speed/colours)
 omg kb916 light apply fx.json --yes  # apply a lighting JSON (see docs/lighting-schema.md)
+omg kb916 light stream --pattern rainbow --yes   # live cmd-8 RGB frames (Ctrl-C restores)
 omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
 omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
 ```

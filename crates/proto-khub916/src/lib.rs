@@ -24,7 +24,8 @@
 //!   (133), custom light colours (134), power (135), light colour data (138)
 //! - writes: keymap (3), profile/config (4), custom light colours (6),
 //!   macro region (5 — codec in [`macro916`]), SOCD/MT/TGL history (18 —
-//!   codec in [`advkey`])
+//!   codec in [`advkey`]), per-mode light colour blob (10 — [`light`]),
+//!   GIF light frame stream (8 — [`light`], live-streaming, fire-and-forget)
 //!
 //! Write transport detail (vendor-verified): the JS driver only ever calls
 //! `sendFeatureReport` for these commands and **never reads a reply**, so
@@ -49,7 +50,6 @@
 //! **Never implemented** (protocol blacklist / out of scope):
 //!
 //! - keyboard reset 17 (wired) and wireless cmd 6 factory reset
-//! - GIF light frames 8 (keyboard backlight, unrelated to the screen)
 //! - no generic "send arbitrary command" API exists; [`Khub916::transact`]
 //!   is private so unknown opcodes cannot be emitted, and the wireless
 //!   chunked writer is private likewise.

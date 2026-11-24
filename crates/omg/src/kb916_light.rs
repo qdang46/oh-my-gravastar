@@ -18,7 +18,11 @@ use omg_proto_khub916::light as khub_light;
 use omg_proto_mouse as pm;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::io::{BufReader, Read};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::{kb916_session, print_json, Cli, Kb916Light};
 
@@ -576,6 +580,364 @@ pub fn cmd_apply(cli: &Cli, file: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+// ── cmd 8 GIF frame streaming (`kb916 light stream`) ──────────────────
+//
+// Wire format (vendor `Ht.setGifLight`, docs/protocol-khub916.md §6):
+// the flat RGB stream is chunked into 378-byte pieces — one per feature
+// report — each packet `[8,0,0,1,0,122,1]` + data at offset 7, sent
+// fire-and-forget at the vendor's ~30 ms command cadence. There is no
+// frame header/index: the device consumes the byte stream continuously.
+// 378 B = 126 keys × 3; the planar `[R×126][G×126][B×126]` order of cmd 6
+// is the working assumption (unverified — flagged in the docs).
+//
+// Safety: --yes gated by the caller; the profile blob and cmd-138 light
+// data are snapshotted before streaming and written back (verified) on
+// normal exit, Ctrl-C, or error.
+
+/// One cmd-8 frame: 378 bytes planar `[R×126][G×126][B×126]`.
+fn planar_frame(colors: &[pm::Rgb]) -> Vec<u8> {
+    debug_assert_eq!(colors.len(), khub_light::CUSTOM_LIGHT_SLOTS);
+    let mut f = vec![0u8; khub_light::GIF_FRAME_BYTES];
+    for (i, c) in colors.iter().enumerate() {
+        f[i] = c.r;
+        f[khub_light::CUSTOM_LIGHT_SLOTS + i] = c.g;
+        f[2 * khub_light::CUSTOM_LIGHT_SLOTS + i] = c.b;
+    }
+    f
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StreamPattern {
+    Solid,
+    Rainbow,
+    Gradient,
+    Pulse,
+}
+
+fn parse_stream_pattern(s: &str) -> Result<StreamPattern> {
+    match s {
+        "solid" => Ok(StreamPattern::Solid),
+        "rainbow" => Ok(StreamPattern::Rainbow),
+        "gradient" => Ok(StreamPattern::Gradient),
+        "pulse" => Ok(StreamPattern::Pulse),
+        other => bail!("unknown --pattern '{other}' (want solid|rainbow|gradient|pulse)"),
+    }
+}
+
+/// Generated-frame source: pure function of the frame index.
+struct PatternGen {
+    kind: StreamPattern,
+    color: pm::Rgb,
+    to: pm::Rgb,
+}
+
+impl PatternGen {
+    fn frame(&self, n: u64) -> Vec<u8> {
+        let slots = khub_light::CUSTOM_LIGHT_SLOTS;
+        let colors: Vec<pm::Rgb> = match self.kind {
+            StreamPattern::Solid => vec![self.color; slots],
+            // Spatial rainbow scrolling one key-step per frame.
+            StreamPattern::Rainbow => (0..slots)
+                .map(|i| {
+                    let hue = ((i * 360 / slots + (n as usize * 4)) % 360) as f32;
+                    hsv(hue, 1.0, 1.0)
+                })
+                .collect(),
+            // All keys lerp color→to with a triangle wave (~20-frame period).
+            StreamPattern::Gradient => {
+                let t = ((n as f32 * 0.05) % 1.0).abs();
+                let tri = if t < 0.5 { t * 2.0 } else { 2.0 - t * 2.0 };
+                let c = lerp(self.color, self.to, tri);
+                vec![c; slots]
+            }
+            // All keys breathe 0→color with a ~30-frame sine period.
+            StreamPattern::Pulse => {
+                let v = 0.5 + 0.5 * (n as f32 * std::f32::consts::TAU / 30.0).sin();
+                let c = lerp(pm::Rgb::default(), self.color, v);
+                vec![c; slots]
+            }
+        };
+        planar_frame(&colors)
+    }
+}
+
+/// Frame source: generated pattern or a raw 378-byte-frame byte stream.
+enum FrameSource {
+    Pattern { gen: PatternGen, n: u64 },
+    /// Whole file loaded up-front; `pos` is the next frame offset.
+    File { data: Vec<u8>, pos: usize, loop_: bool },
+    /// stdin — read one frame at a time so a producer can stream forever.
+    Stdin { reader: BufReader<std::io::Stdin>, partial: Vec<u8> },
+}
+
+impl FrameSource {
+    /// Next 378-byte frame, or `None` at end of stream.
+    fn next_frame(&mut self) -> Result<Option<Vec<u8>>> {
+        match self {
+            FrameSource::Pattern { gen, n } => {
+                let f = gen.frame(*n);
+                *n += 1;
+                Ok(Some(f))
+            }
+            FrameSource::File { data, pos, loop_ } => {
+                let usable = data.len() - data.len() % khub_light::GIF_FRAME_BYTES;
+                if *pos >= usable {
+                    if *loop_ && usable > 0 {
+                        *pos = 0;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                let end = (*pos + khub_light::GIF_FRAME_BYTES).min(usable);
+                let f = data[*pos..end].to_vec();
+                *pos = end;
+                Ok(Some(f))
+            }
+            FrameSource::Stdin { reader, partial } => {
+                loop {
+                    if partial.len() == khub_light::GIF_FRAME_BYTES {
+                        return Ok(Some(std::mem::take(partial)));
+                    }
+                    let mut buf = [0u8; 4096];
+                    match reader.read(&mut buf) {
+                        Ok(0) => {
+                            if partial.is_empty() {
+                                return Ok(None);
+                            }
+                            bail!(
+                                "stdin stream ended mid-frame ({} of {} bytes)",
+                                partial.len(),
+                                khub_light::GIF_FRAME_BYTES
+                            );
+                        }
+                        Ok(n) => partial.extend_from_slice(&buf[..n]),
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Parsed `kb916 light stream` options (clap fields flattened into one
+/// struct to keep `cmd_stream` under the argument-count lint).
+pub struct StreamArgs<'a> {
+    pub pattern: Option<&'a str>,
+    pub file: Option<&'a str>,
+    pub color: Option<&'a str>,
+    pub to: Option<&'a str>,
+    pub fps: f64,
+    pub duration: Option<f64>,
+    pub frames: Option<u64>,
+    pub loop_stream: bool,
+}
+
+/// `omg kb916 light stream …` — cmd-8 frame streaming with restore.
+pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
+    let StreamArgs {
+        pattern,
+        file,
+        color,
+        to,
+        fps,
+        duration,
+        frames: max_frames,
+        loop_stream,
+    } = args;
+    // ── Validate everything before touching the device ────────────────
+    if !(1.0..=240.0).contains(&fps) || !fps.is_finite() {
+        bail!("--fps must be in 1.0..=240.0, got {fps}");
+    }
+    if fps > 60.0 {
+        eprintln!("warning: --fps {fps} exceeds the vendor's ~33 pkt/s cadence; frames may drop");
+    }
+    if duration.is_some_and(|d| d <= 0.0) {
+        bail!("--duration must be positive seconds");
+    }
+
+    let source = match (pattern, file) {
+        (Some(p), None) => {
+            let kind = parse_stream_pattern(p)?;
+            let base = match color {
+                Some(c) => pm::Rgb::parse(c).map_err(|e| anyhow!("--color: {e:#}"))?,
+                None => match kind {
+                    StreamPattern::Solid => pm::Rgb { r: 255, g: 0, b: 0 },
+                    StreamPattern::Rainbow => pm::Rgb { r: 255, g: 255, b: 255 },
+                    StreamPattern::Gradient => pm::Rgb { r: 255, g: 0, b: 0 },
+                    StreamPattern::Pulse => pm::Rgb { r: 255, g: 255, b: 255 },
+                },
+            };
+            let second = match to {
+                Some(c) => pm::Rgb::parse(c).map_err(|e| anyhow!("--to: {e:#}"))?,
+                None => match kind {
+                    StreamPattern::Gradient => pm::Rgb { r: 0, g: 0, b: 255 },
+                    _ => base,
+                },
+            };
+            FrameSource::Pattern {
+                gen: PatternGen {
+                    kind,
+                    color: base,
+                    to: second,
+                },
+                n: 0,
+            }
+        }
+        (None, Some(f)) => {
+            if f == "-" {
+                FrameSource::Stdin {
+                    reader: BufReader::new(std::io::stdin()),
+                    partial: Vec::new(),
+                }
+            } else {
+                let data = std::fs::read(f)
+                    .map_err(|e| anyhow!("cannot read frame stream '{f}': {e}"))?;
+                if data.is_empty() {
+                    bail!("frame stream '{f}' is empty (need 378-byte frames)");
+                }
+                if data.len() % khub_light::GIF_FRAME_BYTES != 0 {
+                    eprintln!(
+                        "warning: '{f}' is {} bytes — {} trailing bytes (< one frame) ignored",
+                        data.len(),
+                        data.len() % khub_light::GIF_FRAME_BYTES
+                    );
+                }
+                FrameSource::File {
+                    data,
+                    pos: 0,
+                    loop_: loop_stream,
+                }
+            }
+        }
+        (None, None) => bail!("give --pattern solid|rainbow|gradient|pulse or --file <frames>"),
+        (Some(_), Some(_)) => unreachable!("clap conflicts_with"),
+    };
+
+    let (device, mut kb) = match kb916_session(cli)? {
+        Ok(s) => s,
+        Err(code) => return Ok(code),
+    };
+
+    // ── Snapshot lighting state for restore ───────────────────────────
+    let profile = kb.profile()?;
+    let light_blob = kb.light_color_data()?;
+
+    // ── Ctrl-C → graceful stop + restore ───────────────────────────────
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst))
+        .map_err(|e| anyhow!("failed to install Ctrl-C handler: {e}"))?;
+
+    if !cli.json {
+        println!(
+            "streaming cmd-8 frames at {fps} fps (Ctrl-C to stop and restore)…"
+        );
+    }
+
+    let period = Duration::from_secs_f64(1.0 / fps);
+    let deadline = duration.map(|d| Instant::now() + Duration::from_secs_f64(d));
+    let started = Instant::now();
+    let mut source = source;
+    let mut sent: u64 = 0;
+
+    let stream_result: Result<()> = (|| {
+        let mut next_tick = Instant::now();
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            if max_frames.is_some_and(|m| sent >= m) {
+                break;
+            }
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                break;
+            }
+            let frame = match source.next_frame()? {
+                Some(f) => f,
+                None => break, // EOF
+            };
+            kb.write_gif_frame(&frame)?;
+            sent += 1;
+            // Pace to the frame rate (sleep only the remainder).
+            let now = Instant::now();
+            if now < next_tick {
+                std::thread::sleep(next_tick - now);
+            }
+            next_tick += period;
+            // If we fell behind by more than one period, resync.
+            if Instant::now() >= next_tick + period {
+                next_tick = Instant::now() + period;
+            }
+        }
+        Ok(())
+    })();
+
+    // ── Restore pre-stream lighting (verified writes) ─────────────────
+    let mut restore_steps: Vec<Value> = Vec::new();
+    let mut restore_failed = false;
+    match kb.write_profile(&profile.raw) {
+        Ok(o) => restore_steps.push(json!({
+            "step": "restore_profile", "command": o.command, "verified": o.verified,
+        })),
+        Err(e) => {
+            restore_failed = true;
+            restore_steps.push(json!({ "step": "restore_profile", "error": format!("{e:#}") }));
+        }
+    }
+    match kb.write_light_data(&light_blob) {
+        Ok(o) => restore_steps.push(json!({
+            "step": "restore_light_data", "command": o.command, "verified": o.verified,
+        })),
+        Err(e) => {
+            restore_failed = true;
+            restore_steps.push(json!({ "step": "restore_light_data", "error": format!("{e:#}") }));
+        }
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    let stopped_by = if stop.load(Ordering::SeqCst) {
+        "ctrl-c"
+    } else {
+        "limit"
+    };
+
+    if cli.json {
+        print_json(&json!({
+            "device": device,
+            "event": "stream_done",
+            "frames_sent": sent,
+            "elapsed_s": elapsed,
+            "stopped_by": stopped_by,
+            "stream_error": stream_result.as_ref().err().map(|e| format!("{e:#}")),
+            "restore": restore_steps,
+            "restored": !restore_failed,
+        }))?;
+    } else {
+        println!(
+            "streamed {sent} frames in {:.1}s ({stopped_by})",
+            elapsed
+        );
+        for s in &restore_steps {
+            match (
+                s["step"].as_str(),
+                s["verified"].as_bool(),
+                s["error"].as_str(),
+            ) {
+                (Some(step), Some(true), _) => println!("  {step}: verified (cmd {})", s["command"]),
+                (Some(step), _, Some(err)) => println!("  {step}: FAILED — {err}"),
+                _ => {}
+            }
+        }
+    }
+
+    // Surface the stream error only after restore ran.
+    stream_result?;
+    if restore_failed {
+        bail!("lighting restore failed — check `omg kb916 light get` and re-apply");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Dispatch from `cmd_kb916`.
 pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
     match command {
@@ -585,6 +947,34 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
                 bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
             }
             cmd_apply(cli, file)
+        }
+        Kb916Light::Stream {
+            pattern,
+            file,
+            color,
+            to,
+            fps,
+            duration,
+            frames,
+            loop_stream,
+            yes,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            cmd_stream(
+                cli,
+                StreamArgs {
+                    pattern: pattern.as_deref(),
+                    file: file.as_deref(),
+                    color: color.as_deref(),
+                    to: to.as_deref(),
+                    fps: *fps,
+                    duration: *duration,
+                    frames: *frames,
+                    loop_stream: *loop_stream,
+                },
+            )
         }
     }
 }

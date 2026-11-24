@@ -3857,6 +3857,44 @@ enum Kb916Light {
         #[command(flatten)]
         yes: Yes,
     },
+    /// Stream live RGB frames to the keyboard backlight (khub916 cmd 8,
+    /// vendor `setGifLight` — docs/protocol-khub916.md §6). Frames are
+    /// 378 bytes = 126 keys × RGB in the cmd-6 planar order
+    /// ([R×126][G×126][B×126]); `--pattern` generates test frames,
+    /// `--file` streams raw concatenated frames (`-` = stdin, one 378-byte
+    /// frame per read). Requires `--yes`; the pre-stream lighting state
+    /// (profile + light-data blob) is restored on exit or Ctrl-C.
+    /// Live-verified status: see docs/research/music-reactive-feasibility.md.
+    Stream {
+        /// Test pattern: solid|rainbow|gradient|pulse. Mutually exclusive
+        /// with --file.
+        #[arg(long, conflicts_with = "file")]
+        pattern: Option<String>,
+        /// Raw frame stream file, or `-` for stdin (378-byte frames).
+        #[arg(long)]
+        file: Option<String>,
+        /// Base colour `#rrggbb`/`r,g,b` for solid/gradient/pulse
+        /// (default: pattern built-in).
+        #[arg(long)]
+        color: Option<String>,
+        /// Gradient/pulse second colour `#rrggbb` (default: complementary).
+        #[arg(long)]
+        to: Option<String>,
+        /// Frames per second (default 30 ≈ vendor 30 ms cadence).
+        #[arg(long, default_value_t = 30.0)]
+        fps: f64,
+        /// Stop after this many seconds (default: until Ctrl-C / EOF).
+        #[arg(long)]
+        duration: Option<f64>,
+        /// Stop after this many frames.
+        #[arg(long)]
+        frames: Option<u64>,
+        /// Loop a finite --file stream instead of stopping at EOF.
+        #[arg(long)]
+        loop_stream: bool,
+        #[command(flatten)]
+        yes: Yes,
+    },
 }
 
 #[derive(Subcommand)]

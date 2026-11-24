@@ -42,6 +42,7 @@
 
 use anyhow::{bail, Result};
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::{Khub916, Profile, WriteOutcome, CUSTOM_LIGHT_ENTRIES, FEATURE_PAYLOAD_BYTES, HEADER_LEN};
 
@@ -352,6 +353,88 @@ impl Khub916 {
     }
 }
 
+// ── Cmd-8 GIF light frame stream (vendor `setGifLight`, wired `Ht`) ────
+//
+// Vendor JS (`index-M8-m9qFR.deob.js`, wired class `Ht.setGifLight`):
+// a flat byte stream is split into 378-byte chunks; each chunk becomes one
+// 512-byte packet `[8,0,0,1,0,122,1]` + data at offset 7, zero-padded into
+// the 519-byte feature report and sent fire-and-forget through the same
+// 30 ms-spaced command queue as every other write. There is **no** chunk
+// index, frame count, checksum or `5A A5` marker — the device consumes the
+// stream continuously (378 B = 126 keys × RGB, layout unverified; the
+// cmd-6 planar `[R×126][G×126][B×126]` order is the working assumption).
+//
+// Whether the firmware needs a particular light mode active, and the
+// maximum sustained rate, are hardware questions — see
+// docs/research/music-reactive-feasibility.md §6 (TEST-001).
+
+/// cmd 8 opcode (GIF light frames).
+const CMD_GIF_LIGHT: u8 = 8;
+/// RGB bytes per stream chunk — one full-keyboard frame.
+pub const GIF_FRAME_BYTES: usize = 378;
+/// The 7-byte packet prefix the vendor writes before each chunk
+/// (`new Uint8Array([8,0,0,1,0,122,1])`).
+pub const GIF_FRAME_PREFIX: [u8; HEADER_LEN] = [CMD_GIF_LIGHT, 0, 0, 0x01, 0, 0x7A, 0x01];
+/// Vendor command-queue pacing: 30 ms between feature reports.
+pub const GIF_FRAME_PACING: Duration = Duration::from_millis(30);
+
+impl Khub916 {
+    /// Build one cmd-8 packet: [`GIF_FRAME_PREFIX`] at offset 0, up to
+    /// [`GIF_FRAME_BYTES`] data bytes at offset 7, zero-padded to the
+    /// 519-byte feature payload. Pure — no device access.
+    pub fn gif_frame_packet(data: &[u8]) -> Result<[u8; FEATURE_PAYLOAD_BYTES]> {
+        if data.len() > GIF_FRAME_BYTES {
+            bail!(
+                "khub916 gif frame needs ≤ {GIF_FRAME_BYTES} bytes, got {}",
+                data.len()
+            );
+        }
+        let mut pkt = [0u8; FEATURE_PAYLOAD_BYTES];
+        pkt[..HEADER_LEN].copy_from_slice(&GIF_FRAME_PREFIX);
+        pkt[HEADER_LEN..HEADER_LEN + data.len()].copy_from_slice(data);
+        Ok(pkt)
+    }
+
+    /// Fire-and-forget feature-report write for one cmd-8 packet. Unlike
+    /// [`Khub916::config_write`] there is no settle delay — streaming needs
+    /// the vendor's ~30 ms cadence, which the caller paces.
+    fn gif_write(&mut self, pkt: &[u8; FEATURE_PAYLOAD_BYTES]) -> Result<()> {
+        self.guard(|s| {
+            s.link
+                .feature_write(s.report_id, pkt)
+                .map_err(|e| anyhow::anyhow!("khub916 gif feature write failed: {e:#}"))
+        })
+    }
+
+    /// Send exactly one cmd-8 frame chunk (≤ [`GIF_FRAME_BYTES`] bytes).
+    /// The caller paces — see [`GIF_FRAME_PACING`]. **Hardware-verified
+    /// pending**: whether the device lights up is the open TEST-001
+    /// question (docs/research/music-reactive-feasibility.md §6).
+    pub fn write_gif_frame(&mut self, frame: &[u8]) -> Result<()> {
+        let pkt = Self::gif_frame_packet(frame)?;
+        self.gif_write(&pkt)
+    }
+
+    /// Send `data` as a cmd-8 stream: split into [`GIF_FRAME_BYTES`]
+    /// chunks, one feature report each, `delay` between sends (no delay
+    /// after the last). Returns the number of packets sent. Bulk/one-shot
+    /// helper — interactive streaming should call [`Self::write_gif_frame`]
+    /// per frame instead.
+    pub fn write_gif_light(&mut self, data: &[u8], delay: Duration) -> Result<usize> {
+        if data.is_empty() {
+            bail!("khub916 gif stream needs at least 1 byte");
+        }
+        let chunks: Vec<&[u8]> = data.chunks(GIF_FRAME_BYTES).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            self.write_gif_frame(chunk)?;
+            if i + 1 < chunks.len() && !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
+        }
+        Ok(chunks.len())
+    }
+}
+
 // ── Custom per-key colours (cmd 134/6) — thin helpers over the existing
 //    verified read/write so lighting callers share one entry point ──────
 
@@ -583,5 +666,50 @@ mod tests {
         let mut kb = Session::new(Box::new(link), 6);
         assert!(kb.write_light_data(&sent).is_err());
         assert!(!kb.is_poisoned());
+    }
+
+    // ── cmd-8 GIF frame packets ────────────────────────────────────────
+
+    #[test]
+    fn gif_frame_packet_layout() {
+        let frame = vec![0x5Au8; GIF_FRAME_BYTES];
+        let pkt = Session::gif_frame_packet(&frame).unwrap();
+        assert_eq!(pkt.len(), FEATURE_PAYLOAD_BYTES);
+        // Vendor prefix [8,0,0,1,0,122,1] verbatim.
+        assert_eq!(&pkt[..HEADER_LEN], &[8, 0, 0, 1, 0, 122, 1]);
+        // Data at offset 7, zero-padded to 519.
+        assert_eq!(&pkt[HEADER_LEN..HEADER_LEN + GIF_FRAME_BYTES], &frame[..]);
+        assert!(pkt[HEADER_LEN + GIF_FRAME_BYTES..].iter().all(|&b| b == 0));
+        // Short chunk still pads; oversized rejected.
+        let short = Session::gif_frame_packet(&[1, 2, 3]).unwrap();
+        assert_eq!(&short[HEADER_LEN..HEADER_LEN + 3], &[1, 2, 3]);
+        assert!(Session::gif_frame_packet(&vec![0u8; GIF_FRAME_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn gif_light_stream_chunks_and_paces() {
+        let shared = Rc::new(RefCell::new(MockShared::default()));
+        let link = MockLink {
+            shared: shared.clone(),
+        };
+        let mut kb = Session::new(Box::new(link), 6);
+        // 2.5 frames → 3 packets (378+378+189 bytes of data).
+        let data = vec![0xABu8; GIF_FRAME_BYTES * 2 + 189];
+        let sent = kb.write_gif_light(&data, Duration::ZERO).unwrap();
+        assert_eq!(sent, 3);
+        let sh = shared.borrow();
+        assert_eq!(sh.feature_writes.len(), 3);
+        for (i, (id, pkt)) in sh.feature_writes.iter().enumerate() {
+            assert_eq!(*id, 6);
+            assert_eq!(&pkt[..HEADER_LEN], &[8, 0, 0, 1, 0, 122, 1]);
+            let want = match i {
+                2 => 189,
+                _ => GIF_FRAME_BYTES,
+            };
+            assert!(pkt[HEADER_LEN..HEADER_LEN + want].iter().all(|&b| b == 0xAB));
+            assert!(pkt[HEADER_LEN + want..].iter().all(|&b| b == 0));
+        }
+        assert!(kb.write_gif_light(&[], Duration::ZERO).is_err());
+        assert!(kb.write_gif_frame(&vec![0u8; GIF_FRAME_BYTES + 1]).is_err());
     }
 }

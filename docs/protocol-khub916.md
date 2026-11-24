@@ -262,7 +262,7 @@ Request header: `[cmd, arg, 0x00, 0x01, 0x00, tagA, (tagB), payload...]`.
 | 4 | write profile/config blob | → | 128/0 | ~128 B profile verbatim incl. its trailing `5A A5` (see §7) | `setKeyboardSleepTime`, `setKeyboardLight` |
 | 5 | write macro region | → | len&0xFF/0 | ≤512 B assembled macro table | `setKeyBoardMacroKey`, `deleteKeyBoardMacroKey`, `setKeyBoardMacroIndependent` |
 | 6 | write custom light colors | → | 122/1 | 378 B (126×R,126×G,126×B planes), no marker | `setKeyboardCustomLightColor(Array)` |
-| 8 | GIF light frames | → | 122/1 | 512 B frames, 7-B prefix `[8,0,0,1,0,122,1]`, data at +7 | `setGifLight` |
+| 8 | GIF light frames | → | 122/1 | 512 B frames, 7-B prefix `[8,0,0,1,0,122,1]`, data at +7 | `setGifLight` — **live-probed on K1 Pro** (see below) |
 | 10 | write light colour data | → | 0/2 | header `[10,0,0,0,0,0,2]` (**byte 3 = 0x00**, not the usual 0x01) + ~483 B blob at offset 7; `5A A5` pinned at packet bytes **513/514** | `setKeyboardLight` (`type==1 && color` branch) |
 | 11 | set screen time | → | 14/0 | `[0,0,0,0] + 7B datetime + week` | `setKeyBoardScreenTime` |
 | 12 | screen image data | → | 0/2 | `[0,frameIdx,chunkIdx,0,0,2] + 512 B` per frame | `setKeyBoardImg` |
@@ -353,6 +353,33 @@ string after header; each macro step = 4 B `[action<<4|durHi, durMid, durLo,
 keyUsage]` (duration = 24-bit big-endian-ish `(A&15)<<16|b<<8|I` where `A` is
 step byte0). Action map `{0:0,1:0,8:1,9:1,2:0,10:1}`; modifier keys
 Shift/Ctrl/Meta/Alt get action 1 or 9, mouse buttons 2 or 10.
+
+### Cmd 8 live probe (K1 Pro, 2026-11-24) [verified transport; LED effect unconfirmed]
+
+Vendor `Ht.setGifLight` chunks a flat byte stream into 378-byte pieces;
+each becomes one packet `[8,0,0,1,0,122,1]` + data at offset 7, zero-padded
+to the 519-byte feature report, sent fire-and-forget through the same
+~30 ms command queue as every other write. **No** chunk index, frame
+count, checksum or `5A A5` marker — the device consumes the stream
+continuously. 378 B = 126 keys × 3; the planar `[R×126][G×126][B×126]`
+order of cmd 6 is the working assumption (interleaved RGB not excluded).
+
+Live findings (`omg-proto-khub916/examples/gif_probe.rs`,
+`omg kb916 light stream`):
+
+- `feature_exchange` on a cmd-8 packet **is answered**: the device echoes
+  the 7-byte header and returns a 385-byte reply = header + 378-byte
+  payload. The payload is a structured table (u32-BE values in the
+  key-usage range plus a `5A A5` marker) and is **byte-identical for
+  different frame colours** — it is device state (key/position data the
+  GIF editor queries), not a frame echo. Exact semantics unconfirmed.
+- Sustained `feature_write` streams of 378-byte frames at 30 fps and
+  50 fps completed without transport errors (fire-and-forget, so no
+  device NAK is observable either way).
+- Whether the streamed bytes actually drive the LEDs could not be
+  confirmed programmatically — no read-back path exists for cmd 8 and
+  visual confirmation needs eyes on the keyboard. Open item tracked in
+  `docs/research/music-reactive-feasibility.md` §6 (TEST-001).
 
 ### SOCD / MT / TGL (cmd 146/18) [code-verified; reads + keymap write live-verified on K1 Pro; cmd 18 did not persist on K1 Pro — see docs/advkeys-schema.md]
 

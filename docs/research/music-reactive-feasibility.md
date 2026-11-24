@@ -1,8 +1,8 @@
 # Music Reactive Lighting — feasibility research
 
-Status: **research complete, implementation blocked on one hardware test**
-(see §6). Date: 2026-11-24. Scope: GravaStar khub916 (K1/K1 Pro/K1 Lite/K98),
-HE v2 keyboards, Compx mouse.
+Status: **cmd-8 transport implemented + live-probed; LED visual
+confirmation still open** (see §6). Date: 2026-11-24. Scope: GravaStar
+khub916 (K1/K1 Pro/K1 Lite/K98), HE v2 keyboards, Compx mouse.
 
 This document records what was verified, from which evidence, and what
 remains unknown. It is the input for a future `omg music` feature; nothing
@@ -130,18 +130,34 @@ all CPU-trivial at 30–60 fps frame rates.
   per 378-byte frame — probably too slow for smooth streaming; treat
   wireless as out of scope initially.
 
-## 6. Blocking unknown → required experiment
+## 6. Blocking unknown → TEST-001 result (2026-11-24, K1 Pro wired)
 
-**TEST-001 (hardware, ~1 h):** on the live K1 Pro (wired), repeatedly send
-cmd-8 packets `[8,0,0,1,0,122,1] + 378 B RGB` at 30–60 Hz with a visible
-test pattern; observe whether LEDs update live. Variants to try if it
-fails: set profile light mode to 428/169 first; try cmd-6-style plane
-layout inside cmd 8; capture USB traffic from the official companion on
-Windows (USBPcap) to recover the exact frame command.
+**TEST-001 partially done.** `omg kb916 light stream` +
+`crates/proto-khub916/examples/gif_probe.rs` now implement and live-probe
+the vendor cmd-8 path (`Ht.setGifLight`: flat stream → 378-byte chunks →
+`[8,0,0,1,0,122,1]` + data at offset 7, fire-and-forget, ~30 ms cadence).
+
+- The device **answers** cmd 8: echoed header + a 385-byte reply whose
+  378-byte payload is a static key/position table (identical for all
+  frame colours — not a frame echo). See protocol-khub916.md "Cmd 8 live
+  probe".
+- Sustained streams at 30 fps and 50 fps ran clean (≤361 frames per run);
+  writes are fire-and-forget so acceptance is inferred, not ACKed.
+- **Still open:** whether the streamed bytes visibly drive the LEDs
+  (needs eyes — no read-back exists), the 378-byte frame layout
+  (planar cmd-6 order assumed; interleaved RGB possible), whether a
+  light mode must be active, and max sustained rate.
+
+Next step if LEDs respond: `omg kb916 light stream --pattern rainbow`
+is the demo; `--file -` accepts raw 378-byte frames on stdin for a future
+capture→DSP→frames pipeline. If LEDs do *not* respond, finish reversing
+the companion's frame-send function (Ghidra project at /tmp/maxis is
+throwaway — re-import exe) or USBPcap the official Rhythm app on Windows.
 
 Secondary unknowns: whether the device needs a "music mode" profile
 active to accept streams; max sustained rate before dropped/mangled
-frames; behaviour on disconnect (must restore prior lighting).
+frames; behaviour on disconnect (must restore prior lighting — the CLI
+already snapshots profile + light-data and restores verified on exit).
 
 ## 7. Recommended architecture (if TEST-001 passes)
 
