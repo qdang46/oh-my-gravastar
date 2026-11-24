@@ -33,6 +33,11 @@ const ONSET_FLUX_RATIO: f32 = 2.0;
 const ONSET_MIN_FLUX: f32 = 0.02;
 const EVENT_REFRACTORY: usize = 3;
 const FLUX_HISTORY: usize = 32;
+/// AGC: target normalised level, peak floor, gain clamp range.
+const AGC_TARGET: f32 = 0.65;
+const AGC_FLOOR: f32 = 0.05;
+const AGC_MIN: f32 = 0.3;
+const AGC_MAX: f32 = 6.0;
 /// Spectrum-bin split for onset classification (24 log bins, 30 Hz–24 kHz):
 /// bass ≈ bins 0–5, mid 6–15, treble 16–23.
 const BASS_BINS: usize = 6;
@@ -57,6 +62,10 @@ pub struct Bands {
     pub treble: f32,
     /// Broadband level (RMS → dBFS → 0..1), 0..1.
     pub level: f32,
+    /// Automatic gain compensation (1.0 = unity). Normalises band
+    /// energies against a slow-decaying running peak of `level` so quiet
+    /// and loud material render with similar brightness.
+    pub agc: f32,
     /// True on the frame a beat was detected.
     pub beat: bool,
 }
@@ -92,6 +101,7 @@ impl Default for Bands {
             mid: 0.0,
             treble: 0.0,
             level: 0.0,
+            agc: 1.0,
             beat: false,
         }
     }
@@ -127,6 +137,8 @@ pub struct Analyzer {
     flux_history: Vec<f32>,
     /// Analyses since the last emitted onset event (refractory period).
     since_event: usize,
+    /// Slow-decaying peak of `level_smooth` for AGC.
+    level_peak: f32,
 }
 
 impl Analyzer {
@@ -172,6 +184,7 @@ impl Analyzer {
             prev_spectrum: [0.0; SPECTRUM_BINS],
             flux_history: Vec::with_capacity(64),
             since_event: EVENT_REFRACTORY,
+            level_peak: 0.0,
         })
     }
 
@@ -239,6 +252,11 @@ impl Analyzer {
         self.mid_smooth += SMOOTH_ALPHA * (mid - self.mid_smooth);
         self.treble_smooth += SMOOTH_ALPHA * (treble - self.treble_smooth);
         self.level_smooth += SMOOTH_ALPHA * (level - self.level_smooth);
+        // AGC: track a decaying peak of the smoothed level and derive a
+        // gain that maps it toward AGC_TARGET. Rises instantly, decays
+        // slowly (~2000 analyses ≈ 90 s) so gain does not pump per beat.
+        self.level_peak = self.level_peak.max(self.level_smooth);
+        self.level_peak *= 0.9995;
 
         // Spectral flux onset detection on the raw (unsmoothed) bands:
         // only positive magnitude changes count, so sustained bass does
@@ -325,8 +343,10 @@ impl Analyzer {
             self.since_beat = 0;
         }
 
+        let agc = (AGC_TARGET / self.level_peak.max(AGC_FLOOR)).clamp(AGC_MIN, AGC_MAX);
         Some(Bands {
             events,
+            agc,
             spectrum: self.spectrum_smooth,
             peak: [0.0; SPECTRUM_BINS],
             bass: self.bass_smooth,
@@ -414,6 +434,25 @@ mod tests {
         let b = last.unwrap();
         assert_eq!(b.level, 0.0);
         assert!(!b.beat);
+    }
+
+    #[test]
+    fn onset_fires_on_burst_after_silence() {
+        let mut a = Analyzer::new(48_000, 2048).unwrap();
+        for _ in 0..10 {
+            a.process(&vec![0.0f32; 2048]);
+        }
+        let burst = sine(100.0, 48_000, 2048);
+        let mut found = false;
+        for _ in 0..4 {
+            if let Some(b) = a.process(&burst) {
+                if !b.events.is_empty() {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "burst after silence should produce an onset event");
     }
 
     #[test]

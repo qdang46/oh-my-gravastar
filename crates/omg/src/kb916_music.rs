@@ -312,9 +312,7 @@ pub fn cmd(
         if let Some(b) = analyzer.process(&samples) {
             bands = b;
             analyses += 1;
-            if bands.beat {
-                beats += 1;
-            }
+            beats += bands.events.len() as u64;
         }
         let frame = viz.frame(&bands, started.elapsed().as_secs_f32());
         if let Err(e) = kb.write_gif_frame(&frame) {
@@ -402,4 +400,35 @@ pub fn cmd(
         bail!("lighting restore failed — check `omg kb916 light get` and re-apply");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qwerty_positions_follow_geometry() {
+        let kv = |usage: u16| KeyValue::Normal {
+            usage,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            gui: false,
+        };
+        // q (row 2) is above-left of z (row 4).
+        let pos = key_positions(&[kv(0x14), kv(0x1D)]);
+        assert!(pos[0].0 < pos[1].0, "q x {} should be left of z x {}", pos[0].0, pos[1].0);
+        assert!(pos[0].1 < pos[1].1, "q y {} should be above z y {}", pos[0].1, pos[1].1);
+        // Esc sits top-left; space sits bottom-centre.
+        let pos = key_positions(&[kv(0x29), kv(0x2C)]);
+        assert!(pos[0].1 < pos[1].1);
+        assert!(pos[1].0 > 0.3 && pos[1].0 < 0.7);
+    }
+
+    #[test]
+    fn unknown_values_fall_back_to_linear() {
+        let pos = key_positions(&[KeyValue::Empty, KeyValue::Fn { layer: 0 }]);
+        assert_eq!(pos[0], (0.0, 0.5));
+        assert_eq!(pos[1], (1.0, 0.5));
+    }
 }

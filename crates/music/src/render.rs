@@ -147,7 +147,8 @@ impl SpectrumViz {
     pub fn frame(&mut self, bands: &Bands, t: f32) -> [u8; FRAME_BYTES] {
         // Update per-band envelopes.
         for (i, st) in self.bands.iter_mut().enumerate() {
-            let target = (bands.spectrum[i] * self.params.sensitivity).clamp(0.0, 1.0);
+            let target =
+                (bands.spectrum[i] * self.params.sensitivity * bands.agc).clamp(0.0, 1.0);
             st.env += if target > st.env { ATTACK } else { DECAY } * (target - st.env);
             if target > st.peak {
                 st.peak = target;
@@ -261,8 +262,10 @@ pub struct BeatViz {
 
 impl BeatViz {
     pub fn new(params: FrameParams) -> Self {
+        // Keep the ambient spectrum very dim — the point of this
+        // visualiser is that onsets/impacts are the bright signal.
         let ambient = FrameParams {
-            brightness: params.brightness * 0.35,
+            brightness: params.brightness * 0.12,
             ..params
         };
         Self {
@@ -322,15 +325,18 @@ impl BeatViz {
         self.impacts
             .retain(|i| self.frame_no.wrapping_sub(i.born) < impact_ttl(i.kind));
 
-        // Ambient base from the spectrum visualiser.
+        // Ambient base from the spectrum visualiser, gated by the
+        // broadband level: quiet music → near-black keyboard so beats
+        // and onsets read clearly instead of drowning in base light.
         let base = self.spec.frame(bands, t);
+        let gate = (bands.level * 1.8).clamp(0.0, 1.0);
         let mut out = [0u8; FRAME_BYTES];
         for k in 0..KEY_SLOTS {
             let (x, y) = self.pos[k];
             let mut add = [0.0f32; 3];
             for im in &self.impacts {
                 let age = self.frame_no.wrapping_sub(im.born) as f32;
-                let s = im.strength * self.params.brightness;
+                let s = (im.strength * self.params.brightness * 1.8).min(1.0);
                 let (r, g, b) = match im.kind {
                     BeatKind::Kick => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
@@ -370,8 +376,14 @@ impl BeatViz {
                 add[1] += g;
                 add[2] += b;
             }
+            // Bass wash: continuous warm presence so the whole field
+            // breathes with the low end between onset impacts.
+            let wash = bands.bass * bands.agc.min(2.0) * 0.20 * self.params.brightness;
+            add[0] += wash;
+            add[1] += wash * 0.55;
+            add[2] += wash * 0.25;
             for c in 0..3 {
-                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0;
+                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate;
                 let v = (base_v + add[c]).clamp(0.0, 1.0);
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
             }
@@ -392,7 +404,7 @@ fn hash01(n: u32) -> f32 {
 /// Render one frame. `t` is seconds since stream start (drives hue drift).
 pub fn render_frame(bands: &Bands, t: f32, params: &FrameParams) -> [u8; FRAME_BYTES] {
     let mut frame = [0u8; FRAME_BYTES];
-    let gain = params.sensitivity;
+    let gain = params.sensitivity * bands.agc;
     let beat_flash = if bands.beat { 0.6 } else { 0.0 };
     for k in 0..KEY_SLOTS {
         let x = k as f32 / KEY_SLOTS as f32;
@@ -497,6 +509,26 @@ mod tests {
             last = viz.frame(&quiet, 0.1 + i as f32 * 0.03);
         }
         assert!(energy(&last) > 0, "peak cap should hold after silence");
+    }
+
+    #[test]
+    fn beat_kick_ignites_then_fades() {
+        use crate::dsp::BeatEvent;
+        let mut v = BeatViz::new(FrameParams::default());
+        let mut b = Bands::default();
+        b.events = vec![BeatEvent {
+            kind: BeatKind::Kick,
+            strength: 1.0,
+        }];
+        let lit = v.frame(&b, 0.0);
+        assert!(lit.iter().any(|&x| x > 0), "kick should light keys");
+        // After the impact TTL the field returns to black on silence.
+        let quiet = Bands::default();
+        let mut last = [0u8; FRAME_BYTES];
+        for i in 0..70 {
+            last = v.frame(&quiet, i as f32 * 0.03);
+        }
+        assert!(last.iter().all(|&x| x == 0), "impact should fully decay");
     }
 
     #[test]
