@@ -20,6 +20,7 @@ use serde_json::json;
 
 mod device;
 mod kb916_adv;
+mod plan;
 mod kb916_macro;
 mod kb916_light;
 mod kb916_music;
@@ -108,6 +109,13 @@ enum Commands {
     Device {
         #[command(subcommand)]
         command: DeviceCommands,
+    },
+    /// Multi-step device plans as JSON (docs/plan-json.md): create a plan
+    /// from a document, inspect/validate it, apply steps sequentially
+    /// with per-step verify + journal, and roll back snapshots.
+    Plan {
+        #[command(subcommand)]
+        command: plan::PlanCommands,
     },
 }
 
@@ -397,6 +405,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Profile { command } => cmd_profile(cli, command),
         Commands::Schema { path } => cmd_schema(cli, path),
         Commands::Device { command } => cmd_device(cli, command),
+        Commands::Plan { command } => plan::cmd_plan(cli, command),
     }
 }
 
@@ -912,8 +921,43 @@ fn mouse_absent(cli: &Cli) -> Result<ExitCode> {
     Ok(no_device())
 }
 
+thread_local! {
+    /// When set, `print_json` appends each document here instead of
+    /// printing — used by `omg plan apply`/`rollback` to capture per-step
+    /// JSON reports (mainly the `verified` flag) for the journal.
+    static JSON_CAPTURE: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Begin capturing `print_json` output (single-shot; nested starts are
+/// ignored — callers take before starting again).
+pub(crate) fn json_capture_start() {
+    JSON_CAPTURE.with(|c| {
+        let mut b = c.borrow_mut();
+        if b.is_none() {
+            *b = Some(Vec::new());
+        }
+    });
+}
+
+/// Drain the capture buffer and stop capturing.
+pub(crate) fn json_capture_take() -> Vec<String> {
+    JSON_CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
 pub(crate) fn print_json(v: &impl serde::Serialize) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(v)?);
+    let s = serde_json::to_string_pretty(v)?;
+    let captured = JSON_CAPTURE.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            buf.push(s.clone());
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        println!("{s}");
+    }
     Ok(())
 }
 

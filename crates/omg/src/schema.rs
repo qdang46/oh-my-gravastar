@@ -62,7 +62,11 @@ pub(crate) fn is_write_path(path: &[String]) -> bool {
 /// Commands with their own richer `--dry-run` implementation; the global
 /// dry-run preview must not shadow them.
 pub(crate) fn has_native_dry_run(path: &[String]) -> bool {
-    matches!(path, [a, b] if a == "profile" && b == "import")
+    matches!(
+        path,
+        [a, b] if (a == "profile" && b == "import")
+            || (a == "plan" && (b == "apply" || b == "rollback"))
+    )
 }
 
 // ── per-command metadata clap cannot express ──────────────────────────
@@ -352,7 +356,7 @@ pub(crate) fn command_schema(path: &[String]) -> Option<Value> {
         "exit_codes": { "0": "ok", "1": "error", "2": "no device", "3": "unsupported" },
     });
     if has_native_dry_run(path) {
-        doc["dry_run"] = json!("native --dry-run prints the planned changes (profile import)");
+        doc["dry_run"] = json!("native --dry-run prints the planned changes without sending anything");
     } else if writes {
         doc["dry_run"] = json!("global --dry-run previews the invocation without sending anything");
     }
