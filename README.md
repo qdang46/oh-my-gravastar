@@ -2,6 +2,8 @@
 
 ![Demo: music-reactive keyboard lighting (MVP)](docs/demo-music-lighting.webp)
 
+*Demo: per-key RGB lighting driven by live music (`omg kb916 light music`) — keys flash on the beat and go dark between hits.*
+
 Agent-first, offline CLI (`omg`) for configuring GravaStar keyboards and mice.
 Every command supports `--json` so AI agents can drive it. No daemon, no
 network, no telemetry.
