@@ -482,6 +482,64 @@ impl BeatViz {
     }
 }
 
+// ── Beat Pulse mode ────────────────────────────────────────────────────
+//
+// Spec mode A: the *entire* keyboard flashes brighter on every detected
+// beat with smooth attack/decay, over a configurable dim background.
+// No per-key motion — pure brightness pumping driven by `bands.beat`
+// (instant attack) and `bands.beat_pulse` (dsp-time decay envelope).
+
+/// Stateful beat-pulse renderer — call [`PulseViz::frame`] per LED frame.
+pub struct PulseViz {
+    params: FrameParams,
+    /// Smoothed flash envelope 0..1 — gives --attack/--decay real
+    /// control over the rise/fall shape on top of dsp's beat_pulse.
+    env: f32,
+}
+
+impl PulseViz {
+    pub fn new(params: FrameParams) -> Self {
+        Self { params, env: 0.0 }
+    }
+
+    /// Render one frame. `t` = seconds (drives a slow warm hue drift).
+    pub fn frame(&mut self, bands: &Bands, t: f32) -> [u8; FRAME_BYTES] {
+        // Target = dsp's decaying beat pulse, snapped to 1 on a fresh
+        // beat. The env lerps toward it: fast rise with --attack,
+        // decay rate scaled by --decay (independent of LED fps since
+        // beat_pulse itself decays in wall-clock time).
+        let target = bands.beat_pulse.max(if bands.beat { 1.0 } else { 0.0 });
+        let k = if target > self.env {
+            (0.6 * self.params.attack).min(0.98)
+        } else {
+            (0.35 * self.params.decay).min(0.98)
+        };
+        self.env += k * (target - self.env);
+        let flash = self.env;
+        let gate = bands.level.clamp(0.0, 1.0);
+        let v = ((flash * self.params.beat_intensity
+            + self.params.background * gate)
+            * self.params.brightness)
+            .clamp(0.0, 1.0);
+        // Warm white core with a whisper of hue drift; bass thickens it
+        // toward orange so kicks feel heavier than snares.
+        let hue = 0.02 + 0.02 * (t * 0.3).sin() - bands.bass * 0.02;
+        let sat = (0.55 - bands.bass * 0.2).clamp(0.2, 0.8);
+        let (r, g, b) = if v > 0.01 {
+            hsv(hue, sat, v)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let mut frame = [0u8; FRAME_BYTES];
+        for k in 0..KEY_SLOTS {
+            frame[k] = (r * 255.0).round() as u8;
+            frame[KEY_SLOTS + k] = (g * 255.0).round() as u8;
+            frame[2 * KEY_SLOTS + k] = (b * 255.0).round() as u8;
+        }
+        frame
+    }
+}
+
 /// Deterministic 0..1 hash for spark selection / pseudo-random origins.
 fn hash01(n: u32) -> f32 {
     let mut x = n.wrapping_mul(0x9E3779B1);
@@ -619,6 +677,32 @@ mod tests {
             last = v.frame(&quiet, i as f32 * 0.03);
         }
         assert!(last.iter().all(|&x| x == 0), "impact should fully decay");
+    }
+
+    #[test]
+    fn pulse_flashes_on_beat_then_decays() {
+        let mut v = PulseViz::new(FrameParams::default());
+        let quiet = Bands::default();
+        assert!(v.frame(&quiet, 0.0).iter().all(|&x| x == 0));
+        let mut b = Bands::default();
+        b.beat = true;
+        b.beat_pulse = 1.0;
+        b.level = 0.8;
+        let flash = v.frame(&b, 0.0);
+        // Whole keyboard lit uniformly: every key identical, planes differ.
+        assert!(flash.iter().all(|&x| x > 0));
+        assert!(flash[..126].windows(2).all(|w| w[0] == w[1]));
+        assert_ne!(&flash[0..126], &flash[126..252]);
+        // Decay: feed silence, brightness must fall monotonically-ish
+        // toward black (env lerps down each frame).
+        let mut prev = u32::MAX;
+        for i in 0..30 {
+            let f = v.frame(&quiet, i as f32 * 0.05);
+            let sum: u32 = f.iter().map(|&x| x as u32).sum();
+            assert!(sum <= prev, "pulse should decay, got {sum} > {prev}");
+            prev = sum;
+        }
+        assert!(prev < flash.iter().map(|&x| x as u32).sum::<u32>() / 4);
     }
 
     #[test]

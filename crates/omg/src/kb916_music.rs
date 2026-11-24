@@ -13,7 +13,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use omg_music::capture::{open_source, SourceKind};
-use omg_music::{Analyzer, Bands, BeatViz, FrameParams, KeyPos, SpectrumViz};
+use omg_music::{Analyzer, Bands, BeatViz, FrameParams, KeyPos, PulseViz, SpectrumViz};
 use omg_proto_khub916::KeyValue;
 use serde_json::json;
 use std::process::ExitCode;
@@ -189,6 +189,7 @@ fn key_positions(keymap: &[KeyValue]) -> Vec<KeyPos> {
 enum Viz {
     Spectrum(SpectrumViz),
     Beat(BeatViz),
+    Pulse(PulseViz),
 }
 
 impl Viz {
@@ -196,6 +197,7 @@ impl Viz {
         match self {
             Viz::Spectrum(v) => v.frame(bands, t),
             Viz::Beat(v) => v.frame(bands, t),
+            Viz::Pulse(v) => v.frame(bands, t),
         }
     }
 }
@@ -251,8 +253,8 @@ pub fn cmd(
     if !(0.25..=4.0).contains(&attack) || !(0.25..=4.0).contains(&decay) {
         bail!("--attack/--decay must be in 0.25..=4.0, got {attack}/{decay}");
     }
-    if !matches!(effect, "spectrum" | "beat") {
-        bail!("unknown --effect '{effect}' (want spectrum|beat)");
+    if !matches!(effect, "spectrum" | "beat" | "pulse") {
+        bail!("unknown --effect '{effect}' (want spectrum|beat|pulse)");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -308,18 +310,22 @@ pub fn cmd(
         decay,
         ..FrameParams::default()
     };
-    let mut viz = if effect == "beat" {
-        let mut v = BeatViz::new(params);
-        if !positions.is_empty() {
-            v.set_positions(&positions);
+    let mut viz = match effect {
+        "beat" => {
+            let mut v = BeatViz::new(params);
+            if !positions.is_empty() {
+                v.set_positions(&positions);
+            }
+            Viz::Beat(v)
         }
-        Viz::Beat(v)
-    } else {
-        let mut v = SpectrumViz::new(params);
-        if !positions.is_empty() {
-            v.set_positions(&positions.iter().map(|p| p.0).collect::<Vec<_>>());
+        "pulse" => Viz::Pulse(PulseViz::new(params)),
+        _ => {
+            let mut v = SpectrumViz::new(params);
+            if !positions.is_empty() {
+                v.set_positions(&positions.iter().map(|p| p.0).collect::<Vec<_>>());
+            }
+            Viz::Spectrum(v)
         }
-        Viz::Spectrum(v)
     };
     let period = Duration::from_secs_f64(1.0 / fps);
     let deadline = duration.map(|d| Instant::now() + Duration::from_secs_f64(d));
