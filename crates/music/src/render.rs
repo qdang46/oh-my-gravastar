@@ -16,7 +16,7 @@ pub const KEY_SLOTS: usize = 126;
 /// One cmd-8 frame payload: 126 keys × RGB planar.
 pub const FRAME_BYTES: usize = KEY_SLOTS * 3;
 /// Bumped when the visual mapping changes materially.
-pub const RENDERER_VERSION: u32 = 1;
+pub const RENDERER_VERSION: u32 = 2;
 
 /// Tuning knobs for [`render_frame`]. All energies are 0..1.
 #[derive(Clone, Copy, Debug)]
