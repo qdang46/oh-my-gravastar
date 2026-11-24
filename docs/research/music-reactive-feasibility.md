@@ -190,3 +190,25 @@ omg music start [--effect spectrum|bass-pulse|beat|wave]
 - `docs/protocol-khub916.md` — cmd table, live verification log.
 - `crates/proto-khub916/src/light.rs`, `crates/proto-he/src/lib.rs`,
   `crates/model/src/lib.rs` — implemented lighting surface.
+
+## 8. Post-implementation findings (live runs, 2026-11)
+
+- **Vendor report cadence**: khub916 feature reports in the Hub webapp are
+  queued with `delay(200)` between tasks (`index-M8-m9qFR.deob.js`
+  `processQueue`) ≈ **5 reports/s** — far below the 30 fps we originally
+  streamed. Sustained high-rate cmd-8 traffic correlates with a firmware
+  wedge (lighting stuck, Fn combos dead; see AGENTS.md incident log).
+  `light stream`/`light music` now default to 10 fps and warn above 10.
+- **Restore hazard**: the snapshot/restore path writes back whatever the
+  profile held at start. If a previous run was killed mid-stream the
+  device can sit in a GIF/leftover state that then gets snapshotted and
+  restored forever. Both commands now warn when the snapshot decodes to
+  mode 0 (off) or fails to decode.
+- **Beat Motion Engine** (`crates/music`, `BeatViz`): spectral-flux
+  onset detection classifies kick/snare/hi-hat; impacts are
+  frame-count based and now scaled by `30/fps` (`FrameParams::fps`) so
+  wall-clock timing is stable at any stream rate. Live-verified: beat
+  events fire on real music, restore verified on exit.
+- **Side LEDs are not reachable**: the khub916 protocol and vendor GIF
+  editor only cover the 126 key LEDs; wing/side lighting is
+  firmware-local (Fn combos) with no wire command found.
