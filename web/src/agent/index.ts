@@ -23,3 +23,4 @@ export * from './validator.ts';
 export * from './dry-run.ts';
 export * from './executor.ts';
 export * from './simulator.ts';
+export * from './intent.ts';
