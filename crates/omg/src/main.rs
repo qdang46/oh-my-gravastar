@@ -4216,6 +4216,11 @@ enum Kb916Light {
         /// lingers (default 1.0, range 0.25-4.0).
         #[arg(long, default_value_t = 1.0)]
         decay: f32,
+        /// LED byte order in the 378-byte frame: `planar` = [R×126][G×126]
+        /// [B×126] (K1 Pro assumption), `interleaved` = per-LED RGB
+        /// (Aula F75 family per raghavt20/aula-f75-macos).
+        #[arg(long, default_value = "planar")]
+        pixel_order: String,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

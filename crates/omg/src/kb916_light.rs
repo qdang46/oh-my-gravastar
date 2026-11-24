@@ -1020,6 +1020,7 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
             beat_intensity,
             attack,
             decay,
+            pixel_order,
             duration,
             yes,
         } => crate::kb916_music::cmd(
@@ -1033,6 +1034,7 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
             *beat_intensity,
             *attack,
             *decay,
+            pixel_order,
             *duration,
             yes,
         ),

@@ -590,6 +590,20 @@ fn hash01(n: u32) -> f32 {
     (x & 0xFFFF) as f32 / 65535.0
 }
 
+/// Convert a planar `[R×126][G×126][B×126]` frame to interleaved
+/// `LED×(R,G,B)` order. Needed for devices whose cmd-8 stream indexes
+/// LEDs as `led*3` (Aula F75 family per raghavt20/aula-f75-macos) rather
+/// than the K1 Pro planar assumption.
+pub fn to_interleaved(frame: &[u8; FRAME_BYTES]) -> [u8; FRAME_BYTES] {
+    let mut out = [0u8; FRAME_BYTES];
+    for k in 0..KEY_SLOTS {
+        out[k * 3] = frame[k];
+        out[k * 3 + 1] = frame[KEY_SLOTS + k];
+        out[k * 3 + 2] = frame[2 * KEY_SLOTS + k];
+    }
+    out
+}
+
 /// Render one frame. `t` is seconds since stream start (drives hue drift).
 pub fn render_frame(bands: &Bands, t: f32, params: &FrameParams) -> [u8; FRAME_BYTES] {
     let mut frame = [0u8; FRAME_BYTES];

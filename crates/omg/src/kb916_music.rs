@@ -215,6 +215,7 @@ pub fn cmd(
     beat_intensity: f32,
     attack: f32,
     decay: f32,
+    pixel_order: &str,
     duration: Option<f64>,
     yes: &Yes,
 ) -> Result<ExitCode> {
@@ -257,6 +258,9 @@ pub fn cmd(
     }
     if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
         bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
+    }
+    if !matches!(pixel_order, "planar" | "interleaved") {
+        bail!("unknown --pixel-order '{pixel_order}' (want planar|interleaved)");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -373,7 +377,10 @@ pub fn cmd(
             last_bpm = b.bpm;
             bands = b;
         }
-        let frame = viz.frame(&bands, started.elapsed().as_secs_f32());
+        let mut frame = viz.frame(&bands, started.elapsed().as_secs_f32());
+        if pixel_order == "interleaved" {
+            frame = omg_music::to_interleaved(&frame);
+        }
         if std::env::var("OMG_DEBUG_FRAMES").is_ok() && sent % 20 == 0 {
             let mean = frame.iter().map(|&b| b as u32).sum::<u32>() as f32
                 / (frame.len() as f32 * 255.0);

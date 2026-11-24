@@ -16,6 +16,6 @@ pub mod render;
 
 pub use dsp::{Analyzer, Bands, BeatEvent, BeatKind, SPECTRUM_BINS};
 pub use render::{
-    render_frame, BeatViz, FrameParams, KeyPos, PulseMode, PulseViz, SpectrumViz,
-    RENDERER_VERSION,
+    render_frame, to_interleaved, BeatViz, FrameParams, KeyPos, PulseMode, PulseViz,
+    SpectrumViz, RENDERER_VERSION,
 };
