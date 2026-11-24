@@ -52,6 +52,7 @@ import {
 } from './proto/light.ts';
 import type { LightColor } from './proto/khub916.ts';
 import { confirmDialog } from './modal.ts';
+import { parseSceneConfig, renderScenesSection } from './lighting-scenes.ts';
 import {
   SnapshotStore,
   snapshotBeforeWrite,
@@ -402,6 +403,9 @@ class LightingView {
     }
     fx.body.append(this.modeGrid);
     this.root.append(fx.card);
+
+    // Saved lighting scenes (bead nha) — name → load/preview/export.
+    this.root.append(renderScenesSection(this));
 
     // Card — one-tap colour fills (the "Custom" effect + per-key colours).
     const custom = card('Colours');
@@ -1106,6 +1110,35 @@ class LightingView {
       this.applyBtn.disabled = false;
       this.updateJson();
     }
+  }
+
+  // ── Lighting scenes (bead nha) ─────────────────────────────────────
+
+  /** Current editor draft as canonical scene/settings JSON. */
+  currentSceneJson(): string {
+    return this.configJson();
+  }
+
+  /**
+   * Load a saved scene into the draft. This only changes the on-screen
+   * preview (keyboard colours update live) — the device is written
+   * solely by "Save lighting", which runs the confirmed apply path with
+   * the restore-point snapshot and stop-on-first-failure writes.
+   */
+  loadSceneJson(json: string): void {
+    const cfg = parseSceneConfig(json);
+    this.mode = cfg.mode;
+    this.speed = cfg.speed;
+    this.brightness = cfg.brightness;
+    this.colorModel =
+      cfg.color_model ?? this.modeInfo()?.defaultColorModel ?? COLOR_MODEL.MIXING;
+    if (cfg.color) this.effectColor = parseColor(cfg.color);
+    if (cfg.keys) {
+      this.customColors = cfg.keys.colors.map((h) => parseColor(h));
+    }
+    this.dirty = true;
+    this.updateControls();
+    this.updateJson();
   }
 }
 

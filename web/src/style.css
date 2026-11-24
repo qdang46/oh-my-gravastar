@@ -2196,3 +2196,60 @@ input[type='color'] {
     gap: 2px;
   }
 }
+
+/* ==========================================================================
+   Dashboard (bead utk — docs/UIUX-SPEC.md §2.1)
+   ========================================================================== */
+
+.dash-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.dash-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.dash-action:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.dash-action-title {
+  font-weight: 600;
+}
+
+.dash-action-blurb {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dash-warnings {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  font-size: 13px;
+  color: var(--warn);
+}
+
+.dash-audit {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  font-size: 13px;
+  color: var(--fg-2);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.dash-audit li {
+  margin: var(--space-1) 0;
+}
