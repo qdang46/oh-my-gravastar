@@ -3177,3 +3177,38 @@ details.beh-more > summary:hover {
 details.beh-more .beh-choices {
   margin-top: 8px;
 }
+
+/* ── Fn-layer doctor (fn-doctor.ts / Diagnostics card) ─────────────── */
+.fn-doc-verdict {
+  font-weight: 600;
+  margin: 4px 0 8px;
+}
+.fn-doc-verdict--ok {
+  color: var(--success);
+}
+.fn-doc-verdict--bad {
+  color: var(--warn);
+}
+.fn-doc-label {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 8px 0 2px;
+}
+.fn-doc-list {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  font-size: 13px;
+}
+.fn-doc-list li {
+  margin: 1px 0;
+}
+.fn-doc-more {
+  color: var(--muted);
+}
+.fn-doc-note {
+  font-size: 13px;
+  margin: 6px 0;
+}
+.fn-doc-note--bad {
+  color: var(--warn);
+}

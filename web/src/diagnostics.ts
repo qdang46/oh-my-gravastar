@@ -17,6 +17,9 @@
  *   - Key test / matrix viewer: physical layout from
  *     `k1pro-layout.ts` (same source as the Keys page), slot index +
  *     current-layer assignment per key, live press highlight.
+ *   - Fn layer health: read-only doctor for "Fn+X does nothing"
+ *     (bead `yw0`) — dead Fn-layer slots, opaque tag-0x08 values and
+ *     the Fn key's own base-layer binding, via `fn-doctor.ts`.
  *   - Chatter & timing: capability-gated explanations only — the
  *     khub916 protocol exposes no per-key timing telemetry, so the
  *     page reports what the capability matrix says instead of faking
@@ -43,6 +46,7 @@ import {
   MODIFIER_LABELS,
   pressTokensForValue,
 } from './diag-core.ts';
+import { fnDoctorReport, renderFnDoctorInto } from './fn-doctor.ts';
 import { getCapabilities, protocolOf } from './core/capabilities.ts';
 import { describeFeature, isFeatureAvailable } from './core/feature-registry.ts';
 import type { DeviceLike } from './core/device-model.ts';
@@ -498,7 +502,44 @@ export function renderDiagnostics(root: HTMLElement): void {
     );
   }
 
-  // ── 4. Chatter & timing (capability-gated, honest) ─────────────────
+  // ── 4. Fn layer health (read-only doctor) ──────────────────────────
+  // "Fn+X does nothing" diagnosable without guessing (bead yw0): reads
+  // keymap args 0x01/0x00 through the session cache and reports dead
+  // slots, opaque tags and the Fn key's own binding. No writes.
+  const fnCard = card('Fn layer health');
+  if (protocol !== 'khub916' || !isFeatureAvailable(caps, 'keymap-editor')) {
+    fnCard.body.append(
+      el('p', 'coming-soon', 'Not available on this device.'),
+      el('p', 'hint', describeFeature(caps, 'keymap-editor')),
+    );
+  } else {
+    const fnBox = el('div', 'fn-doc');
+    fnBox.append(el('p', 'hint', 'Checking the Fn layer (read-only)…'));
+    fnCard.body.append(fnBox);
+    void fnDoctorReport()
+      .then((report) => {
+        if (!fnBox.isConnected) return;
+        if (report) {
+          renderFnDoctorInto(fnBox, report);
+        } else {
+          fnBox.replaceChildren(
+            el('p', 'hint', 'Could not read the Fn-layer keymap — the check needs a successful keymap read.'),
+          );
+        }
+      })
+      .catch((e) => {
+        if (!fnBox.isConnected) return;
+        fnBox.replaceChildren(
+          el(
+            'p',
+            'hint warn',
+            `Fn-layer check failed: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+      });
+  }
+
+  // ── 5. Chatter & timing (capability-gated, honest) ─────────────────
   const timingCard = card('Chatter & timing');
   const timingDl = el('dl', 'kv diag-kv');
   for (const feature of ['live-travel', 'polling', 'actuation'] as const) {
@@ -521,7 +562,7 @@ export function renderDiagnostics(root: HTMLElement): void {
     ),
   );
 
-  root.append(connCard.card, liveCard.card, matrixCard.card, timingCard.card);
+  root.append(connCard.card, liveCard.card, matrixCard.card, fnCard.card, timingCard.card);
   paintLive();
 }
 

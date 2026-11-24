@@ -17,7 +17,9 @@
  * profile only — it never claims "unsaved changes" it cannot see.
  */
 
-import { app, connect, disconnect } from './state.ts';
+import { app, connect, disconnect, emit } from './state.ts';
+import { fnDoctorReport } from './fn-doctor.ts';
+import type { FnDoctorReport } from './fn-doctor-core.ts';
 import { formatVidPid } from './hid.ts';
 import { decodeLightState, lightModeInfo } from './proto/light.ts';
 import {
@@ -96,6 +98,35 @@ const PROTOCOL_LABEL: Record<string, string> = {
   unknown: 'unrecognised',
 };
 
+// ── Fn-layer doctor result (bead yw0) ─────────────────────────────────
+// Fetched once per connected device (fnDoctorReport is memoized); a bad
+// verdict adds a health-strip warning. Read-only — the check only reads
+// keymap args 0x01/0x00 through the session cache.
+let fnDocConn: unknown = null;
+let fnDocReport: FnDoctorReport | null = null;
+let fnDocRequested = false;
+
+/** Kick off the Fn-layer check for the current connection (idempotent). */
+function maybeFetchFnDoctor(available: boolean): void {
+  const conn = app.connected;
+  if (!available || !conn) return;
+  if (fnDocRequested && fnDocConn === conn) return;
+  fnDocRequested = true;
+  fnDocConn = conn;
+  fnDocReport = null;
+  void fnDoctorReport()
+    .then((r) => {
+      if (app.connected !== conn) return;
+      fnDocReport = r;
+      // One repaint so the warning appears without waiting for a
+      // user action; fnDoctorReport is memoized so this converges.
+      emit();
+    })
+    .catch(() => {
+      /* check failed — stay silent; Diagnostics shows the error */
+    });
+}
+
 // ── Page ───────────────────────────────────────────────────────────────
 
 export function renderDashboard(root: HTMLElement): void {
@@ -137,6 +168,13 @@ export function renderDashboard(root: HTMLElement): void {
   };
   const caps = getCapabilities(like);
   const summary = capabilitySummary(caps);
+
+  // Fn-layer doctor (read-only): only meaningful on khub916 devices
+  // with a readable keymap. Runs once per connection; a bad verdict
+  // surfaces in the health strip below.
+  maybeFetchFnDoctor(
+    protocolOf(like) === 'khub916' && isFeatureAvailable(caps, 'keymap-editor'),
+  );
 
   // ── Device overview ────────────────────────────────────────────────
   const infoCard = card('Device');
@@ -226,6 +264,15 @@ export function renderDashboard(root: HTMLElement): void {
     );
   }
   warnings.push(...summary.caveats.map((c) => `Unverified: ${c}.`));
+  if (
+    fnDocConn === app.connected &&
+    fnDocReport &&
+    !fnDocReport.intact
+  ) {
+    warnings.push(
+      `Fn layer check: ${fnDocReport.summary} — see Diagnostics for the full report.`,
+    );
+  }
   if (warnings.length === 0) {
     healthCard.body.append(el('p', 'hint ok', 'No warnings — everything reported is verified or expected.'));
   } else {
