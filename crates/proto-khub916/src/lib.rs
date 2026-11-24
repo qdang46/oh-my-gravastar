@@ -861,6 +861,13 @@ impl Khub916 {
     /// count on read (K1 Pro: 126 of the 128 protocol slots), so the
     /// read-back verify compares both sides zero-padded to 128 entries.
     ///
+    /// **Callers doing read-modify-write must pass a base of known arity.**
+    /// AGENTS.md §Safety 6: a short read (e.g. 60 of 126 slots) padded to
+    /// 128 would wipe every slot past it, and the read-back verified below
+    /// would still pass because the device stores what was sent. Use
+    /// [`Self::write_keymap_rmw`], which reads the base itself and refuses
+    /// a short/empty one, rather than assembling the table by hand.
+    ///
     /// Verify: re-reads cmd 131 with the same arg; every slot must match
     /// (missing tail entries count as 0). A mismatch returns `Err` — the
     /// session is *not* poisoned (the write landed, the data differs).
@@ -903,6 +910,74 @@ impl Khub916 {
             command: CMD_KEYMAP_WRITE,
             verified: true,
         })
+    }
+
+    /// Read-modify-write the keymap: read the base for `layer`/`system`,
+    /// apply `edit`, verify the write.
+    ///
+    /// This is the only safe way to change individual slots (AGENTS.md
+    /// §Safety 6). [`Self::write_keymap`] cannot tell a complete table from
+    /// a truncated one — it zero-pads to 128 either way — so a caller that
+    /// built `values` from a short read would wipe the tail and still get a
+    /// `verified` result. Here the base read is validated first:
+    ///
+    /// - an **empty** base read is an error (device/garbled reply);
+    /// - an edit addressing a slot outside the base is an error (the slot
+    ///   does not exist on this model — refuse rather than grow the table);
+    /// - a base **shorter** than the expected per-model count is caught by
+    ///   the cross-arg check below.
+    ///
+    /// `edit` receives the base and mutates it in place. It runs *after*
+    /// validation, so an edit closure cannot paper over a bad read.
+    pub fn write_keymap_rmw<F>(&mut self, layer: u8, system: u8, edit: F) -> Result<WriteOutcome>
+    where
+        F: FnOnce(&mut Vec<u32>) -> Result<()>,
+    {
+        let arg = (layer & 3) | ((system & 1) << 2);
+        let mut values = self.key_values(arg)?;
+        if values.is_empty() {
+            bail!("khub916 keymap read for arg 0x{arg:02X} returned no entries — refusing to write");
+        }
+        // The device reports one fixed slot count per model for every arg,
+        // so compare against the other layers before trusting this one.
+        // Args with a different count mean a partial read.
+        let reference = self.keymap_slot_count_reference(arg)?;
+        if let Some(n) = reference {
+            if values.len() != n {
+                bail!(
+                    "khub916 keymap read for arg 0x{arg:02X} returned {} entries but this \
+                     keyboard reports {n} for its other key sets — the read looks \
+                     incomplete, refusing to write",
+                    values.len()
+                );
+            }
+        }
+        edit(&mut values)?;
+        if values.len() > KEYMAP_ENTRIES {
+            bail!(
+                "khub916 keymap edit grew the table to {} entries (max {KEYMAP_ENTRIES})",
+                values.len()
+            );
+        }
+        self.write_keymap(layer, system, &values)
+    }
+
+    /// Slot count reported by a *different* arg, used by
+    /// [`Self::write_keymap_rmw`] as a completeness reference; `None` when
+    /// that probe reads empty (portable models that leave a layer unused),
+    /// in which case a non-empty base is all that can be checked.
+    ///
+    /// The device reports one fixed slot count per model for every arg
+    /// (K1 Pro: 126), so a count that disagrees with any other arg means a
+    /// partial read. Probing a second arg deliberately covers arg 0 itself,
+    /// which is the layer the UI edits most — comparing only args 1–7
+    /// would leave the most-used layer unchecked.
+    fn keymap_slot_count_reference(&mut self, arg: u8) -> Result<Option<usize>> {
+        // Prefer the base layer as the reference; when the target *is*
+        // arg 0, probe arg 1 (the Fn layer) instead.
+        let probe = if arg == 0 { 1 } else { 0 };
+        let base = self.key_values(probe)?;
+        Ok((!base.is_empty()).then_some(base.len()))
     }
 
     /// Write the profile/config blob (cmd 4, tags 128/0). `profile` is the
@@ -1906,6 +1981,121 @@ mod tests {
         let link = MockLink::new(vec![Ok(keymap_read_response(0, &back))]);
         let mut kb = Khub916::new(Box::new(link), 6);
         assert!(kb.write_keymap(0, 0, &values).unwrap().verified);
+    }
+
+    // ── write_keymap_rmw: AGENTS.md §Safety 6 base validation ──────────
+
+    #[test]
+    fn rmw_applies_edit_and_verifies() {
+        // Base read (arg 0) + reference probe (arg 1) + read-back (arg 0).
+        let base: Vec<u32> = (0..126).map(|i| 0x1000 + i).collect();
+        let mut edited = base.clone();
+        edited[4] = 0x0800_0000;
+        let link = MockLink::new(vec![
+            Ok(keymap_read_response(0, &base)), // base read
+            Ok(keymap_read_response(1, &base)), // reference probe
+            Ok(keymap_read_response(0, &edited)), // read-back
+        ]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let out = kb
+            .write_keymap_rmw(0, 0, |values| {
+                values[4] = 0x0800_0000;
+                Ok(())
+            })
+            .unwrap();
+        assert!(out.verified);
+        // Exactly one write; its slot 4 carries the edited value.
+        let sh = shared.borrow();
+        assert_eq!(sh.feature_writes.len(), 1);
+        assert_eq!(
+            &sh.feature_writes[0].1[7 + 4 * 4..7 + 4 * 4 + 4],
+            &0x0800_0000u32.to_be_bytes()
+        );
+        // Untouched slots survive byte-identically.
+        assert_eq!(
+            &sh.feature_writes[0].1[7 + 5 * 4..7 + 5 * 4 + 4],
+            &base[5].to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn rmw_refuses_short_base_read() {
+        // The bug AGENTS.md §Safety 6 exists for: a truncated base read
+        // would be padded to 128 and wipe every slot past it. The rmw path
+        // must refuse before any write is sent.
+        let short: Vec<u32> = (0..60).map(|i| 0x1000 + i).collect();
+        let full: Vec<u32> = (0..126).map(|i| 0x2000 + i).collect();
+        let link = MockLink::new(vec![
+            Ok(keymap_read_response(0, &short)), // truncated base
+            Ok(keymap_read_response(1, &full)), // reference probe
+        ]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        let err = kb
+            .write_keymap_rmw(0, 0, |values| {
+                values[0] = 0x29;
+                Ok(())
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("incomplete"), "unexpected error: {err}");
+        // Nothing was sent to the device.
+        assert!(shared.borrow().feature_writes.is_empty());
+    }
+
+    #[test]
+    fn rmw_refuses_empty_base_and_out_of_range_slot() {
+        // Empty base read: refuse.
+        let link = MockLink::new(vec![
+            Ok(keymap_read_response(0, &[])),
+            Ok(keymap_read_response(1, &vec![0u32; 126])),
+        ]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb.write_keymap_rmw(0, 0, |_| Ok(())).is_err());
+        assert!(shared.borrow().feature_writes.is_empty());
+
+        // Slot past the end: the caller's edit closure refuses, nothing sent.
+        let full: Vec<u32> = vec![0x2900; 126];
+        let link = MockLink::new(vec![
+            Ok(keymap_read_response(0, &full)),
+            Ok(keymap_read_response(1, &full)),
+        ]);
+        let shared = link.shared();
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb
+            .write_keymap_rmw(0, 0, |values| {
+                if 200 >= values.len() {
+                    bail!("slot out of range");
+                }
+                values[200] = 0x29;
+                Ok(())
+            })
+            .is_err());
+        assert!(shared.borrow().feature_writes.is_empty());
+    }
+
+    #[test]
+    fn rmw_reference_probe_is_skipped_when_empty() {
+        // A model that leaves arg 1 unused reports an empty Fn layer; that
+        // must not block editing arg 0 (no reference available).
+        let base: Vec<u32> = vec![0x2900; 126];
+        let mut edited = base.clone();
+        edited[0] = 0x29;
+        let link = MockLink::new(vec![
+            Ok(keymap_read_response(0, &base)),  // base read
+            Ok(keymap_read_response(1, &[])),    // probe: Fn layer unused
+            Ok(keymap_read_response(0, &edited)), // read-back
+        ]);
+        let mut kb = Khub916::new(Box::new(link), 6);
+        assert!(kb
+            .write_keymap_rmw(0, 0, |values| {
+                values[0] = 0x29;
+                Ok(())
+            })
+            .unwrap()
+            .verified);
     }
 
     #[test]

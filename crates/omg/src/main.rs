@@ -4427,21 +4427,25 @@ fn cmd_kb916_set(cli: &Cli, set: &Kb916Set) -> Result<ExitCode> {
     match set {
         Kb916Set::Key { index, value, .. } => {
             let arg = (layer & 3) | ((system & 1) << 2);
-            let mut values = kb.key_values(arg)?;
-            if *index >= values.len() {
-                bail!(
-                    "key index {index} out of range: keymap has {} entries (arg 0x{arg:02X})",
-                    values.len()
-                );
-            }
             let new = parse_kb916_key_value(value)?;
-            let old = values[*index];
-            values[*index] = new;
+            // `write_keymap_rmw` reads and validates the base itself
+            // (AGENTS.md §Safety 6) — a short read is refused, not padded.
+            let mut old = 0u32;
+            let outcome = kb.write_keymap_rmw(layer, system, |values| {
+                if *index >= values.len() {
+                    bail!(
+                        "key index {index} out of range: keymap has {} entries (arg 0x{arg:02X})",
+                        values.len()
+                    );
+                }
+                old = values[*index];
+                values[*index] = new;
+                Ok(())
+            })?;
             let change = format!(
                 "key[{index}] (pos {}) layer {layer} system {system}: 0x{old:08X} -> 0x{new:08X}",
                 8 + index * 4
             );
-            let outcome = kb.write_keymap(layer, system, &values)?;
             kb916_write_report(cli, &device, &change, &outcome)
         }
         Kb916Set::Keymap { file, .. } => {

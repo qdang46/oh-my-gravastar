@@ -367,17 +367,20 @@ fn bind_key_slot(
         value,
         change,
     } = w;
-    let arg = (layer & 3) | ((system & 1) << 2);
-    let mut values = kb.key_values(arg)?;
-    if slot >= values.len() {
-        bail!(
-            "key slot {slot} out of range: keymap has {} entries (arg 0x{arg:02X})",
-            values.len()
-        );
-    }
-    let old = values[slot];
-    values[slot] = value;
-    let outcome = kb.write_keymap(layer, system, &values)?;
+    // `write_keymap_rmw` validates the base read (AGENTS.md §Safety 6) —
+    // a short read is refused rather than zero-padded to 128 slots.
+    let mut old = 0u32;
+    let outcome = kb.write_keymap_rmw(layer, system, |values| {
+        if slot >= values.len() {
+            bail!(
+                "key slot {slot} out of range: keymap has {} entries (value 0x{value:08X})",
+                values.len()
+            );
+        }
+        old = values[slot];
+        values[slot] = value;
+        Ok(())
+    })?;
     kb916_write_report(cli, device, &format!("{change}: 0x{old:08X} -> 0x{value:08X}"), &outcome)
 }
 
@@ -652,16 +655,20 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                 check_keymap_args(*layer, *system)?;
                 let value = macro916::macro_key_value(*macro_type, *loop_count, slot as u8);
                 let arg = (*layer & 3) | ((*system & 1) << 2);
-                let mut values = kb.key_values(arg)?;
-                if *k >= values.len() {
-                    bail!(
-                        "key slot {k} out of range: keymap has {} entries (arg 0x{arg:02X})",
-                        values.len()
-                    );
-                }
-                let old = values[*k];
-                values[*k] = value;
-                let outcome2 = kb.write_keymap(*layer, *system, &values)?;
+                // `write_keymap_rmw` validates the base read (AGENTS.md
+                // §Safety 6) — a short read is refused, not zero-padded.
+                let mut old = 0u32;
+                let outcome2 = kb.write_keymap_rmw(*layer, *system, |values| {
+                    if *k >= values.len() {
+                        bail!(
+                            "key slot {k} out of range: keymap has {} entries (arg 0x{arg:02X})",
+                            values.len()
+                        );
+                    }
+                    old = values[*k];
+                    values[*k] = value;
+                    Ok(())
+                })?;
                 report = format!(
                     "key[{k}] (pos {}) layer {layer} system {system}: 0x{old:08X} -> 0x{value:08X} (macro[{slot}])",
                     8 + k * 4
