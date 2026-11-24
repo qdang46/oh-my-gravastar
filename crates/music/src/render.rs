@@ -618,6 +618,19 @@ pub fn to_interleaved(frame: &[u8; FRAME_BYTES]) -> [u8; FRAME_BYTES] {
     out
 }
 
+/// Inverse of [`to_interleaved`]: interleaved `LED×(R,G,B)` → planar
+/// `[R×126][G×126][B×126]`. The vendor F75 engine emits interleaved
+/// frames; the K1 Pro planar path needs this conversion.
+pub fn to_planar(frame: &[u8; FRAME_BYTES]) -> [u8; FRAME_BYTES] {
+    let mut out = [0u8; FRAME_BYTES];
+    for k in 0..KEY_SLOTS {
+        out[k] = frame[k * 3];
+        out[KEY_SLOTS + k] = frame[k * 3 + 1];
+        out[2 * KEY_SLOTS + k] = frame[k * 3 + 2];
+    }
+    out
+}
+
 /// Render one frame. `t` is seconds since stream start (drives hue drift).
 pub fn render_frame(bands: &Bands, t: f32, params: &FrameParams) -> [u8; FRAME_BYTES] {
     let mut frame = [0u8; FRAME_BYTES];

@@ -12,10 +12,12 @@
 
 pub mod capture;
 pub mod dsp;
+pub mod f75;
 pub mod render;
 
 pub use dsp::{Analyzer, Bands, BeatEvent, BeatKind, SPECTRUM_BINS};
+pub use f75::{F75Key, F75_KEYS, Palette, VendorEngine, VendorLayer};
 pub use render::{
-    render_frame, to_interleaved, BeatViz, FrameParams, KeyPos, PulseMode, PulseViz,
-    SpectrumViz, RENDERER_VERSION,
+    render_frame, to_interleaved, to_planar, BeatViz, FrameParams, KeyPos, PulseMode,
+    PulseViz, SpectrumViz, RENDERER_VERSION,
 };

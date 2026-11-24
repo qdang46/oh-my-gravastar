@@ -4283,6 +4283,18 @@ enum Kb916Light {
         /// (Aula F75 family per raghavt20/aula-f75-macos).
         #[arg(long, default_value = "planar")]
         pixel_order: String,
+        /// Renderer engine: `legacy` (BeatViz/SpectrumViz/PulseViz) or
+        /// `f75` (vendor F75 layer-mixer port: spectrum/wave/pulse/
+        /// ripple/rain/starry layers, palette hues, per-layer levels —
+        /// layout per raghavt20/aula-f75-macos).
+        #[arg(long, default_value = "legacy")]
+        engine: String,
+        /// Palette for `--engine f75`: rainbow|heat|ocean|sunset|neon|mono.
+        #[arg(long, default_value = "sunset")]
+        palette: String,
+        /// Effect speed 0.25-3.0 for `--engine f75` (vendor `speed`).
+        #[arg(long, default_value_t = 1.0)]
+        speed: f32,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

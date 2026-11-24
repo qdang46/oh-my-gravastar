@@ -192,18 +192,27 @@ enum Viz {
     Spectrum(SpectrumViz),
     Beat(BeatViz),
     Pulse(PulseViz),
+    /// Vendor F75 layer-mixer port — `frame` returns **interleaved**
+    /// LED×RGB bytes (see `omg_music::f75`), converted by the caller.
+    F75 {
+        engine: omg_music::VendorEngine,
+        /// Engine emits interleaved; planar output needs `to_planar`.
+        interleaved: bool,
+    },
 }
 
 impl Viz {
-    fn frame(&mut self, bands: &Bands, t: f32) -> [u8; omg_music::render::FRAME_BYTES] {
+    fn frame(&mut self, bands: &Bands, t: f32, dt: f32) -> [u8; omg_music::render::FRAME_BYTES] {
         match self {
             Viz::Spectrum(v) => v.frame(bands, t),
             Viz::Beat(v) => v.frame(bands, t),
             Viz::Pulse(v) => v.frame(bands, t),
+            Viz::F75 { engine, .. } => engine.frame(bands, dt, &[]),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd(
     cli: &Cli,
     source: &str,
@@ -216,6 +225,9 @@ pub fn cmd(
     attack: f32,
     decay: f32,
     pixel_order: &str,
+    engine: &str,
+    palette: &str,
+    speed: f32,
     duration: Option<f64>,
     yes: &Yes,
 ) -> Result<ExitCode> {
@@ -256,11 +268,50 @@ pub fn cmd(
     if !(0.25..=4.0).contains(&attack) || !(0.25..=4.0).contains(&decay) {
         bail!("--attack/--decay must be in 0.25..=4.0, got {attack}/{decay}");
     }
-    if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
-        bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
-    }
     if !matches!(pixel_order, "planar" | "interleaved") {
         bail!("unknown --pixel-order '{pixel_order}' (want planar|interleaved)");
+    }
+    // --effect means different things per engine: legacy names for
+    // `legacy`, a comma-separated vendor layer list for `f75`.
+    let f75_layers: Vec<(omg_music::VendorLayer, Option<f32>)> = if engine == "f75" {
+        if effect == "beat" {
+            // "beat" is the clap default and not a vendor layer name —
+            // treat it as "use the vendor default mix".
+            Vec::new()
+        } else {
+            let mut v = Vec::new();
+            for name in effect.split(',') {
+                let name = name.trim();
+                match omg_music::VendorLayer::parse(name) {
+                    Some(l) => v.push((l, None)),
+                    None => bail!(
+                        "unknown --effect layer '{name}' for --engine f75 \
+                         (want solid|breathing|wave|starry|spectrum|ripple|pulse|rain, comma-separated)"
+                    ),
+                }
+            }
+            v
+        }
+    } else {
+        if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
+            bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
+        }
+        Vec::new()
+    };
+    if !matches!(engine, "legacy" | "f75") {
+        bail!("unknown --engine '{engine}' (want legacy|f75)");
+    }
+    let f75_palette = match palette {
+        "rainbow" => omg_music::Palette::Rainbow,
+        "heat" => omg_music::Palette::Heat,
+        "ocean" => omg_music::Palette::Ocean,
+        "sunset" => omg_music::Palette::Sunset,
+        "neon" => omg_music::Palette::Neon,
+        "mono" => omg_music::Palette::Mono,
+        other => bail!("unknown --palette '{other}' (want rainbow|heat|ocean|sunset|neon|mono)"),
+    };
+    if !(0.25..=3.0).contains(&speed) {
+        bail!("--speed must be in 0.25..=3.0 for --engine f75, got {speed}");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -316,7 +367,20 @@ pub fn cmd(
         decay,
         ..FrameParams::default()
     };
-    let mut viz = match effect {
+    let mut viz = if engine == "f75" {
+        let mut eng = omg_music::VendorEngine::default();
+        eng.palette = f75_palette;
+        eng.speed = speed;
+        eng.brightness = brightness;
+        if !f75_layers.is_empty() {
+            eng.layers = f75_layers;
+        }
+        Viz::F75 {
+            engine: eng,
+            interleaved: pixel_order == "interleaved",
+        }
+    } else {
+        match effect {
         "beat" => {
             let mut v = BeatViz::new(params);
             if !positions.is_empty() {
@@ -338,6 +402,7 @@ pub fn cmd(
                 v.set_positions(&positions.iter().map(|p| p.0).collect::<Vec<_>>());
             }
             Viz::Spectrum(v)
+        }
         }
     };
     let period = Duration::from_secs_f64(1.0 / fps);
@@ -377,9 +442,21 @@ pub fn cmd(
             last_bpm = b.bpm;
             bands = b;
         }
-        let mut frame = viz.frame(&bands, started.elapsed().as_secs_f32());
-        if pixel_order == "interleaved" {
-            frame = omg_music::to_interleaved(&frame);
+        let t = started.elapsed().as_secs_f32();
+        let mut frame = viz.frame(&bands, t, period.as_secs_f32());
+        match &mut viz {
+            // F75 engine already emits interleaved; convert only when the
+            // user asked for planar output.
+            Viz::F75 { interleaved, .. } => {
+                if !*interleaved {
+                    frame = omg_music::to_planar(&frame);
+                }
+            }
+            _ => {
+                if pixel_order == "interleaved" {
+                    frame = omg_music::to_interleaved(&frame);
+                }
+            }
         }
         if std::env::var("OMG_DEBUG_FRAMES").is_ok() && sent % 20 == 0 {
             let mean = frame.iter().map(|&b| b as u32).sum::<u32>() as f32
