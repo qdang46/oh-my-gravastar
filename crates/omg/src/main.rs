@@ -18,6 +18,7 @@ use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
+mod kb916_adv;
 mod kb916_macro;
 mod kb916_light;
 mod profile;
@@ -3784,6 +3785,12 @@ enum Kb916Commands {
         #[command(subcommand)]
         command: Kb916Light,
     },
+    /// SOCD / MT (mod-tap) / TGL advanced keys (cmd 146 read, cmd 18 +
+    /// cmd-3 keymap write — docs/advkeys-schema.md). Writes need `--yes`.
+    Adv {
+        #[command(subcommand)]
+        command: kb916_adv::Kb916Adv,
+    },
     /// The 916_wireLess 2.4 GHz transport is a separate bead — always
     /// "not implemented".
     Wireless,
@@ -4046,6 +4053,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         Kb916Commands::Set { command } => return cmd_kb916_set(cli, command),
         Kb916Commands::Macro { command } => return kb916_macro::run(cli, command),
         Kb916Commands::Light { command } => return kb916_light::cmd(cli, command),
+        Kb916Commands::Adv { command } => return kb916_adv::cmd(cli, command),
         _ => {}
     }
 
@@ -4215,7 +4223,8 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         | Kb916Commands::Wireless
         | Kb916Commands::Set { .. }
         | Kb916Commands::Macro { .. }
-        | Kb916Commands::Light { .. } => unreachable!("handled before the session is opened")
+        | Kb916Commands::Light { .. }
+        | Kb916Commands::Adv { .. } => unreachable!("handled before the session is opened")
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -4230,7 +4239,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
 // not a silent success.
 
 /// Parse one keymap u32 value: `0x` hex, decimal, or `none`/`empty`/`-`.
-fn parse_kb916_key_value(s: &str) -> Result<u32> {
+pub(crate) fn parse_kb916_key_value(s: &str) -> Result<u32> {
     let t = s.trim();
     if matches!(t, "none" | "empty" | "-") {
         return Ok(0);

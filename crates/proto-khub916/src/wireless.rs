@@ -635,6 +635,51 @@ impl Khub916Wireless {
         })
     }
 
+    /// Write the keymap through the vendor `sendKeyConfiguration` path
+    /// used by the adv-key setters: the generic chunked cmd-1 write
+    /// (`[1,total,index,marker,14 data]` per packet, last marker `0`,
+    /// `5A A5` over the last chunk's first two data bytes). `values` is
+    /// zero-padded to the 512-byte/128-slot field like `formatKeyPayload`.
+    ///
+    /// Distinct from [`Self::write_keymap`] (the `setKeyboardKeys` chunk
+    /// header); the adv-key flow in the vendor JS always uses this one.
+    /// Verify: cmd-65 read-back must equal `values` exactly.
+    /// **Code-verified only** — no wireless hardware was ever attached.
+    pub fn write_key_configuration(
+        &mut self,
+        layer: u8,
+        system: u8,
+        values: &[u32],
+    ) -> Result<WriteOutcome> {
+        let _ = (layer, system); // the zt sendKeyConfiguration header carries no layer/system
+        if values.is_empty() || values.len() > KEYMAP_ENTRIES {
+            bail!(
+                "916_wireLess key configuration write needs 1..={KEYMAP_ENTRIES} values, got {}",
+                values.len()
+            );
+        }
+        let mut payload = vec![0u8; KEYMAP_ENTRIES * 4];
+        for (i, v) in values.iter().enumerate() {
+            payload[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        self.with_retries(|s| {
+            s.write_chunked(WL_CMD_KEYMAP_WRITE, &payload, 0, |body| {
+                // Last chunk: vendor writes 5A A5 at body bytes 4/5
+                // (first two data bytes).
+                body[4] = 0x5A;
+                body[5] = 0xA5;
+            })?;
+            let back = s.key_values(0, 0)?;
+            if back.len() != values.len() || back.iter().zip(values).any(|(a, b)| a != b) {
+                bail!("916_wireLess key configuration write not verified: read-back differs");
+            }
+            Ok(WriteOutcome {
+                command: WL_CMD_KEYMAP_WRITE,
+                verified: true,
+            })
+        })
+    }
+
     /// Write custom light colours (cmd 2): 378 plane bytes padded to 512 B,
     /// 37 chunks; last-chunk marker is the constant `2` (the JS computes
     /// `%14` on the padded chunk). Verify: cmd 66 read-back planes match.

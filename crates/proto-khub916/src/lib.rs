@@ -23,7 +23,8 @@
 //! - reads: device info (130), keymap (131), profile (132), macro region
 //!   (133), custom light colours (134), power (135), light colour data (138)
 //! - writes: keymap (3), profile/config (4), custom light colours (6),
-//!   macro region (5 — codec in [`macro916`])
+//!   macro region (5 — codec in [`macro916`]), SOCD/MT/TGL history (18 —
+//!   codec in [`advkey`])
 //!
 //! Write transport detail (vendor-verified): the JS driver only ever calls
 //! `sendFeatureReport` for these commands and **never reads a reply**, so
@@ -48,7 +49,6 @@
 //! **Never implemented** (protocol blacklist / out of scope):
 //!
 //! - keyboard reset 17 (wired) and wireless cmd 6 factory reset
-//! - SOCD/MT/TGL history write 18 and config read 146 (wired)
 //! - GIF light frames 8 (keyboard backlight, unrelated to the screen)
 //! - no generic "send arbitrary command" API exists; [`Khub916::transact`]
 //!   is private so unknown opcodes cannot be emitted, and the wireless
@@ -66,6 +66,7 @@ use omg_hid::devices::{KHUB916_WIRED, KHUB916_WIRED_USAGE_PAGE_MIN};
 use omg_hid::Link;
 use serde::Serialize;
 
+pub mod advkey;
 pub mod macro916;
 pub mod light;
 pub mod wireless;

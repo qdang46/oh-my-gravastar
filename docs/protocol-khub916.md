@@ -354,14 +354,26 @@ keyUsage]` (duration = 24-bit big-endian-ish `(A&15)<<16|b<<8|I` where `A` is
 step byte0). Action map `{0:0,1:0,8:1,9:1,2:0,10:1}`; modifier keys
 Shift/Ctrl/Meta/Alt get action 1 or 9, mouse buttons 2 or 10.
 
-### SOCD / MT / TGL (cmd 146/18) [code-verified]
+### SOCD / MT / TGL (cmd 146/18) [code-verified; reads + keymap write live-verified on K1 Pro; cmd 18 did not persist on K1 Pro — see docs/advkeys-schema.md]
 
-512 B history blob = SOCD 200 B + MT 200 B + TGL 112 B. Each 4/8-B slot holds
-packed key values; free slot found by scanning for 4 consecutive zero bytes.
-Base address encoders: SOCD `0x20000000 + (slot+1)*0x10000`-ish
-(`calculateBaseAddress`: `536870912=0x20000000` base, `+（n-1)*65536`),
-MT `553648128=0x21000000`, TGL `570425344=0x22000000` (4-B slots).
-Reserved key-type tag bytes 32/33/34 mark SOCD/MT/TGL keys in the keymap.
+512 B history blob = SOCD 200 B + MT 200 B + TGL 112 B (regions in blob
+offsets 0..200 / 200..400 / 400..512). Slot sizes: SOCD 8 B, MT 8 B,
+TGL 4 B — each holds the keys' original u32 values serialized big-endian
+(2–3 u32s for SOCD/MT, 1 for TGL). Free slot = first run of 4 consecutive
+zero bytes in the region (`processHistory` fills it, else appends);
+vendor clears blob bytes 510/511 (TGL footer) on every write.
+
+Keymap side: the adv-key set path writes the keymap through
+`sendKeyConfiguration` = **cmd 3** with header `[3,0,0,1,0,0,2]` (arg 0,
+tags 0/2 — distinct from `write_keymap`'s 248/1 header), then the history
+blob via cmd 18 (tags 0/2). Keymap binding u32 values encode
+`kind-tag(0x20/0x21/0x22) | slot << 16 | param`, where slot is counted
+over non-zero groups and bases are SOCD `0x20000000`, MT `0x21000000`,
+TGL `0x22000000` (plus `(nonzero_slots-1)*0x10000`, MT adds `time` in
+the low 16 bits, SOCD adds direction/`+256` for key B).
+
+Full slot/binding layout, write-planner semantics and the CLI mapping
+live in `docs/advkeys-schema.md`; codec: `crates/proto-khub916/src/advkey.rs`.
 
 ## 7. Command map — wireless 916_wireLess (`zt`) [code-verified only]
 
