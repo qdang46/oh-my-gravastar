@@ -2419,3 +2419,132 @@ input[type='color'] {
 .diag-key--down .diag-key-idx {
   color: var(--accent);
 }
+
+/* ── Configure-key behavior editor (bead vzx) ──────────────────────── */
+
+.beh-card .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.beh-head .hint {
+  margin: 0;
+}
+
+.beh-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.beh-mode {
+  align-self: flex-start;
+}
+
+.beh-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.beh-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.beh-choice:hover {
+  background: var(--surface);
+}
+
+.beh-choice--on {
+  border-color: var(--accent);
+  background: rgba(198, 245, 78, 0.06);
+}
+
+.beh-choice input[type='radio'] {
+  margin-top: 3px;
+}
+
+.beh-choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.beh-choice-label {
+  font-weight: 600;
+}
+
+.beh-choice-meta {
+  font-size: 12px;
+}
+
+.beh-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.beh-form .hint {
+  margin: 0;
+}
+
+.beh-select {
+  min-width: 180px;
+}
+
+.beh-raw {
+  width: 180px;
+  font-family: var(--font-mono);
+}
+
+.beh-raw.beh-invalid {
+  border-color: var(--danger);
+}
+
+.beh-apply {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.beh-apply .hint {
+  margin: 0;
+}
+
+.beh-apply-btn {
+  align-self: flex-start;
+}
+
+.beh-unavailable summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.beh-unavailable-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.beh-unavailable-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.beh-unavailable-name {
+  font-weight: 600;
+}

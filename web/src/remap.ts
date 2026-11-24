@@ -40,6 +40,7 @@ import {
   type PoolGroup,
 } from './keypool.ts';
 import { StagedEdits } from './remap-edit.ts';
+import { BehaviorEditor } from './behavior-editor.ts';
 import {
   buildKeymapDiff,
   diffSummary,
@@ -83,6 +84,10 @@ let systemMode = false;
 let busy = false;
 /** Whether the "Review changes" diff panel is expanded (survives rebuilds). */
 let diffOpen = false;
+/** Whether the per-key "Configure key" behavior panel is open (bead vzx). */
+let configureOpen = false;
+/** Singleton editor — its form/adv-cache state survives page rebuilds. */
+const behaviorEditor = new BehaviorEditor();
 
 let keysView: KeyboardView | null = null;
 let keysUnsub: (() => void) | null = null;
@@ -683,7 +688,16 @@ export function renderKeysPage(root: HTMLElement): void {
   resetKeyBtn.addEventListener('click', () => {
     stageIndices(selSet, null);
   });
-  right.append(unassignBtn, resetKeyBtn, applyOneBtn);
+  const configureBtn = el('button', 'btn remap-configure', 'Configure key…');
+  configureBtn.type = 'button';
+  configureBtn.title =
+    'Per-key behavior flow — easy presets (tap/hold, opposing keys, toggle) ' +
+    'and advanced parameters, gated by what this keyboard supports (bead vzx)';
+  configureBtn.addEventListener('click', () => {
+    configureOpen = !configureOpen;
+    sync();
+  });
+  right.append(unassignBtn, resetKeyBtn, configureBtn, applyOneBtn);
   poolToolbar.append(right);
   pbody.append(poolToolbar);
 
@@ -714,6 +728,14 @@ export function renderKeysPage(root: HTMLElement): void {
   const grid = el('div', 'pool-grid');
   pbody.append(grid);
 
+  // ── Configure-key behavior card (bead vzx) ─────────────────────────
+  // Per-key Easy/Advanced flow (./behavior-editor.ts). Hidden until the
+  // user opens it with exactly one key selected; content is rebuilt by
+  // the editor on every sync (its widget state lives in the singleton).
+  const { card: behC, body: behBody } = card('Configure key');
+  behC.classList.add('beh-card');
+  behC.hidden = !(configureOpen && selSet.size === 1 && selected !== null);
+
   // ── Review-changes diff card (bead xbp) ────────────────────────────
   // Full-system preview of every staged edit across all key sets; content
   // is rebuilt from live StagedEdits state inside syncPage.
@@ -721,7 +743,7 @@ export function renderKeysPage(root: HTMLElement): void {
   dc.classList.add('keydiff-card');
   dc.hidden = !diffOpen;
 
-  root.append(kc, dc, pc);
+  root.append(kc, behC, dc, pc);
 
   // ── Wiring that needs the assembled DOM ────────────────────────────
 
@@ -852,6 +874,28 @@ export function renderKeysPage(root: HTMLElement): void {
     }
     unassignBtn.disabled = busy || selSet.size === 0;
     resetKeyBtn.disabled = busy || selSet.size === 0;
+    configureBtn.disabled = busy || selSet.size !== 1 || selected === null;
+    configureBtn.textContent = configureOpen ? 'Close configure' : 'Configure key…';
+
+    // Configure-key panel (bead vzx): rebuilt every sync; the editor
+    // keeps its own widget state across these rebuilds.
+    behC.hidden = !(configureOpen && selSet.size === 1 && selected !== null);
+    if (!behC.hidden && selected !== null) {
+      const selIdx = selected;
+      const bArg = currentArg();
+      behaviorEditor.render(behBody, {
+        arg: bArg,
+        index: selIdx,
+        keyName: blockByIndex.get(selIdx)?.name || '',
+        committed: committedValue(bArg, selIdx),
+        effective: effectiveValue(bArg, selIdx),
+        stagePlain: (v) => stageIndices([selIdx], v),
+        hasStaged: (i) => edits.pendingView(0).has(i),
+        stagedCount: () => edits.pendingCount(0),
+        labelFor: (i) => labelOfValue(effectiveValue(0, i)) || `Key ${i}`,
+        onDeviceWrite: () => edits.clearHistory(),
+      });
+    }
 
     // Pool tabs + items.
     tabs.querySelectorAll('.pool-tab').forEach((b, i) => {
