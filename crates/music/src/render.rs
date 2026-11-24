@@ -409,7 +409,10 @@ impl BeatViz {
             add[1] += wash * 0.55;
             add[2] += wash * 0.25;
             for c in 0..3 {
-                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate;
+                // Beat thump: the whole field lifts ~60% for ~200 ms on
+                // each detected beat — the "keyboard punches" layer.
+                let thump = 1.0 + bands.beat_pulse * 0.6;
+                let base_v = base[c * KEY_SLOTS + k] as f32 / 255.0 * gate * thump;
                 let v = (base_v + add[c]).clamp(0.0, 1.0);
                 out[c * KEY_SLOTS + k] = (v * 255.0).round() as u8;
             }
