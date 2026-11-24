@@ -17,7 +17,8 @@
  * window.confirm/prompt anywhere in the UI.
  */
 
-import { app, emit, ensureKeymap, setStatus, subscribe } from './state.ts';
+import { app, emit, ensureKeymap, keymapBase, setStatus, subscribe } from './state.ts';
+import { isOpaqueKeymapValue } from './keymap-guard.ts';
 import {
   MACRO_KEY_TABLE,
   MACRO_REGION_BYTES,
@@ -47,6 +48,12 @@ import {
   type MacroIssue,
 } from './macro-studio.ts';
 import { confirmDialog, promptDialog } from './modal.ts';
+import {
+  createEditBar,
+  syncEditBar,
+  type EditBarState,
+  type EditBarView,
+} from './edit-model.ts';
 
 // ── DOM helpers (same style as pages.ts) ────────────────────────────────
 
@@ -120,7 +127,6 @@ export class MacroPage {
   /** Index into the parsed entry list; `entries.length` = append-new. */
   private selected: number | null = null;
   private draft: Draft | null = null;
-  private dirty = false;
   private busy = false;
   /** Step highlighted via the timeline / row click (null = none). */
   private selectedStep: number | null = null;
@@ -131,6 +137,8 @@ export class MacroPage {
   private tlWrap: HTMLElement | null = null;
   private issuesWrap: HTMLElement | null = null;
   private stepsWrap: HTMLElement | null = null;
+  /** Shared edit bar (edit-model.ts), rebuilt by renderEditor(). */
+  private editBar: EditBarView | null = null;
 
   constructor(root: HTMLElement) {
     root.replaceChildren();
@@ -168,6 +176,7 @@ export class MacroPage {
 
   private render(): void {
     this.usageWrap = this.tlWrap = this.issuesWrap = this.stepsWrap = null;
+    this.editBar = null;
     this.el.replaceChildren();
     if (!app.connected || !app.snapshot) {
       const c = el('section', 'card');
@@ -279,8 +288,7 @@ export class MacroPage {
     nameInput.addEventListener('input', () => {
       if (this.draft) {
         this.draft.name = nameInput.value;
-        this.dirty = true;
-        this.refreshLight(); // name length affects the storage estimate
+        this.refreshLight(); // name length affects the storage estimate + edit bar
       }
     });
     body.append(field('Name', nameInput));
@@ -326,7 +334,6 @@ export class MacroPage {
     addStep.addEventListener('click', () => {
       if (!this.draft) return;
       this.draft.steps.push({ action: 0, delayMs: 0, usage: 4, kind: 'key' });
-      this.dirty = true;
       this.selectedStep = this.draft.steps.length - 1;
       this.refreshEditor();
     });
@@ -352,7 +359,6 @@ export class MacroPage {
           this.draft.steps = parsed.steps;
           if (parsed.name !== null) this.draft.name = parsed.name;
           nameInput.value = this.draft.name;
-          this.dirty = true;
           this.selectedStep = null;
           this.refreshEditor();
           setStatus(`Imported ${parsed.steps.length} step(s) — press Save to send them to the keyboard.`);
@@ -363,28 +369,12 @@ export class MacroPage {
     });
     body.append(importBtn);
 
-    // Save row.
-    const saveRow = el('div', 'macro-save-row');
-    const save = btn(this.dirty ? 'Save macro to keyboard' : 'Save macro (no changes)', 'Saves all macros to the keyboard');
-    save.classList.add('primary');
-    save.disabled = this.busy || this.draft.steps.length === 0;
-    save.addEventListener('click', () => void this.saveMacro());
-    const discard = btn('Discard edits');
-    discard.disabled = this.busy || !this.dirty;
-    discard.addEventListener('click', () => {
-      if (this.selected !== null && this.selected < entries.length) {
-        this.select(this.selected); // reload from device data
-      } else {
-        this.selected = null;
-        this.draft = null;
-        this.dirty = false;
-        this.selectedStep = null;
-        this.stepFilter = '';
-        this.render();
-      }
-    });
-    saveRow.append(save, discard);
-    body.append(saveRow);
+    // Shared edit bar (edit-model.ts): "N unsaved changes" badge +
+    // Discard/Apply — the same Edit → Preview → Apply → Verify flow as
+    // the Keys and Lighting pages. Apply stays disabled for an empty
+    // draft (a macro needs at least one step).
+    this.editBar = createEditBar(this.barState());
+    body.append(this.editBar.root);
 
     c.append(body);
     this.el.append(c);
@@ -430,7 +420,6 @@ export class MacroPage {
       action.disabled = this.busy;
       action.addEventListener('change', () => {
         step.action = Number(action.value);
-        this.dirty = true;
         this.refreshLight();
       });
       const tdAction = el('td');
@@ -468,7 +457,6 @@ export class MacroPage {
           }
         }
         this.syncKindSelect(kindSel, step);
-        this.dirty = true;
         this.refreshLight();
       });
       const tdKey = el('td');
@@ -485,7 +473,7 @@ export class MacroPage {
           step.kind = v;
         }
         // 'other' keeps the raw numeric nibble already on the step.
-        this.dirty = true;
+
         this.refreshLight();
       });
       const tdKind = el('td');
@@ -504,7 +492,6 @@ export class MacroPage {
         const n = Number(delay.value);
         if (Number.isInteger(n) && n >= 0 && n <= MAX_STEP_DURATION) {
           step.delayMs = n;
-          this.dirty = true;
           this.refreshLight();
         } else {
           delay.value = String(step.delayMs);
@@ -523,7 +510,6 @@ export class MacroPage {
         draft.steps.splice(i - 1, 0, draft.steps.splice(i, 1)[0]!);
         if (this.selectedStep === i) this.selectedStep = i - 1;
         else if (this.selectedStep !== null && this.selectedStep > i) this.selectedStep -= 1;
-        this.dirty = true;
         this.refreshEditor();
       });
       const downBtn = btn('↓', 'Move step down');
@@ -532,7 +518,6 @@ export class MacroPage {
         draft.steps.splice(i + 1, 0, draft.steps.splice(i, 1)[0]!);
         if (this.selectedStep === i) this.selectedStep = i + 1;
         else if (this.selectedStep !== null && this.selectedStep > i) this.selectedStep += 1;
-        this.dirty = true;
         this.refreshEditor();
       });
       const del = btn('✕', 'Remove step');
@@ -541,7 +526,6 @@ export class MacroPage {
         draft.steps.splice(i, 1);
         if (this.selectedStep === i) this.selectedStep = null;
         else if (this.selectedStep !== null && this.selectedStep > i) this.selectedStep -= 1;
-        this.dirty = true;
         this.refreshEditor();
       });
       actions.append(up, downBtn, del);
@@ -567,6 +551,61 @@ export class MacroPage {
     if (this.usageWrap) this.renderUsage(this.usageWrap);
     if (this.tlWrap) this.renderTimeline(this.tlWrap);
     if (this.issuesWrap) this.renderIssues(this.issuesWrap);
+    // Keep the shared edit bar's badge/buttons in sync with draft edits
+    // that don't trigger a full re-render (name typing, step tweaks).
+    if (this.editBar) syncEditBar(this.editBar, this.barState());
+  }
+
+  /**
+   * Number of unsaved changes in the draft — the shared edit model's
+   * dirty count (edit-model.ts). Compared against the device-read entry:
+   * name and steps each count once; a brand-new macro counts as one
+   * change once it has a name or any steps.
+   */
+  private pendingChanges(): number {
+    const draft = this.draft;
+    if (!draft || this.selected === null) return 0;
+    const entries = this.entries();
+    if (this.selected >= entries.length) {
+      return draft.name !== '' || draft.steps.length > 0 ? 1 : 0;
+    }
+    const e = entries[this.selected];
+    if (!e) return 0;
+    let n = 0;
+    if (draft.name !== e.name) n++;
+    if (JSON.stringify(draft.steps) !== JSON.stringify(e.steps)) n++;
+    return n;
+  }
+
+  /** Current state for the shared edit bar (edit-model.ts). */
+  private barState(): EditBarState {
+    return {
+      pending: this.pendingChanges(),
+      busy: this.busy,
+      applyLabel: (n, b) =>
+        b ? 'Saving…' : n > 0 ? 'Save macro to keyboard' : 'Save macro',
+      applyTitle: 'Saves all macros to the keyboard',
+      // A macro needs at least one step — same gate the old Save button had.
+      applyDisabled: this.draft !== null && this.draft.steps.length === 0,
+      discardLabel: 'Discard edits',
+      discardTitle: 'Drop unsaved edits and reload the macro from the keyboard',
+      onApply: () => void this.saveMacro(),
+      onDiscard: () => this.discardDraft(),
+    };
+  }
+
+  /** Discard = reload the draft from device data (or close a new one). */
+  private discardDraft(): void {
+    const entries = this.entries();
+    if (this.selected !== null && this.selected < entries.length) {
+      this.select(this.selected);
+    } else {
+      this.selected = null;
+      this.draft = null;
+      this.selectedStep = null;
+      this.stepFilter = '';
+      this.render();
+    }
   }
 
   /** Storage line: bytes for this macro + projected region total. */
@@ -852,7 +891,6 @@ export class MacroPage {
       name: e.name,
       steps: e.steps.map((s) => ({ ...s })),
     };
-    this.dirty = false;
     this.selectedStep = null;
     this.stepFilter = '';
     this.render();
@@ -862,7 +900,6 @@ export class MacroPage {
     const n = this.entries().length;
     this.selected = n;
     this.draft = { name: `macro${n}`, steps: [] };
-    this.dirty = true;
     this.selectedStep = null;
     this.stepFilter = '';
     this.render();
@@ -888,16 +925,35 @@ export class MacroPage {
       name,
       steps: e.steps.map((s) => ({ ...s })),
     };
-    this.dirty = true;
     this.selectedStep = null;
     this.stepFilter = '';
     this.render();
     setStatus(`Duplicated "${e.name || '(unnamed)'}" as a new macro — edit it, then Save to send it to the keyboard.`);
   }
 
+  /**
+   * §Safety 6 — the macro save/delete paths rewrite the WHOLE region.
+   * An empty cmd-133 read means the read did not complete; rebuilding
+   * from it would parse as "no macros" and wipe the stored list, so the
+   * write must abort. (A non-empty but truncated read is a known
+   * residual gap — cmd 133 has no fixed expected length to check.)
+   */
+  private macroBaseOk(): boolean {
+    const n = app.snapshot?.macro.length ?? 0;
+    if (n === 0) {
+      setStatus(
+        'The keyboard returned an empty macro list — the read did not complete, so nothing was sent. Press Refresh and try again.',
+        true,
+      );
+      return false;
+    }
+    return true;
+  }
+
   /** Rebuild the full entry list with the draft applied, then write. */
   private async saveMacro(): Promise<void> {
     if (this.busy || !app.connected || !app.snapshot || this.selected === null || !this.draft) return;
+    if (!this.macroBaseOk()) return;
     const draft = this.draft;
     if (draft.steps.length === 0) {
       setStatus('A macro needs at least one step. To remove a macro, use Delete instead.', true);
@@ -950,7 +1006,6 @@ export class MacroPage {
       await app.connected.session.writeMacroRegion(region);
       // Verified — store the padded region we sent (read-back matched).
       app.snapshot.macro = padMacroRegion(region);
-      this.dirty = false;
       this.selected = slot;
       setStatus(`${desc} — saved and checked on the keyboard.`);
       emit();
@@ -971,6 +1026,7 @@ export class MacroPage {
 
   private async deleteMacro(i: number): Promise<void> {
     if (this.busy || !app.connected || !app.snapshot) return;
+    if (!this.macroBaseOk()) return;
     const entries = this.entries();
     const e = entries[i];
     if (!e) return;
@@ -1005,7 +1061,6 @@ export class MacroPage {
       if (this.selected === i) {
         this.selected = null;
         this.draft = null;
-        this.dirty = false;
         this.selectedStep = null;
         this.stepFilter = '';
       } else if (this.selected !== null && this.selected > i) {
@@ -1077,9 +1132,25 @@ export class MacroPage {
     this.busy = true;
     this.render();
     try {
-      const values = await app.connected.session.keyValues(arg);
+      // §Safety 6 — the bind rewrites the WHOLE keymap table; the base
+      // must be a complete, trusted read. `keymapBase` aborts on an
+      // empty/short/corrupt read instead of zero-padding the tail.
+      // Drop the decode cache first so the base is a fresh device read
+      // (the old code used a fresh `keyValues` call too).
+      app.snapshot.keymaps.delete(arg);
+      const values = await keymapBase(arg);
       if (slot >= values.length) {
         throw new Error(`key ${slot} is out of range — the keyboard only has ${values.length} key positions`);
+      }
+      // §Safety 7 — an opaque (unknown-tag) slot is preserved
+      // byte-identical: it is never rendered as editable, so binding or
+      // clearing it is refused here even if the index was typed by hand.
+      const before = values[slot] ?? 0;
+      if (isOpaqueKeymapValue(before)) {
+        throw new Error(
+          `key ${slot} holds a value this app does not recognize ` +
+            `(0x${before.toString(16).padStart(8, '0').toUpperCase()}) — refusing to overwrite it`,
+        );
       }
       const nextVals = values.slice();
       while (nextVals.length < KEYMAP_ENTRIES) nextVals.push(0);

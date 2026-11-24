@@ -52,6 +52,7 @@ import {
 } from './proto/light.ts';
 import type { LightColor } from './proto/khub916.ts';
 import { confirmDialog } from './modal.ts';
+import { createEditBar, syncEditBar, type EditBarView } from './edit-model.ts';
 import { parseSceneConfig, renderScenesSection } from './lighting-scenes.ts';
 import {
   SnapshotStore,
@@ -307,7 +308,6 @@ class LightingView {
   private colorModel: number = COLOR_MODEL.MIXING;
   private effectColor: Rgb = { r: 255, g: 255, b: 255 };
   private customColors: Rgb[] = [];
-  private dirty = false;
   private applying = false;
 
   // Widgets.
@@ -328,7 +328,7 @@ class LightingView {
   private slotGrid!: HTMLElement;
   private selectedSlot: number | null = null;
   private jsonPre!: HTMLElement;
-  private applyBtn!: HTMLButtonElement;
+  private editBar!: EditBarView;
   private stepLog!: HTMLElement;
   private liveLine!: HTMLElement;
 
@@ -596,19 +596,22 @@ class LightingView {
     jsonDetails.append(jsonBody);
     this.root.append(jsonDetails);
 
-    // One save bar — always visible, bottom of the page.
+    // One save bar — always visible, bottom of the page. Shared edit
+    // model (edit-model.ts): "N unsaved changes" badge + Discard/Apply,
+    // same as the Keys and Macro pages.
     const bar = el('div', 'light-savebar');
     const btnRow = el('div', 'light-row light-savebar-row');
-    this.applyBtn = el('button', 'apply-btn light-save', 'Save lighting');
-    this.applyBtn.type = 'button';
-    this.applyBtn.addEventListener('click', () => void this.confirmAndApply());
-    const resetBtn = el('button', 'btn', 'Undo changes');
-    resetBtn.type = 'button';
-    resetBtn.addEventListener('click', () => {
-      this.dirty = false;
-      this.syncLive(true);
+    this.editBar = createEditBar({
+      pending: 0,
+      busy: this.applying,
+      applyLabel: 'Save lighting',
+      applyTitle: 'Write the lighting draft to the keyboard (each step checked on read-back)',
+      discardLabel: 'Discard changes',
+      discardTitle: 'Put the saved lighting settings back into the editor',
+      onApply: () => this.confirmAndApply(),
+      onDiscard: () => this.syncLive(true),
     });
-    btnRow.append(this.applyBtn, resetBtn);
+    btnRow.append(this.editBar.root);
     bar.append(btnRow);
     this.stepLog = el('div', 'step-log');
     bar.append(this.stepLog);
@@ -667,7 +670,9 @@ class LightingView {
         'On your keyboard now: could not read the current effect.';
     }
 
-    if ((!this.dirty || force) && !this.applying) {
+    // Reseed the draft from the device whenever it has no pending
+    // changes (or on force) — pendingCount() is the shared dirty check.
+    if ((this.pendingCount() === 0 || force) && !this.applying) {
       this.seedFromSnapshot(snap);
     }
     this.updateControls();
@@ -687,12 +692,55 @@ class LightingView {
       this.customColors = Array.from({ length: CUSTOM_LIGHT_SLOTS }, () => ({ r: 0, g: 0, b: 0 }));
     }
     this.selectedSlot = null;
-    this.dirty = false;
+    this.updateJson();
+    this.syncBar();
   }
 
+  /**
+   * Number of pending (unsaved) lighting changes — the shared edit
+   * model's dirty count (edit-model.ts). Compares the draft against the
+   * device-read state the same way `resolved()` decides what to write:
+   * mode/speed/brightness/colour-model diffs plus the conditional
+   * group-colour and per-key colour writes.
+   */
+  private pendingCount(): number {
+    const snap = app.snapshot;
+    if (!snap) return 0;
+    const st = decodeLightState(snap.profile.raw);
+    const info = this.modeInfo();
+    const r = this.resolved();
+    let n = 0;
+    if (st) {
+      if (this.mode !== st.mode) n++;
+      if (this.speed !== st.speed) n++;
+      if (this.brightness !== st.brightness) n++;
+      const cm = this.colorModel || info?.defaultColorModel || st.colorModel;
+      if (cm !== st.colorModel) n++;
+    } else if (this.mode !== 0 || this.speed !== 0 || this.brightness !== 0) {
+      n++;
+    }
+    if (r.groupColor) n++;
+    if (r.customColors) n++;
+    return n;
+  }
+
+  /** Push the current draft state into the shared edit bar. */
+  private syncBar(): void {
+    if (!this.editBar) return;
+    syncEditBar(this.editBar, {
+      pending: this.pendingCount(),
+      busy: this.applying,
+      applyLabel: 'Save lighting',
+      applyTitle: 'Write the lighting draft to the keyboard (each step checked on read-back)',
+      discardLabel: 'Discard changes',
+      discardTitle: 'Put the saved lighting settings back into the editor',
+    });
+  }
+
+  /** Local draft edit — refresh the JSON view and the edit bar. */
   private markDirty(): void {
-    this.dirty = true;
     this.updateJson();
+    this.syncBar();
   }
 
   // ── Controls ───────────────────────────────────────────────────────
@@ -753,6 +801,7 @@ class LightingView {
     this.syncPickerTarget();
     this.renderSlotGrid();
     this.renderKeyboard();
+    this.syncBar();
   }
 
   private pickerAppliesToEffect(): boolean {
@@ -963,7 +1012,8 @@ class LightingView {
     const c = app.connected;
     if (!c) return;
     this.applying = true;
-    this.applyBtn.disabled = true;
+    this.editBar.apply.disabled = true;
+    this.syncBar();
     this.stepLog.replaceChildren();
     const log = (text: string, cls = ''): void => {
       this.stepLog.append(el('div', `step-line ${cls}`, text));
@@ -1100,14 +1150,13 @@ class LightingView {
         );
       } else {
         setStatus('Lighting saved to the keyboard.');
-        this.dirty = false;
       }
       await refresh();
     } catch (e) {
       setStatus(`Saving failed: ${msg(e)}`, true);
     } finally {
       this.applying = false;
-      this.applyBtn.disabled = false;
+      this.syncBar();
       this.updateJson();
     }
   }
@@ -1136,9 +1185,11 @@ class LightingView {
     if (cfg.keys) {
       this.customColors = cfg.keys.colors.map((h) => parseColor(h));
     }
-    this.dirty = true;
+    // pendingCount() derives dirtiness — a scene identical to the
+    // device state correctly shows as clean.
     this.updateControls();
     this.updateJson();
+    this.syncBar();
   }
 }
 

@@ -39,7 +39,9 @@ import {
   MT_TIME_MAX_MS,
   SOCD_DIRECTION_LABELS,
   behaviorCatalog,
+  behaviorCard,
   behaviorValueLabel,
+  splitBehaviorChoices,
   currentBehaviorSummary,
   describeAdvDraft,
   mtUnitsFromMs,
@@ -300,44 +302,82 @@ export class BehaviorEditor {
 
   // ── Behavior picker ─────────────────────────────────────────────────
 
+  /**
+   * One behavior option as an action-first card: plain-language title +
+   * subtitle (BEHAVIOR_CARDS), capability reason/caveat meta and the
+   * same disabled gating as before — nothing about availability changed,
+   * only the presentation (bead sl3).
+   */
+  private choiceRow(
+    opt: BehaviorOption,
+    arg0: boolean,
+    host: HTMLElement,
+    ctx: ConfigureContext,
+  ): HTMLElement {
+    const needsArg0 = opt.group === 'adv';
+    const disabled = !opt.available || (needsArg0 && !arg0) || this.busy;
+    const reason = !opt.available
+      ? opt.reason
+      : needsArg0 && !arg0
+        ? 'advanced functions only exist on User key set 1'
+        : undefined;
+    const card = behaviorCard(opt.id);
+    const row = this.el(
+      'label',
+      `beh-choice beh-card-opt${this.choice === opt.id ? ' beh-choice--on' : ''}`,
+    );
+    const radio = this.el('input') as HTMLInputElement;
+    radio.type = 'radio';
+    radio.name = 'beh-choice';
+    radio.checked = this.choice === opt.id;
+    radio.disabled = disabled;
+    radio.addEventListener('change', () => {
+      if (radio.checked) {
+        this.choice = opt.id;
+        this.prefill(ctx);
+        this.render(host, ctx);
+      }
+    });
+    const text = this.el('span', 'beh-choice-text');
+    text.append(this.el('span', 'beh-choice-label', card?.title ?? opt.label));
+    if (card?.subtitle) {
+      text.append(this.el('span', 'hint beh-choice-sub', card.subtitle));
+    }
+    const meta: string[] = [];
+    if (opt.write === 'staged') meta.push('staged — applied on Save');
+    if (opt.write === 'immediate') meta.push('writes immediately on Apply');
+    if (opt.caveat) meta.push(opt.caveat);
+    if (reason) meta.push(reason);
+    if (meta.length) text.append(this.el('span', 'hint beh-choice-meta', meta.join(' · ')));
+    row.append(radio, text);
+    return row;
+  }
+
   private renderChoices(host: HTMLElement, ctx: ConfigureContext): void {
     const catalog = this.catalog();
     const usable = catalog.filter((o) => o.group !== 'unavailable');
     // Adv options are additionally gated to arg 0 (bindings live there).
     const arg0 = ctx.arg === 0;
     const list = this.el('div', 'beh-choices');
-    for (const opt of usable) {
-      const needsArg0 = opt.group === 'adv';
-      const disabled = !opt.available || (needsArg0 && !arg0) || this.busy;
-      const reason = !opt.available
-        ? opt.reason
-        : needsArg0 && !arg0
-          ? 'advanced functions only exist on User key set 1'
-          : undefined;
-      const row = this.el('label', `beh-choice${this.choice === opt.id ? ' beh-choice--on' : ''}`);
-      const radio = this.el('input') as HTMLInputElement;
-      radio.type = 'radio';
-      radio.name = 'beh-choice';
-      radio.checked = this.choice === opt.id;
-      radio.disabled = disabled;
-      radio.addEventListener('change', () => {
-        if (radio.checked) {
-          this.choice = opt.id;
-          this.prefill(ctx);
-          this.render(host, ctx);
-        }
-      });
-      const text = this.el('span', 'beh-choice-text');
-      text.append(this.el('span', 'beh-choice-label', opt.label));
-      const meta: string[] = [];
-      if (opt.write === 'staged') meta.push('staged — applied on Save');
-      if (opt.write === 'immediate') meta.push('writes immediately on Apply');
-      if (opt.caveat) meta.push(opt.caveat);
-      if (reason) meta.push(reason);
-      if (meta.length) text.append(this.el('span', 'hint beh-choice-meta', meta.join(' · ')));
-      row.append(radio, text);
-      list.append(row);
+    if (this.mode === 'easy') {
+      // Progressive disclosure (bead sl3): everyday actions are cards;
+      // jargon options (SOCD) sit behind "More customization". The
+      // catalog order inside each tier is unchanged.
+      const { primary, advanced } = splitBehaviorChoices(catalog);
+      for (const opt of primary) list.append(this.choiceRow(opt, arg0, host, ctx));
+      host.append(list);
+      if (advanced.length > 0) {
+        const det = this.el('details', 'beh-more');
+        det.append(this.el('summary', '', 'More customization'));
+        const inner = this.el('div', 'beh-choices');
+        for (const opt of advanced) inner.append(this.choiceRow(opt, arg0, host, ctx));
+        det.append(inner);
+        host.append(det);
+      }
+      return;
     }
+    // Advanced mode: flat list, catalog order, jargon labels allowed.
+    for (const opt of usable) list.append(this.choiceRow(opt, arg0, host, ctx));
     host.append(list);
   }
 

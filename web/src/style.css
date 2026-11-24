@@ -3068,3 +3068,112 @@ input[type='color'] {
 .assistant-input:disabled {
   opacity: 0.5;
 }
+
+/* ── Shared edit bar + capability nav badge (bead sl3) ──────────────────
+   One Edit → Preview → Apply → Verify model across Keys / Lighting /
+   Macro: "N unsaved changes" badge + Discard/Apply, rendered by
+   src/edit-model.ts. */
+
+.edit-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  flex-wrap: wrap;
+}
+
+.edit-badge {
+  color: var(--warn);
+  border-color: rgba(255, 243, 77, 0.35);
+  white-space: nowrap;
+}
+
+.edit-note {
+  font-size: 12px;
+  margin: 0;
+}
+
+.edit-discard {
+  margin-left: auto;
+}
+
+/* The Lighting page's save bar keeps its prominent Apply button. */
+.light-savebar .edit-bar {
+  width: 100%;
+}
+
+.light-savebar .edit-apply {
+  min-width: 160px;
+  height: 44px;
+  font-size: 15px;
+}
+
+/* Sidebar capability badge (e.g. "HE keyboard only" on Performance). */
+.nav-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-ctl);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.nav-item.active .nav-badge {
+  color: var(--on-accent, #14160a);
+  border-color: currentColor;
+}
+
+.sidebar-collapsed .nav-badge {
+  display: none;
+}
+
+/* Configure-key action cards (bead sl3): plain-language title +
+   subtitle; SOCD sits behind the "More customization" disclosure. */
+.beh-card-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.beh-card-opt:hover {
+  border-color: var(--border-ctl);
+}
+
+.beh-card-opt.beh-choice--on {
+  border-color: var(--accent);
+  background: rgba(198, 245, 78, 0.08);
+}
+
+.beh-card-opt input[type='radio'] {
+  margin-top: 3px;
+}
+
+.beh-choice-sub {
+  font-size: 12px;
+}
+
+details.beh-more {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 8px 12px;
+}
+
+details.beh-more > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+details.beh-more > summary:hover {
+  color: var(--fg);
+}
+
+details.beh-more .beh-choices {
+  margin-top: 8px;
+}

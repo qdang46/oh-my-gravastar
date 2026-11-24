@@ -74,6 +74,72 @@ export const BEHAVIOR_LABELS: Record<BehaviorId, string> = {
   'conditional-layer': 'Conditional layer',
 };
 
+// ── Action-first card presentation (bead sl3) ─────────────────────────
+//
+// Progressive disclosure for the Configure-key panel: everyday actions
+// are cards with plain-language titles/subtitles; jargon (SOCD/MT/TGL
+// acronyms, raw parameters) stays behind "More customization" and the
+// Advanced mode tab. DOM-free so scripts/test-edit-model.ts can check
+// the ordering.
+
+export interface BehaviorCardInfo {
+  /** Plain-language card title (no protocol jargon). */
+  title: string;
+  /** One-line subtitle explaining what the user gets. */
+  subtitle: string;
+  /** 'primary' = shown upfront; 'advanced' = behind "More customization". */
+  tier: 'primary' | 'advanced';
+}
+
+export const BEHAVIOR_CARDS: Record<WritableBehaviorId, BehaviorCardInfo> = {
+  plain: {
+    title: 'Normal key',
+    subtitle: 'Does one thing when you press it',
+    tier: 'primary',
+  },
+  mt: {
+    title: 'Tap or hold',
+    subtitle: 'A quick tap and a long press can do different things',
+    tier: 'primary',
+  },
+  tgl: {
+    title: 'Toggle',
+    subtitle: 'Each press switches another key’s action on or off',
+    tier: 'primary',
+  },
+  socd: {
+    title: 'Opposing keys',
+    subtitle:
+      'For pairs like A/D — decides what happens when both are pressed at once (SOCD)',
+    tier: 'advanced',
+  },
+};
+
+/** Card presentation for a writable behavior id (null for inventory-only ids). */
+export function behaviorCard(id: BehaviorId): BehaviorCardInfo | null {
+  return id in BEHAVIOR_CARDS ? BEHAVIOR_CARDS[id as WritableBehaviorId] : null;
+}
+
+/**
+ * Partition the usable (non-unavailable) catalog options into the
+ * primary action cards and the advanced "More customization" group.
+ * Catalog order is preserved inside each tier, so the primary order is
+ * always Normal key → Tap or hold → Toggle.
+ */
+export function splitBehaviorChoices(catalog: readonly BehaviorOption[]): {
+  primary: BehaviorOption[];
+  advanced: BehaviorOption[];
+} {
+  const primary: BehaviorOption[] = [];
+  const advanced: BehaviorOption[] = [];
+  for (const o of catalog) {
+    if (o.group === 'unavailable') continue;
+    if (behaviorCard(o.id)?.tier === 'advanced') advanced.push(o);
+    else primary.push(o);
+  }
+  return { primary, advanced };
+}
+
 // ── Catalog ────────────────────────────────────────────────────────────
 
 export type BehaviorGroup = 'action' | 'adv' | 'unavailable';

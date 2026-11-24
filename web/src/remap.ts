@@ -49,6 +49,7 @@ import {
   type KeymapDiff,
 } from './keymap-diff.ts';
 import { confirmDialog } from './modal.ts';
+import { createEditBar, syncEditBar } from './edit-model.ts';
 import './remap.css';
 
 /** Layout for the connected model (same rule as pages.ts `blocksForModel`). */
@@ -570,17 +571,26 @@ export function renderKeysPage(root: HTMLElement): void {
   }
   toolbar.append(modeBar, layerBar);
 
-  const pendingBadge = el('span', 'chip remap-pending', '');
+  // Shared edit bar (edit-model.ts): "N unsaved changes" badge + the
+  // Review-changes diff toggle + Discard/Apply — the same Apply→Verify
+  // flow every editing page uses. Apply stays scoped to the key set on
+  // the tabs; the diff panel previews the other sets.
   const reviewBtn = el('button', 'btn remap-review', 'Review changes');
   reviewBtn.type = 'button';
   reviewBtn.title =
     'Show a full-system diff of every unsaved key change across all key sets (bead xbp)';
-  const applyBtn = el('button', 'btn btn-primary remap-apply', 'Save');
-  applyBtn.type = 'button';
-  const discardBtn = el('button', 'btn remap-discard', 'Discard');
-  discardBtn.type = 'button';
-  discardBtn.title = 'Drop all unsaved changes on this key set (undoable)';
-  toolbar.append(pendingBadge, reviewBtn, applyBtn, discardBtn);
+  const editBar = createEditBar({
+    pending: 0,
+    busy,
+    extra: reviewBtn,
+    applyLabel: (n, b) => (b ? 'Saving…' : n > 0 ? `Save all (${n})` : 'Save'),
+    applyTitle: 'Write this key set\u2019s staged changes to the keyboard (checked on read-back)',
+    discardLabel: 'Discard',
+    discardTitle: 'Drop all unsaved changes on this key set (undoable)',
+    onApply: () => void applyAll(),
+    onDiscard: () => resetLayerToRead(currentArg()),
+  });
+  toolbar.append(editBar.root);
   kbody.append(toolbar);
   if (note) kbody.append(el('p', 'hint warn', note));
 
@@ -819,8 +829,15 @@ export function renderKeysPage(root: HTMLElement): void {
     });
 
     const count = pending.size;
-    pendingBadge.textContent = count > 0 ? `${count} unsaved` : '';
-    pendingBadge.hidden = count === 0;
+    syncEditBar(editBar, {
+      pending: count,
+      busy,
+      extra: reviewBtn,
+      applyLabel: (n, b) => (b ? 'Saving…' : n > 0 ? `Save all (${n})` : 'Save'),
+      applyTitle: 'Write this key set’s staged changes to the keyboard (checked on read-back)',
+      discardLabel: 'Discard',
+      discardTitle: 'Drop all unsaved changes on this key set (undoable)',
+    });
 
     // Full-system diff preview (bead xbp) — rebuilt every sync so it
     // always reflects the current staged state (stage/undo/redo/clear).
@@ -829,10 +846,6 @@ export function renderKeysPage(root: HTMLElement): void {
       diff.totalChanges > 0 ? `Review changes (${diff.totalChanges})` : 'Review changes';
     reviewBtn.disabled = busy || diff.totalChanges === 0;
     if (diffOpen) renderDiffPanel(dbody, diff, blocks);
-
-    applyBtn.disabled = busy || count === 0;
-    applyBtn.textContent = busy ? 'Saving…' : count > 0 ? `Save all (${count})` : 'Save';
-    discardBtn.disabled = busy || count === 0;
 
     undoBtn.disabled = busy || !edits.canUndo();
     redoBtn.disabled = busy || !edits.canRedo();
@@ -917,13 +930,6 @@ export function renderKeysPage(root: HTMLElement): void {
     if (diffOpen) {
       renderDiffPanel(dbody, buildKeymapDiff(edits, committedValue), blocks);
     }
-  });
-
-  applyBtn.addEventListener('click', () => void applyAll());
-  discardBtn.addEventListener('click', () => {
-    // Discard = reset this key set to device-read values; staged only and
-    // undoable via the StagedEdits history.
-    resetLayerToRead(currentArg());
   });
 
   // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo-redo (skipped inside inputs).

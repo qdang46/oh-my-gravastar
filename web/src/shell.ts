@@ -23,7 +23,7 @@ import {
   subscribe,
 } from './state.ts';
 import { installHidDeviceEvents } from './device-events.ts';
-import { NAV_PAGES, initPages, type PageId } from './pages.ts';
+import { NAV_PAGES, initPages, navBadgeFor, type PageId } from './pages.ts';
 
 // ── Inline SVG icons (stroke, 24 px viewBox — vendor uses an icon font) ──
 
@@ -81,7 +81,11 @@ export function mountShell(root: HTMLElement): void {
     icon.innerHTML = ICONS[p.id];
     const label = el('span', 'nav-text', p.title);
     const tip = el('span', 'nav-tooltip', p.title);
-    a.append(icon, label, tip);
+    // Capability badge (bead sl3): e.g. "HE keyboard only" on pages the
+    // connected device can't use — filled in by the state sync below.
+    const badge = el('span', 'nav-badge', '');
+    badge.hidden = true;
+    a.append(icon, label, tip, badge);
     nav.append(a);
   }
   sidebar.append(nav);
@@ -199,6 +203,16 @@ export function mountShell(root: HTMLElement): void {
   subscribe(() => {
     statusEl.textContent = app.status;
     statusEl.classList.toggle('error', app.statusError);
+    // Capability-gated nav badges (bead sl3) — recomputed on every
+    // state emit so connect/disconnect updates them immediately.
+    nav.querySelectorAll<HTMLElement>('.nav-item').forEach((a) => {
+      const badge = a.querySelector<HTMLElement>('.nav-badge');
+      if (!badge) return;
+      const text = navBadgeFor(a.dataset.page as PageId);
+      badge.textContent = text ?? '';
+      badge.hidden = !text;
+      if (text) badge.title = text;
+    });
     musicBanner.hidden = !app.musicActive;
     // Show the read-only banner whenever the live session's write gate
     // is closed (silent reconnect / hot-plug connect / poison recovery).

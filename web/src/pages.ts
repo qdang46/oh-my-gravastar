@@ -20,6 +20,9 @@ import { renderDiagnostics, destroyDiagnostics } from './diagnostics.ts';
 import { renderPerfPage, destroyPerfPage } from './perf.ts';
 import { renderAssistantPage, destroyAssistantPage } from './assistant.ts';
 import { formatVidPid } from './hid.ts';
+import { getCapabilities } from './core/capabilities.ts';
+import { isFeatureAvailable } from './core/feature-registry.ts';
+import type { DeviceLike } from './core/device-model.ts';
 
 export type PageId =
   | 'dashboard'
@@ -75,6 +78,33 @@ export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] =
   { id: 'device', path: '/device', title: 'Device' },
   { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
 ];
+
+/**
+ * Capability-gated nav badge (bead sl3): a short label shown on a
+ * sidebar item when the connected device can't use that page.
+ *
+ * Only Performance is gated — it configures Hall-effect (HE) keyboards
+ * and every section asks the capability registry (`isFeatureAvailable`,
+ * same check perf.ts makes per feature). When nothing is connected the
+ * page offers its own HE device picker, so no badge is shown; a
+ * mechanical khub916 / Compx / SparkPlayJoy device gets the badge.
+ */
+export function navBadgeFor(id: PageId): string | null {
+  if (id !== 'performance' || !app.connected || !app.snapshot) return null;
+  const like: DeviceLike = {
+    vendorId: app.connected.device.vendorId,
+    productId: app.connected.device.productId,
+    productName: app.connected.device.productName ?? null,
+    uuid: app.snapshot.info.uuid,
+    catalogModel: app.snapshot.info.catalogModel,
+    catalogName: app.snapshot.info.catalogName,
+    screenSize: app.snapshot.info.screenSize ?? 0,
+  };
+  const caps = getCapabilities(like);
+  // 'actuation' is the headline HE feature — every Performance Studio
+  // section shares the same per-protocol supported/unsupported verdict.
+  return isFeatureAvailable(caps, 'actuation') ? null : 'HE keyboard only';
+}
 
 /** Which sidebar item should look active for a given route. */
 export function navIdFor(page: PageId): PageId {
