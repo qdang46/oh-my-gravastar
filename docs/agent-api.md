@@ -41,7 +41,7 @@ A **plan request** is either a bare ops array or an envelope:
 | field | type | required | constraint |
 |---|---|---|---|
 | `op` | string | yes | one of `AGENT_OP_KINDS` (closed set, below) |
-| `device_selector` | string | yes | non-empty; `"auto"` \| `"vid:pid"` \| device path. Resolution is the caller's job — the schema only requires the string, never guesses. Mixed selectors across ops → plan warning. |
+| `device_selector` | string | yes | non-empty; `"auto"` \| `"vid:pid"` \| device path. Resolution is the caller's job — the schema only requires the string, never guesses. Per-op selectors are the multi-device intent: the planner echoes the unique set as `AgentPlan.device_selectors`, and each maps 1:1 onto the `device` field of an `omg plan` step (docs/plan-json.md). Mixed selectors across ops → plan warning; execution stays single-session. `DeviceContext.device.selector` (`"0xVID:0xPID"`) is the ready-made value when the HID ids are known. |
 | `id` | string | no | caller-assigned label echoed into diffs/journal |
 
 ### `set_keymap` — sparse keymap patch (khub916)
@@ -249,6 +249,7 @@ interface DeviceContext {
     catalogModel: string | null;
     transport: 'wired' | 'wireless' | null;
     vid?: number; pid?: number;
+    selector?: string;                        // "0xVID:0xPID" — usable as a plan device_selector
     verification: 'live' | 'code' | 'synthetic' | 'none'; // weakest cap level
   };
   firmware?: { version: string };              // e.g. "0x0100"
@@ -500,9 +501,17 @@ will be overwritten.
 - **No L3 ops in schema v1.** `kb polling set` and calibration stay CLI/
   UI-only until the schema grows an op kind with the stronger-confirmation
   flow.
-- **No cross-device plans.** Ops carry `device_selector` for honesty, but
-  `executePlan` runs against ONE session; mixed selectors produce a
-  warning, not fan-out.
+- **No cross-device execution.** Ops carry `device_selector` per op and
+  the plan echoes the unique set as `device_selectors`, so multi-device
+  *intent* is representable and maps 1:1 onto the `device` field of
+  `omg plan` steps (docs/plan-json.md — the CLI executor DOES route
+  per-step devices, including keyboard+mouse mixes). But
+  `executePlan` runs against ONE `AgentSession` (a single khub916
+  wired session — every v1 op kind lowers to khub916 writes; HE keyboard
+  and Compx mouse ops do not exist in this vocabulary), so mixed
+  selectors produce a warning, not fan-out. Until the vocabulary grows
+  per-family ops and the engine grows multi-session execution, callers
+  needing keyboard+mouse plans should emit `omg plan` JSON directly.
 - **No invented ops.** The planner (when `7js` lands) must emit only
   vocabulary ops; unknown intent → clarification, never a guess.
 - **No secrets.** Device context, plans, diffs, journals and audit

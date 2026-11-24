@@ -34,7 +34,14 @@ export const AGENT_SCHEMA_VERSION = 1;
 export interface AgentOpBase {
   /** Optional caller-assigned id (echoed into diffs/journal). */
   id?: string;
-  /** "auto" | "vid:pid" | device path — required, never guessed. */
+  /**
+   * "auto" | "vid:pid" | device path — required, never guessed.
+   * Multi-device intent lives HERE, per op: the planner echoes the
+   * unique set as `AgentPlan.device_selectors`, and each selector maps
+   * 1:1 onto the `device` field of a step in the `omg plan` JSON format
+   * (docs/plan-json.md). Execution is still single-session — mixed
+   * selectors produce a plan warning, not fan-out.
+   */
   device_selector: string;
 }
 

@@ -401,6 +401,9 @@ struct StepCheck {
     risk: Risk,
     writes: bool,
     device_family: String,
+    /// The step's own `"device"` selector, when the plan document set one.
+    /// Device validation honours step > plan > global `--device`.
+    device: Option<String>,
     capability: Option<String>,
     /// ok | warning | error | refused | blocked
     status: &'static str,
@@ -678,6 +681,7 @@ fn analyze_step(step: &PlanStep) -> StepCheck {
         risk,
         writes,
         device_family: family,
+        device: step.device.clone(),
         capability: cap,
         status,
         errors,
@@ -809,19 +813,25 @@ fn device_check(
         let Some(kind) = required_kind(&check.command_path()) else {
             continue;
         };
+        // Selector precedence: step `"device"` > plan `device` > global
+        // `--device` (the `selector` arg is already plan-or-cli merged).
+        // Without the per-step override a mixed keyboard+mouse plan whose
+        // plan-level selector names one device would wrongly block the
+        // other family's steps.
+        let sel = check.device.as_deref().or(selector);
         // Find a connected device of the required kind matching the
         // selector (if any).
         let matches: Vec<&DeviceInfo> = devices
             .iter()
             .filter(|d| d.kind == kind)
-            .filter(|d| selector.is_none_or(|s| device_matches(d, s)))
+            .filter(|d| sel.is_none_or(|s| device_matches(d, s)))
             .collect();
         if matches.is_empty() {
             check.status = "blocked";
             check.errors.push(format!(
                 "no {} connected{}",
                 kind.label(),
-                selector.map(|s| format!(" matching '{s}'")).unwrap_or_default()
+                sel.map(|s| format!(" matching '{s}'")).unwrap_or_default()
             ));
             continue;
         }
@@ -875,6 +885,7 @@ fn check_json(c: &StepCheck) -> Value {
         "risk": c.risk.id(),
         "writes": c.writes,
         "device": c.device_family,
+        "device_selector": c.device,
         "capability": c.capability,
         "status": c.status,
         "errors": c.errors,
@@ -1207,6 +1218,20 @@ fn khub916_needs(steps: &[PlanStep]) -> Khub916Needs {
     n
 }
 
+/// Device selector for one step: step `"device"` > plan `device` >
+/// global `--device`. Returns the selector string (resolution happens in
+/// [`resolve_step_device`] / the executed argv's `--device`).
+fn step_device_sel(
+    step: &PlanStep,
+    plan_device: Option<&str>,
+    cli_device: Option<&str>,
+) -> Option<String> {
+    step.device
+        .clone()
+        .or_else(|| plan_device.map(str::to_string))
+        .or_else(|| cli_device.map(str::to_string))
+}
+
 /// Resolve the device a step will drive: required kind + selector
 /// precedence step > plan > global `--device`.
 fn resolve_step_device(
@@ -1216,7 +1241,8 @@ fn resolve_step_device(
     devices: &[DeviceInfo],
 ) -> Option<DeviceInfo> {
     let kind = required_kind(&step.path)?;
-    let sel = step.device.as_deref().or(plan_device).or(cli_device);
+    let sel = step_device_sel(step, plan_device, cli_device);
+    let sel = sel.as_deref();
     let matches: Vec<&DeviceInfo> = devices
         .iter()
         .filter(|d| d.kind == kind)
@@ -1445,11 +1471,11 @@ fn cmd_apply(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
                 cli.device.as_deref(),
                 &devices,
             ) {
-                let device_sel = step
-                    .device
-                    .clone()
-                    .or_else(|| plan.device.clone())
-                    .or_else(|| cli.device.clone());
+                let device_sel = step_device_sel(
+                    step,
+                    plan.device.as_deref(),
+                    cli.device.as_deref(),
+                );
                 let he_reads = he_read_argvs(step, device_sel.as_deref());
                 snap_key = Some(ensure_snapshot(
                     &exec_cli, &mut snaps, &d, &needs, &he_reads,
@@ -1458,11 +1484,7 @@ fn cmd_apply(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
         }
 
         // Execute through the real CLI path with --yes injected.
-        let device_sel = step
-            .device
-            .clone()
-            .or_else(|| plan.device.clone())
-            .or_else(|| cli.device.clone());
+        let device_sel = step_device_sel(step, plan.device.as_deref(), cli.device.as_deref());
         let mut check = check;
         let argv = match build_argv(step, device_sel.as_deref(), true, true, &tmp_dir) {
             Ok(a) => {
@@ -1671,11 +1693,7 @@ fn plan_dry_run(cli: &Cli, plan: &PlanDoc, id: &str) -> Result<ExitCode> {
     let mut entries = Vec::new();
     for step in &plan.steps {
         let check = analyze_step(step);
-        let device_sel = step
-            .device
-            .clone()
-            .or_else(|| plan.device.clone())
-            .or_else(|| cli.device.clone());
+        let device_sel = step_device_sel(step, plan.device.as_deref(), cli.device.as_deref());
         let argv = build_argv(step, device_sel.as_deref(), true, false, Path::new("/nonexistent"))
             .unwrap_or_else(|e| vec![format!("<argv error: {e:#}>")]);
         let target = resolve_step_device(
@@ -2576,5 +2594,137 @@ mod tests {
         assert!(j.contains("kb916 set keymap"), "{j}");
         assert!(j.contains("--yes"), "{j}");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── multi-device plans (keyboard + mouse) ─────────────────────────
+
+    fn devinfo(path: &str, kind: DeviceKind, vid: u16, pid: u16) -> DeviceInfo {
+        DeviceInfo {
+            path: path.to_string(),
+            vid,
+            pid,
+            product: Some(format!("test device {path}")),
+            manufacturer: None,
+            usage_page: 0,
+            usage: 0,
+            kind,
+        }
+    }
+
+    /// Keyboard + mouse connected; plan-level selector names the
+    /// keyboard, one mouse step overrides to the mouse path.
+    const MIXED_PLAN: &str = r#"{
+        "version": 1,
+        "device": "/dev/kb0",
+        "steps": [
+            {"op": "kb info"},
+            {"op": "mouse set dpi", "device": "/dev/mouse0",
+             "args": {"stage": 0, "dpi": 800}},
+            {"op": "mouse info"}
+        ]
+    }"#;
+
+    fn mixed_devices() -> Vec<DeviceInfo> {
+        vec![
+            devinfo("/dev/kb0", DeviceKind::HeKeyboardV2, 0x1234, 0x5678),
+            devinfo("/dev/mouse0", DeviceKind::CompxMouse, 0x9abc, 0xdef0),
+        ]
+    }
+
+    #[test]
+    fn parse_plan_and_step_device_selectors() {
+        let doc = parse_plan(MIXED_PLAN).unwrap();
+        assert_eq!(doc.device.as_deref(), Some("/dev/kb0"));
+        assert_eq!(doc.steps.len(), 3);
+        assert_eq!(doc.steps[0].device, None);
+        assert_eq!(doc.steps[1].device.as_deref(), Some("/dev/mouse0"));
+        assert_eq!(doc.steps[2].device, None);
+    }
+
+    #[test]
+    fn step_device_selector_precedence() {
+        let mut s = step("kb info", json!({}));
+        s.device = Some("step-sel".into());
+        assert_eq!(
+            step_device_sel(&s, Some("plan-sel"), Some("cli-sel")).as_deref(),
+            Some("step-sel")
+        );
+        s.device = None;
+        assert_eq!(
+            step_device_sel(&s, Some("plan-sel"), Some("cli-sel")).as_deref(),
+            Some("plan-sel")
+        );
+        assert_eq!(
+            step_device_sel(&s, None, Some("cli-sel")).as_deref(),
+            Some("cli-sel")
+        );
+        assert_eq!(step_device_sel(&s, None, None), None);
+    }
+
+    #[test]
+    fn mixed_plan_argv_routes_per_step_device() {
+        let doc = parse_plan(MIXED_PLAN).unwrap();
+        let devices = mixed_devices();
+        for s in &doc.steps {
+            let sel = step_device_sel(s, doc.device.as_deref(), None);
+            let argv =
+                build_argv(s, sel.as_deref(), true, false, Path::new("/tmp")).unwrap();
+            let joined = argv.join(" ");
+            let expected = if s.index == 1 { "/dev/mouse0" } else { "/dev/kb0" };
+            assert!(
+                joined.contains(&format!("--device {expected}")),
+                "step {} argv missing --device {expected}: {joined}",
+                s.index + 1
+            );
+            // Mouse write ops keep their --yes injection + restrictions.
+            if s.index == 1 {
+                assert!(joined.contains("--yes"), "{joined}");
+            }
+        }
+        // Resolution lands on the right kind of device.
+        let kb = resolve_step_device(&doc.steps[0], doc.device.as_deref(), None, &devices)
+            .expect("kb step resolves");
+        assert_eq!(kb.kind, DeviceKind::HeKeyboardV2);
+        assert_eq!(kb.path, "/dev/kb0");
+        let mouse = resolve_step_device(&doc.steps[1], doc.device.as_deref(), None, &devices)
+            .expect("overridden mouse step resolves");
+        assert_eq!(mouse.kind, DeviceKind::CompxMouse);
+        assert_eq!(mouse.path, "/dev/mouse0");
+        // Step 3 ('mouse info', no override) inherits the keyboard
+        // selector → resolves to nothing of CompxMouse kind.
+        assert!(resolve_step_device(
+            &doc.steps[2],
+            doc.device.as_deref(),
+            None,
+            &devices,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn device_check_honours_step_device_override() {
+        let doc = parse_plan(MIXED_PLAN).unwrap();
+        let devices = mixed_devices();
+        let mut checks: Vec<StepCheck> = doc.steps.iter().map(analyze_step).collect();
+        device_check(&mut checks, &devices, doc.device.as_deref()).unwrap();
+        assert_eq!(checks[0].status, "ok", "{:?}", checks[0].errors);
+        // The overridden mouse step finds the mouse despite the
+        // plan-level keyboard selector.
+        assert_eq!(checks[1].status, "ok", "{:?}", checks[1].errors);
+        // The un-overridden mouse step inherits '/dev/kb0', which matches
+        // no Compx mouse → honestly blocked.
+        assert_eq!(checks[2].status, "blocked", "{:?}", checks[2]);
+    }
+
+    #[test]
+    fn mixed_plan_analyze_step_kinds() {
+        let doc = parse_plan(MIXED_PLAN).unwrap();
+        let c0 = analyze_step(&doc.steps[0]);
+        let c1 = analyze_step(&doc.steps[1]);
+        assert_eq!(c0.device_family, "he_keyboard_v2");
+        assert_eq!(c1.device_family, "compx_mouse");
+        assert!(c1.writes);
+        assert_eq!(c1.capability.as_deref(), Some("config"));
+        assert_eq!(c1.device.as_deref(), Some("/dev/mouse0"));
     }
 }

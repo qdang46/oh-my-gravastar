@@ -138,6 +138,17 @@ async function khubContext(snapshots?: SnapshotStore): Promise<DeviceContext> {
   });
 }
 
+section('device-context — selector passthrough');
+
+{
+  const ctx = await khubContext();
+  check(
+    'context carries 0xVID:0xPID selector for plan device fields',
+    ctx.device.selector === '0x258a:0x010c',
+    ctx.device.selector,
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // action-schema.ts
 // ══════════════════════════════════════════════════════════════════════
@@ -367,12 +378,23 @@ section('planner — ordering / policy / diffs');
     [{ op: 'set_keymap', device_selector: 'path-a', layer: 0, entries: [{ index: 0, value: 1 }] }],
   );
   check('single selector echoed', plan.device_selector === 'path-a');
+  check(
+    'single selector in device_selectors',
+    plan.device_selectors.length === 1 && plan.device_selectors[0] === 'path-a',
+    JSON.stringify(plan.device_selectors),
+  );
 
   const mixed = planFromOps([
     { op: 'set_keymap', device_selector: 'auto', layer: 0, entries: [{ index: 0, value: 1 }] },
     { op: 'set_keymap', device_selector: 'vid:9999', layer: 1, entries: [{ index: 0, value: 1 }] },
+    { op: 'set_keymap', device_selector: 'auto', layer: 2, entries: [{ index: 0, value: 1 }] },
   ]);
   check('mixed selectors flagged', mixed.device_selector === 'mixed' && mixed.warnings.length > 0);
+  check(
+    'device_selectors dedupes, first-seen order (plan-json device passthrough)',
+    mixed.device_selectors.join(',') === 'auto,vid:9999',
+    JSON.stringify(mixed.device_selectors),
+  );
 }
 
 {

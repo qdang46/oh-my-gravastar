@@ -66,6 +66,39 @@ Safety contract (docs/plan.md §2, docs/SAFETY-SPEC.md):
   `--device`.
 - Max 64 steps.
 
+### Multi-device plans
+
+One plan may span device families — e.g. an HE keyboard (`kb …`) and a
+Compx mouse (`mouse …`) side by side:
+
+```json
+{
+  "version": 1,
+  "steps": [
+    { "op": "kb light set", "device": "0x1234:0x5678",
+      "args": { "area": 0, "brightness": 50, "on": true } },
+    { "op": "mouse set dpi", "device": "/dev/hidraw3",
+      "args": { "stage": 0, "dpi": 800 } }
+  ]
+}
+```
+
+Selector precedence is **step `device` > plan `device` > `--device`**.
+Each step is validated and executed against the device *its own*
+selector resolves to: `validate`/`apply` check the required device kind
+per step (a step whose selector matches nothing of its kind is
+`blocked`, it does not fall back to another device), and `apply`
+re-parses each step into an `omg` argv carrying that step's `--device`.
+Snapshots and the journal are keyed per resolved device path, so
+rollback restores each device independently and restore argvs are
+pinned to the snapshot's own `--device` path — a mixed plan cannot
+write to the wrong device.
+
+Restrictions still apply per step: mouse writes honour the `WRITABLE`
+flash-range allowlist and every write keeps its `--yes` gate (injected
+from the plan-level `--yes`), range checks and read-back verify. L4 ops
+remain refused regardless of which device they name.
+
 ### Inline file arguments
 
 Three ops accept inline payloads instead of file paths:

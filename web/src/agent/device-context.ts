@@ -76,6 +76,14 @@ export interface ContextDevice {
   transport: 'wired' | 'wireless' | null;
   vid?: number;
   pid?: number;
+  /**
+   * Ready-made `omg --device` / plan-`device` selector (`"0xVID:0xPID"`)
+   * when both ids are known — WebHID exposes no stable device path, so
+   * vid:pid is the most precise selector a web plan can carry. Absent
+   * when the identity is incomplete (e.g. khub916 sessions report no
+   * vid/pid — use `"auto"` or the device `uuid`).
+   */
+  selector?: string;
   /** Weakest verification level across the capability map. */
   verification: VerifiedLevel;
 }
@@ -195,6 +203,13 @@ export async function buildDeviceContext(
     transport: detected.transport,
     ...(opts.device?.vendorId !== undefined ? { vid: opts.device.vendorId } : {}),
     ...(opts.device?.productId !== undefined ? { pid: opts.device.productId } : {}),
+    ...(opts.device?.vendorId !== undefined && opts.device?.productId !== undefined
+      ? {
+          selector: `0x${opts.device.vendorId.toString(16).padStart(4, '0')}:0x${opts.device.productId
+            .toString(16)
+            .padStart(4, '0')}`,
+        }
+      : {}),
     verification: weakestVerification(caps),
   };
 

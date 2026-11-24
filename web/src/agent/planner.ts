@@ -42,6 +42,15 @@ export interface AgentPlan {
   plan_id: string;
   /** Common device selector, or 'mixed' when ops disagree. */
   device_selector: string;
+  /**
+   * Unique `device_selector`s across ops, first-seen order. This is the
+   * multi-device intent the schema carries: each op keeps its own
+   * selector (`AgentOp.device_selector`), which maps 1:1 onto the
+   * `device` field of a step in the `omg plan` JSON format
+   * (docs/plan-json.md). Execution is still single-session — see
+   * docs/agent-api.md §8.
+   */
+  device_selectors: string[];
   ops: AgentPlanOp[];
   /** Same strings as `ops[].diff`, in execution order. */
   diffSummary: string[];
@@ -203,7 +212,12 @@ export function planFromOps(
   });
 
   // Mixed device selectors → warn; never guess which device was meant.
+  // The per-op selectors are preserved verbatim (`device_selectors`
+  // below) so a consumer can split the plan per device or lower it to
+  // the `omg plan` per-step `device` field — the executor itself still
+  // runs against ONE session.
   const selectors = new Set(planned.map((p) => p.op.device_selector));
+  const device_selectors = [...selectors];
   const device_selector =
     selectors.size === 1 ? ([...selectors][0] as string) : selectors.size === 0 ? 'auto' : 'mixed';
   if (selectors.size > 1) {
@@ -226,6 +240,7 @@ export function planFromOps(
     schema_version: 1,
     plan_id: newPlanId(),
     device_selector,
+    device_selectors,
     ops: planOps,
     diffSummary: planOps.map((p) => p.diff),
     warnings,
