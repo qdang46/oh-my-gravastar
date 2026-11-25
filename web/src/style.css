@@ -987,6 +987,7 @@ details.advanced > .advanced-body {
 .macro-delay,
 .cp-hex,
 .cp-num,
+.cp-input,
 .pool-search-input {
   height: var(--control-h);
   padding: 0 var(--space-3);
@@ -1005,6 +1006,7 @@ details.advanced > .advanced-body {
 .macro-delay:focus,
 .cp-hex:focus,
 .cp-num:focus,
+.cp-input:focus,
 .pool-search-input:focus {
   outline: none;
   border-color: var(--accent);
@@ -1218,6 +1220,11 @@ input[type='color'] {
 
 .light-slider input[type='range'] {
   flex: 1;
+}
+
+.light-slider .cp-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .light-slider input[type='range']:disabled {
@@ -1559,6 +1566,13 @@ input[type='color'] {
 
   .topbar {
     padding: var(--space-2) var(--space-3);
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
+  }
+
+  .topbar-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .brand-sub {
@@ -1567,6 +1581,109 @@ input[type='color'] {
 
   .device-chip {
     display: none;
+  }
+
+  /* Sidebar becomes a bottom tab bar: fixed, full-width, icon rail
+     (auto-collapse already hides labels < 768 px). Content gets
+     padding-bottom so the last card is never hidden behind it. */
+  .shell {
+    flex-direction: column;
+    gap: 0;
+    padding-bottom: 0;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    flex-direction: row;
+    align-items: stretch;
+    border-radius: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.25);
+    z-index: 45;
+  }
+
+  .menu-device-name,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .sidebar-nav {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: var(--space-1);
+    scrollbar-width: none;
+  }
+
+  .sidebar-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-item {
+    flex: 0 0 auto;
+    height: 56px;
+    margin: 0;
+    padding: 0 var(--space-2);
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  .sidebar-collapsed .nav-item {
+    margin: 0;
+    padding: 0 var(--space-2);
+  }
+
+  /* Bottom-bar tabs show icon + label even though the desktop rail is
+     collapsed < 768 px — labels are the point of a tab bar. */
+  .sidebar-collapsed .nav-text {
+    display: block;
+    font-size: 10px;
+    line-height: 1.1;
+    max-width: 72px;
+  }
+
+  .sidebar-collapsed .nav-icon {
+    flex: none;
+  }
+
+  .nav-badge {
+    display: none;
+  }
+
+  .main-col {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Stop iOS auto-zoom on focus and the 300 ms tap delay; kill the
+     grey tap flash — the UI has its own pressed states. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  button,
+  a,
+  .kb-key,
+  .pool-item,
+  .mode-card,
+  .preset-card {
+    touch-action: manipulation;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
   }
 
   .kv {
