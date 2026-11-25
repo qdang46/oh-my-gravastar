@@ -18,6 +18,7 @@ use omg_proto_khub916::{decode_key_value, KeyValue};
 use serde_json::{json, Map, Value};
 
 use crate::config::error::ConfigError;
+use crate::config::keyaction;
 use crate::config::schema::{
     self, K1PRO_KEYMAP_BANKS, K1PRO_KEYS, K1PRO_MODE_COLORS, MACRO_NAME_MAX_BYTES,
     MACRO_STEP_DELAY_MAX,
@@ -107,31 +108,6 @@ fn parse_color(v: &Value, path: &str) -> Result<String, ConfigError> {
         .at(path));
     }
     Ok(format!("#{}", hex.to_ascii_lowercase()))
-}
-
-/// Raw u32 keymap value from `"0x…"` hex (either case) — the canonical
-/// authored form. Returns the value and its normalized `0x%08X` string.
-fn parse_key_hex(v: &Value, path: &str) -> Result<(u32, String), ConfigError> {
-    let s = as_str(v, path)?;
-    let hex = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .ok_or_else(|| {
-            ConfigError::invalid_document(format!(
-                "{path} must be a 0x-prefixed u32 hex string, got {s:?}"
-            ))
-            .at(path)
-        })?;
-    if hex.len() != 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(ConfigError::invalid_document(format!(
-            "{path} must be 0x + 8 hex digits, got {s:?}"
-        ))
-        .at(path));
-    }
-    let n = u32::from_str_radix(hex, 16).map_err(|_| {
-        ConfigError::invalid_document(format!("{path}: bad hex {s:?}")).at(path)
-    })?;
-    Ok((n, format!("0x{n:08X}")))
 }
 
 // ── Macro step parsing ─────────────────────────────────────────────────
@@ -339,7 +315,9 @@ fn validate_keymap(
         }
         let mut opaque = 0usize;
         for (j, kv) in keys.iter().enumerate() {
-            let (n, _) = parse_key_hex(kv, &format!("{p}.keys[{j}]"))?;
+            // `"0x…"` hex or a semantic {"key","modifiers"} object (bead
+            // 112) — both resolve to the same u32; output stays hex.
+            let n = keyaction::resolve_key_item(kv, &format!("{p}.keys[{j}]"))?;
             if matches!(
                 decode_key_value(n),
                 KeyValue::Unknown { .. }
@@ -724,6 +702,120 @@ fn validate_k1pro_configuration(
     }))
 }
 
+// ── Structural layer: the emitted JSON Schema is the source of truth ────
+//
+// `validate` runs in two layers (bead bda):
+//
+// 1. **Structural** — the raw document is validated against the JSON
+//    Schema 2020-12 document emitted by [`schema::schema_doc`] for the
+//    resolved `schema_id`, compiled with the `jsonschema` crate. This is
+//    where shape/types/ranges/cardinalities/`additionalProperties:false`
+//    live; the schema — not a parallel hand-rolled rule set — decides.
+// 2. **Semantic** — the Rust checks below cover only what JSON Schema
+//    cannot express: envelope target/firmware binding, macro↔keymap
+//    tag-3 cross-checks, `(layer,system)` bank coverage/uniqueness,
+//    mode-color group coverage, macro `id==position` contiguity, the
+//    `kind:"other"`⇔`nibble` conditional, semantic key-action resolution,
+//    and canonical normalization. A meta-test in `schema::tests` asserts
+//    the constraints the validator relies on are present in the emitted
+//    schema so the two layers cannot silently drift.
+
+/// Convert a `jsonschema` location (`/a/b/0`) to our path style
+/// (`a.b[0]`); the root maps to `(document)`.
+fn schema_path(loc: &jsonschema::paths::Location) -> String {
+    let s = loc.as_str();
+    if s.is_empty() {
+        return "(document)".to_string();
+    }
+    let mut out = String::new();
+    for seg in s.split('/').filter(|p| !p.is_empty()) {
+        if let Ok(idx) = seg.parse::<usize>() {
+            out.push_str(&format!("[{idx}]"));
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
+/// `anyOf`/`oneOf` failures hide their leaf errors in `context`; find an
+/// `additionalProperties` leaf (e.g. an extra key inside a key-action
+/// object) so it can keep the precise `unknown_property` code. Required-
+/// style leaves stay generic — inside an `anyOf` "missing" is ambiguous.
+fn additional_properties_in<'e>(
+    err: &'e jsonschema::ValidationError<'_>,
+) -> Option<&'e jsonschema::ValidationError<'static>> {
+    use jsonschema::error::ValidationErrorKind as K;
+    let context = match err.kind() {
+        K::AnyOf { context }
+        | K::OneOfNotValid { context }
+        | K::OneOfMultipleValid { context } => context,
+        _ => return None,
+    };
+    for group in context {
+        for e in group {
+            match e.kind() {
+                K::AdditionalProperties { .. } => return Some(e),
+                K::AnyOf { .. } | K::OneOfNotValid { .. } | K::OneOfMultipleValid { .. } => {
+                    if let Some(found) = additional_properties_in(e) {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Map the first `jsonschema` error onto the stable §8 codes:
+/// `required` → `missing_required_field`, `additionalProperties` →
+/// `unknown_property`, everything else → `invalid_document`.
+fn map_schema_error(err: &jsonschema::ValidationError<'_>) -> ConfigError {
+    use jsonschema::error::ValidationErrorKind as K;
+    let path = schema_path(err.instance_path());
+    match err.kind() {
+        K::Required { property } => ConfigError::missing_required_field(
+            path,
+            property.as_str().unwrap_or("?"),
+        ),
+        K::AdditionalProperties { unexpected } => ConfigError::unknown_property(
+            path,
+            unexpected.first().map(String::as_str).unwrap_or("?"),
+        ),
+        K::AnyOf { .. } | K::OneOfNotValid { .. } | K::OneOfMultipleValid { .. } => {
+            if let Some(leaf) = additional_properties_in(err) {
+                return map_schema_error(leaf);
+            }
+            ConfigError::invalid_document(format!(
+                "schema violation at {path}: {err}"
+            ))
+            .at(path)
+        }
+        _ => ConfigError::invalid_document(format!(
+            "schema violation at {path}: {err}"
+        ))
+        .at(path),
+    }
+}
+
+/// STRUCTURAL layer: validate the raw document against the emitted schema
+/// for `schema_id`. The schema is compiled per call — `validate` is a
+/// one-shot CLI path, so no cache is warranted.
+fn validate_structural(doc: &Value, schema_id: &str) -> Result<(), ConfigError> {
+    let schema_doc = schema::schema_doc(schema_id, None)?;
+    let validator = jsonschema::validator_for(&schema_doc).map_err(|e| {
+        ConfigError::invalid_document(format!("internal: emitted schema does not compile: {e}"))
+    })?;
+    if let Some(err) = validator.iter_errors(doc).next() {
+        return Err(map_schema_error(&err));
+    }
+    Ok(())
+}
+
 // ── Public entry point ─────────────────────────────────────────────────
 
 /// Read and JSON-parse a config document file (`-` = stdin).
@@ -740,9 +832,11 @@ pub fn read_document(file: &str) -> Result<Value, ConfigError> {
 }
 
 /// Validate a parsed document against the resolved target context.
-/// Performs the envelope checks (format_version, schema_id, target
-/// binding), the writable gate, then full structural validation of
-/// `configuration` for writable families.
+/// Two layers (see the "Structural layer" section above): envelope +
+/// target binding checks first (they own the `schema_version_unsupported`/
+/// `target_mismatch`/`unsupported` codes), then the emitted JSON Schema
+/// as the structural source of truth, then the semantic checks JSON
+/// Schema cannot express plus canonical normalization.
 pub fn validate(doc: &Value, ctx: &TargetContext) -> Result<Validated, ConfigError> {
     const ROOT: &str = "(document)";
     let root = as_obj(doc, ROOT)?;
@@ -805,7 +899,14 @@ pub fn validate(doc: &Value, ctx: &TargetContext) -> Result<Validated, ConfigErr
         )));
     }
 
-    // Deep validation of configuration.
+    // STRUCTURAL layer: the emitted JSON Schema decides shape/types/
+    // ranges/cardinalities/additionalProperties (see module docs). Runs
+    // after the envelope checks above so `schema_version_unsupported` /
+    // `target_mismatch` / `unsupported` keep their specific codes.
+    validate_structural(doc, &ctx.schema_id)?;
+
+    // SEMANTIC layer: deep validation of configuration — the checks JSON
+    // Schema cannot express plus canonical normalization.
     let conf = as_obj(req(root, ROOT, "configuration")?, "configuration")?;
     let mut warnings = Vec::new();
     let configuration = if ctx.schema_id == schema::KHUB916_K1PRO {
@@ -1042,5 +1143,98 @@ mod tests {
             v.doc["configuration"]["keymap"]["layers"][0]["keys"][0],
             "0x08020000"
         );
+    }
+
+    // ── Semantic key actions (bead 112) ────────────────────────────────
+
+    /// Slot helper: bank index → (layer, system) is arg order; banks[0] is
+    /// (layer 0, system 0).
+    fn key_at(doc: &mut Value, bank: usize, slot: usize) -> &mut Value {
+        &mut doc["configuration"]["keymap"]["layers"][bank]["keys"][slot]
+    }
+
+    #[test]
+    fn semantic_keys_resolve_to_hex() {
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 0) = json!({"key": "KeyA"});
+        *key_at(&mut d, 0, 1) = json!({"key": "a"}); // alias
+        *key_at(&mut d, 0, 2) = json!({"key": "Enter", "modifiers": ["shift"]});
+        *key_at(&mut d, 0, 3) = json!({"key": "LCtrl"});
+        *key_at(&mut d, 0, 4) = json!({"modifiers": ["ctrl", "shift"]});
+        *key_at(&mut d, 0, 5) = json!({"key": "Fn1"});
+        *key_at(&mut d, 0, 6) = json!("0x00000029"); // hex still fine
+        let v = validate(&d, &ctx()).unwrap();
+        let keys = &v.doc["configuration"]["keymap"]["layers"][0]["keys"];
+        assert_eq!(keys[0], "0x00000004"); // KeyA
+        assert_eq!(keys[1], "0x00000004"); // "a"
+        assert_eq!(keys[2], "0x00020028"); // Shift+Enter
+        assert_eq!(keys[3], "0x00010000"); // bare Ctrl (usage 0 + bit)
+        assert_eq!(keys[4], "0x00030000"); // Ctrl+Shift chord
+        assert_eq!(keys[5], "0x0D010000"); // Fn1
+        assert_eq!(keys[6], "0x00000029"); // hex passthrough, normalized case
+        // No opaque warnings for plain tag-0/Fn values.
+        assert!(v.warnings.is_empty());
+        // The normalized document re-validates (config get → validate
+        // round-trip stability for diff).
+        validate(&v.doc, &ctx()).unwrap();
+    }
+
+    #[test]
+    fn semantic_key_rejections() {
+        let c = ctx();
+        // Unknown key name → invalid_document at the slot path.
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 5) = json!({"key": "HyperDrive"});
+        let e = validate(&d, &c).unwrap_err();
+        assert_eq!(e.code, "invalid_document");
+        assert_eq!(
+            e.path.as_deref(),
+            Some("configuration.keymap.layers[0].keys[5].key")
+        );
+        assert!(e.details["valid_names"].is_array());
+        // Unknown modifier.
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 5) = json!({"key": "KeyA", "modifiers": ["hyper"]});
+        assert_eq!(validate(&d, &c).unwrap_err().code, "invalid_document");
+        // Modifier key + extra modifiers.
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 5) = json!({"key": "LCtrl", "modifiers": ["shift"]});
+        assert_eq!(validate(&d, &c).unwrap_err().code, "invalid_document");
+        // Structural rejections via the schema (anyOf/object shape).
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 5) = json!({});
+        assert_eq!(validate(&d, &c).unwrap_err().code, "invalid_document");
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 5) = json!({"key": "KeyA", "bogus": 1});
+        assert_eq!(validate(&d, &c).unwrap_err().code, "unknown_property");
+        let mut d = valid_doc();
+        *key_at(&mut d, 0, 5) = json!(42);
+        assert_eq!(validate(&d, &c).unwrap_err().code, "invalid_document");
+        // Unencodable actions are not silently mis-encoded.
+        for bad in ["Macro1", "TapHold", "SOCD", "MouseLeft", "MediaPlay"] {
+            let mut d = valid_doc();
+            *key_at(&mut d, 0, 5) = json!({"key": bad});
+            assert_eq!(
+                validate(&d, &c).unwrap_err().code,
+                "invalid_document",
+                "{bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_keys_in_other_banks() {
+        // Every bank accepts the object form, not just bank 0.
+        let mut d = valid_doc();
+        for bank in 0..8usize {
+            *key_at(&mut d, bank, bank) = json!({"key": "F5"});
+        }
+        let v = validate(&d, &ctx()).unwrap();
+        for bank in 0..8usize {
+            assert_eq!(
+                v.doc["configuration"]["keymap"]["layers"][bank]["keys"][bank],
+                "0x0000003E" // F5 = HID 0x3E
+            );
+        }
     }
 }

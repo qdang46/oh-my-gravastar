@@ -23,6 +23,7 @@ pub mod diff;
 pub mod document;
 pub mod error;
 pub mod guide;
+mod keyaction;
 pub mod schema;
 pub mod state;
 
