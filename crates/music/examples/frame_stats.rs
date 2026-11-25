@@ -3,7 +3,7 @@
 //! without needing eyes on the keyboard.
 
 use omg_music::render::{BeatViz, FrameParams, FRAME_BYTES};
-use omg_music::{Bands, BeatEvent, BeatKind, SPECTRUM_BINS};
+use omg_music::{Bands, BeatEvent, BeatKind};
 
 fn stats(f: &[u8; FRAME_BYTES]) -> (f32, f32, u32) {
     let vals: Vec<u32> = f.iter().map(|&b| b as u32).collect();
@@ -28,8 +28,8 @@ fn main() {
     let mut b = Bands {
         // Realistic spectrum: bass-heavy, mids varied, some quiet bins.
         spectrum: [
-            0.75, 0.7, 0.55, 0.4, 0.3, 0.25, 0.35, 0.45, 0.5, 0.55, 0.5, 0.4, 0.35,
-            0.3, 0.3, 0.35, 0.4, 0.45, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1,
+            0.75, 0.7, 0.55, 0.4, 0.3, 0.25, 0.35, 0.45, 0.5, 0.55, 0.5, 0.4, 0.35, 0.3, 0.3, 0.35,
+            0.4, 0.45, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1,
         ],
         bass: 0.65,
         mid: 0.5,
@@ -45,11 +45,13 @@ fn main() {
             fps: 10.0,
             ..FrameParams::default()
         });
-        let mut b = Bands::default();
-        b.events = vec![BeatEvent {
-            kind: BeatKind::Kick,
-            strength: 1.0,
-        }];
+        let mut b = Bands {
+            events: vec![BeatEvent {
+                kind: BeatKind::Kick,
+                strength: 1.0,
+            }],
+            ..Default::default()
+        };
         for f in 0..10 {
             let fr = v.frame(&b, f as f32 * 0.1);
             let (mean, max, lit) = stats(&fr);
@@ -95,8 +97,7 @@ fn main() {
         let f = v.frame(&b, t);
         let (mean, max, lit) = stats(&f);
         let plane = |lo: usize, hi: usize| {
-            f[lo..hi].iter().map(|&x| x as u32).sum::<u32>() as f32
-                / ((hi - lo) as f32 * 255.0)
+            f[lo..hi].iter().map(|&x| x as u32).sum::<u32>() as f32 / ((hi - lo) as f32 * 255.0)
         };
         let tag = if b.beat { "BEAT " } else { "between" };
         println!(

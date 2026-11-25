@@ -16,8 +16,8 @@ use anyhow::{anyhow, bail, Result};
 use omg_music::capture::{open_source, SourceKind};
 use omg_music::{
     grid_geometry, pack_frame, parse_layers, preset, Analyzer, Bands, BeatViz, FrameParams,
-    KeyPoint, KeyPos, LayerKind, LayerMixer, ModeKind, ModeRenderer, Palette, PulseMode,
-    PulseViz, SpectrumViz,
+    KeyPoint, KeyPos, LayerKind, LayerMixer, ModeKind, ModeRenderer, Palette, PulseMode, PulseViz,
+    SpectrumViz,
 };
 use omg_proto_khub916::KeyValue;
 use serde_json::json;
@@ -52,89 +52,89 @@ fn fft_size_for(rate: u32) -> usize {
 fn usage_cell(usage: u16) -> Option<(f32, u8)> {
     let cell = match usage {
         // Function row.
-        0x29 => (0.5, 0),                    // Esc
-        0x3A..=0x3D => (1.5 + (usage - 0x3A) as f32, 0), // F1–F4
-        0x3E..=0x41 => (6.5 + (usage - 0x3E) as f32, 0), // F5–F8
+        0x29 => (0.5, 0),                                 // Esc
+        0x3A..=0x3D => (1.5 + (usage - 0x3A) as f32, 0),  // F1–F4
+        0x3E..=0x41 => (6.5 + (usage - 0x3E) as f32, 0),  // F5–F8
         0x42..=0x45 => (11.5 + (usage - 0x42) as f32, 0), // F9–F12
         // Number row.
-        0x35 => (0.5, 1),                    // `
+        0x35 => (0.5, 1),                                // `
         0x1E..=0x27 => (1.5 + (usage - 0x1E) as f32, 1), // 1..0
-        0x2D => (11.5, 1),                   // -
-        0x2E => (12.5, 1),                   // =
-        0x2A => (14.3, 1),                   // Backspace
-        0x46 => (12.8, 1),                   // PrtSc
-        0x47 => (13.8, 1),                   // ScrLk
-        0x48 => (14.8, 1),                   // Pause
+        0x2D => (11.5, 1),                               // -
+        0x2E => (12.5, 1),                               // =
+        0x2A => (14.3, 1),                               // Backspace
+        0x46 => (12.8, 1),                               // PrtSc
+        0x47 => (13.8, 1),                               // ScrLk
+        0x48 => (14.8, 1),                               // Pause
         // QWERTY row.
-        0x2B => (0.75, 2),                   // Tab
-        0x14 => (2.0, 2),                    // q
-        0x1A => (3.0, 2),                    // w
-        0x08 => (4.0, 2),                    // e
-        0x15 => (5.0, 2),                    // r
-        0x17 => (6.0, 2),                    // t
-        0x1C => (7.0, 2),                    // y
-        0x18 => (8.0, 2),                    // u
-        0x0C => (9.0, 2),                    // i
-        0x12 => (10.0, 2),                   // o
-        0x13 => (11.0, 2),                   // p
-        0x2F => (12.0, 2),                   // [
-        0x30 => (13.0, 2),                   // ]
-        0x31 => (14.0, 2),                   // \
-        0x28 => (14.6, 2),                   // Enter
+        0x2B => (0.75, 2), // Tab
+        0x14 => (2.0, 2),  // q
+        0x1A => (3.0, 2),  // w
+        0x08 => (4.0, 2),  // e
+        0x15 => (5.0, 2),  // r
+        0x17 => (6.0, 2),  // t
+        0x1C => (7.0, 2),  // y
+        0x18 => (8.0, 2),  // u
+        0x0C => (9.0, 2),  // i
+        0x12 => (10.0, 2), // o
+        0x13 => (11.0, 2), // p
+        0x2F => (12.0, 2), // [
+        0x30 => (13.0, 2), // ]
+        0x31 => (14.0, 2), // \
+        0x28 => (14.6, 2), // Enter
         // Home row.
-        0x39 => (0.9, 3),                    // Caps
-        0x04 => (2.25, 3),                   // a
-        0x16 => (3.25, 3),                   // s
-        0x07 => (4.25, 3),                   // d
-        0x09 => (5.25, 3),                   // f
-        0x0A => (6.25, 3),                   // g
-        0x0B => (7.25, 3),                   // h
-        0x0D => (8.25, 3),                   // j
-        0x0E => (9.25, 3),                   // k
-        0x0F => (10.25, 3),                  // l
-        0x33 => (11.25, 3),                  // ;
-        0x34 => (12.25, 3),                  // '
+        0x39 => (0.9, 3),   // Caps
+        0x04 => (2.25, 3),  // a
+        0x16 => (3.25, 3),  // s
+        0x07 => (4.25, 3),  // d
+        0x09 => (5.25, 3),  // f
+        0x0A => (6.25, 3),  // g
+        0x0B => (7.25, 3),  // h
+        0x0D => (8.25, 3),  // j
+        0x0E => (9.25, 3),  // k
+        0x0F => (10.25, 3), // l
+        0x33 => (11.25, 3), // ;
+        0x34 => (12.25, 3), // '
         // Bottom letter row.
-        0x1D => (2.75, 4),                   // z
-        0x1B => (3.75, 4),                   // x
-        0x06 => (4.75, 4),                   // c
-        0x19 => (5.75, 4),                   // v
-        0x05 => (6.75, 4),                   // b
-        0x11 => (7.75, 4),                   // n
-        0x10 => (8.75, 4),                   // m
-        0x36 => (9.75, 4),                   // ,
-        0x37 => (10.75, 4),                  // .
-        0x38 => (11.75, 4),                  // /
+        0x1D => (2.75, 4),  // z
+        0x1B => (3.75, 4),  // x
+        0x06 => (4.75, 4),  // c
+        0x19 => (5.75, 4),  // v
+        0x05 => (6.75, 4),  // b
+        0x11 => (7.75, 4),  // n
+        0x10 => (8.75, 4),  // m
+        0x36 => (9.75, 4),  // ,
+        0x37 => (10.75, 4), // .
+        0x38 => (11.75, 4), // /
         // Navigation cluster (right of main block, left of numpad).
-        0x49 => (11.6, 1),                   // Ins
-        0x4A => (12.6, 1),                   // Home
-        0x4B => (13.6, 1),                   // PgUp
-        0x4C => (11.6, 2),                   // Del
-        0x4D => (12.6, 2),                   // End
-        0x4E => (13.6, 2),                   // PgDn
-        0x50 => (11.6, 4),                   // ←
-        0x52 => (12.6, 4),                   // ↑
-        0x4F => (13.6, 4),                   // →
-        0x51 => (12.6, 5),                   // ↓
+        0x49 => (11.6, 1), // Ins
+        0x4A => (12.6, 1), // Home
+        0x4B => (13.6, 1), // PgUp
+        0x4C => (11.6, 2), // Del
+        0x4D => (12.6, 2), // End
+        0x4E => (13.6, 2), // PgDn
+        0x50 => (11.6, 4), // ←
+        0x52 => (12.6, 4), // ↑
+        0x4F => (13.6, 4), // →
+        0x51 => (12.6, 5), // ↓
         // Bottom row.
-        0x2C => (6.4, 5),                    // Space
-        0x65 => (12.0, 5),                   // Menu
+        0x2C => (6.4, 5),  // Space
+        0x65 => (12.0, 5), // Menu
         // Numpad.
-        0x53 => (14.5, 1),                   // NumLock
-        0x57 => (14.0, 1),                   // KP 7
-        0x58 => (15.0, 1),                   // KP 8
-        0x59 => (16.0, 1),                   // KP 9
-        0x54 => (16.4, 2),                   // KP /
-        0x5A => (14.0, 2),                   // KP 4
-        0x5B => (15.0, 2),                   // KP 5
-        0x5C => (16.0, 2),                   // KP 6
-        0x55 => (16.4, 3),                   // KP *
-        0x5D => (14.0, 3),                   // KP 1
-        0x5E => (15.0, 3),                   // KP 2
-        0x5F => (16.0, 3),                   // KP 3
-        0x56 => (16.4, 4),                   // KP -
-        0x60 => (14.5, 4),                   // KP 0
-        0x63 => (15.5, 4),                   // KP .
+        0x53 => (14.5, 1), // NumLock
+        0x57 => (14.0, 1), // KP 7
+        0x58 => (15.0, 1), // KP 8
+        0x59 => (16.0, 1), // KP 9
+        0x54 => (16.4, 2), // KP /
+        0x5A => (14.0, 2), // KP 4
+        0x5B => (15.0, 2), // KP 5
+        0x5C => (16.0, 2), // KP 6
+        0x55 => (16.4, 3), // KP *
+        0x5D => (14.0, 3), // KP 1
+        0x5E => (15.0, 3), // KP 2
+        0x5F => (16.0, 3), // KP 3
+        0x56 => (16.4, 4), // KP -
+        0x60 => (14.5, 4), // KP 0
+        0x63 => (15.5, 4), // KP .
         _ => return None,
     };
     Some(cell)
@@ -221,10 +221,16 @@ enum Viz {
     Pulse(PulseViz),
     /// Additive layer mixer — `planar` selects the byte order
     /// `pack_frame` writes.
-    Mixer { mixer: LayerMixer, planar: bool },
+    Mixer {
+        mixer: LayerMixer,
+        planar: bool,
+    },
     /// Single-shader rhythm mode (column fills, chase heads, beam,
     /// pattern) — `planar` selects the byte order `pack_frame` writes.
-    Mode { mode: ModeRenderer, planar: bool },
+    Mode {
+        mode: ModeRenderer,
+        planar: bool,
+    },
 }
 
 impl Viz {
@@ -439,10 +445,7 @@ pub fn cmd(
     // Map colour slots to physical key positions via the keymap so
     // effects follow the real keyboard geometry, not slot order.
     let keymap = kb.keymap(0).ok();
-    let positions = keymap
-        .as_deref()
-        .map(key_positions)
-        .unwrap_or_default();
+    let positions = keymap.as_deref().map(key_positions).unwrap_or_default();
     let params = FrameParams {
         sensitivity,
         brightness,
@@ -479,28 +482,28 @@ pub fn cmd(
         }
     } else {
         match effect {
-        "beat" => {
-            let mut v = BeatViz::new(params);
-            if !positions.is_empty() {
-                v.set_positions(&positions);
+            "beat" => {
+                let mut v = BeatViz::new(params);
+                if !positions.is_empty() {
+                    v.set_positions(&positions);
+                }
+                Viz::Beat(v)
             }
-            Viz::Beat(v)
-        }
-        "pulse" | "bass" | "ambient" => {
-            let mode = match effect {
-                "bass" => PulseMode::Bass,
-                "ambient" => PulseMode::Ambient,
-                _ => PulseMode::Beat,
-            };
-            Viz::Pulse(PulseViz::new(params, mode))
-        }
-        _ => {
-            let mut v = SpectrumViz::new(params);
-            if !positions.is_empty() {
-                v.set_positions(&positions.iter().map(|p| p.0).collect::<Vec<_>>());
+            "pulse" | "bass" | "ambient" => {
+                let mode = match effect {
+                    "bass" => PulseMode::Bass,
+                    "ambient" => PulseMode::Ambient,
+                    _ => PulseMode::Beat,
+                };
+                Viz::Pulse(PulseViz::new(params, mode))
             }
-            Viz::Spectrum(v)
-        }
+            _ => {
+                let mut v = SpectrumViz::new(params);
+                if !positions.is_empty() {
+                    v.set_positions(&positions.iter().map(|p| p.0).collect::<Vec<_>>());
+                }
+                Viz::Spectrum(v)
+            }
         }
     };
     let period = Duration::from_secs_f64(1.0 / fps);
@@ -554,8 +557,8 @@ pub fn cmd(
             }
         }
         if std::env::var("OMG_DEBUG_FRAMES").is_ok() && sent % 20 == 0 {
-            let mean = frame.iter().map(|&b| b as u32).sum::<u32>() as f32
-                / (frame.len() as f32 * 255.0);
+            let mean =
+                frame.iter().map(|&b| b as u32).sum::<u32>() as f32 / (frame.len() as f32 * 255.0);
             let lit = frame.iter().filter(|&&b| b > 24).count();
             eprintln!(
                 "  [frame {sent}] mean={mean:.3} lit_bytes={lit} level={:.2} bass={:.2} beat_pulse={:.2} bpm={:.0}",
@@ -634,7 +637,9 @@ pub fn cmd(
                 s["verified"].as_bool(),
                 s["error"].as_str(),
             ) {
-                (Some(step), Some(true), _) => println!("  {step}: verified (cmd {})", s["command"]),
+                (Some(step), Some(true), _) => {
+                    println!("  {step}: verified (cmd {})", s["command"])
+                }
                 (Some(step), _, Some(err)) => println!("  {step}: FAILED — {err}"),
                 _ => {}
             }
@@ -665,8 +670,18 @@ mod tests {
         };
         // q (row 2) is above-left of z (row 4).
         let pos = key_positions(&[kv(0x14), kv(0x1D)]);
-        assert!(pos[0].0 < pos[1].0, "q x {} should be left of z x {}", pos[0].0, pos[1].0);
-        assert!(pos[0].1 < pos[1].1, "q y {} should be above z y {}", pos[0].1, pos[1].1);
+        assert!(
+            pos[0].0 < pos[1].0,
+            "q x {} should be left of z x {}",
+            pos[0].0,
+            pos[1].0
+        );
+        assert!(
+            pos[0].1 < pos[1].1,
+            "q y {} should be above z y {}",
+            pos[0].1,
+            pos[1].1
+        );
         // Esc sits top-left; space sits bottom-centre.
         let pos = key_positions(&[kv(0x29), kv(0x2C)]);
         assert!(pos[0].1 < pos[1].1);

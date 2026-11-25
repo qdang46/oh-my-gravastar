@@ -231,15 +231,12 @@ fn parse_one_step(v: &Value, i: usize) -> Result<MacroStep> {
 /// inline JSON. Top level may be a bare step array or
 /// `{"name": "…", "steps": […]}`.
 fn parse_steps_input(text: &str) -> Result<StepsInput> {
-    let v: Value = serde_json::from_str(text)
-        .map_err(|e| anyhow::anyhow!("steps JSON parse error: {e}"))?;
+    let v: Value =
+        serde_json::from_str(text).map_err(|e| anyhow::anyhow!("steps JSON parse error: {e}"))?;
     let (name, arr) = match &v {
         Value::Array(_) => (None, v.clone()),
         Value::Object(o) => {
-            let name = o
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let name = o.get("name").and_then(Value::as_str).map(str::to_string);
             let arr = o
                 .get("steps")
                 .or_else(|| o.get("data"))
@@ -381,7 +378,12 @@ fn bind_key_slot(
         values[slot] = value;
         Ok(())
     })?;
-    kb916_write_report(cli, device, &format!("{change}: 0x{old:08X} -> 0x{value:08X}"), &outcome)
+    kb916_write_report(
+        cli,
+        device,
+        &format!("{change}: 0x{old:08X} -> 0x{value:08X}"),
+        &outcome,
+    )
 }
 
 // ── Command entry ───────────────────────────────────────────────────────
@@ -509,7 +511,9 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                         },
                     )
                 }
-                Kb916Macro::Unbind { key, layer, system, .. } => {
+                Kb916Macro::Unbind {
+                    key, layer, system, ..
+                } => {
                     check_keymap_args(*layer, *system)?;
                     bind_key_slot(
                         &mut kb,
@@ -583,9 +587,9 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
             let slot = if index == "next" || index == "append" {
                 entries.len()
             } else {
-                index
-                    .parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("bad macro index '{index}' (want a number or 'next')"))?
+                index.parse::<usize>().map_err(|_| {
+                    anyhow::anyhow!("bad macro index '{index}' (want a number or 'next')")
+                })?
             };
             if slot > entries.len() {
                 bail!(
@@ -643,7 +647,10 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                     "verified": outcome.verified,
                 }))?;
             } else {
-                println!("{report} — write cmd {} verified by read-back", outcome.command);
+                println!(
+                    "{report} — write cmd {} verified by read-back",
+                    outcome.command
+                );
             }
             if let Some(k) = key {
                 if *loop_count == 0 {
