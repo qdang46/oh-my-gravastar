@@ -18,13 +18,15 @@
 pub mod capture;
 pub mod dsp;
 pub mod mixer;
+pub mod pixelart;
 pub mod render;
 
 pub use dsp::{Analyzer, Bands, BeatEvent, BeatKind, SPECTRUM_BINS};
 pub use mixer::{
     grid_geometry, pack_frame, parse_layers, preset, LayerKind, LayerMixer, ModeKind,
-    ModeRenderer, Palette, Preset, KeyPoint, PRESETS,
+    ModeRenderer, Palette, Preset, KeyPoint, Rgb, PRESETS,
 };
+pub use pixelart::{ArtSource, MapMode, Motion, PixelArt, PixelArtSpec};
 pub use render::{
     render_frame, to_interleaved, to_planar, BeatViz, FrameParams, KeyPos, PulseMode,
     PulseViz, SpectrumViz, RENDERER_VERSION,
