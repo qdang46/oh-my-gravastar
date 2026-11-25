@@ -4256,17 +4256,16 @@ enum Kb916Light {
         /// Output brightness 0.0-1.0 (default 1.0 = full).
         #[arg(long, default_value_t = 1.0)]
         brightness: f32,
-        /// Visualiser: with `--engine legacy`, `beat` (onset-driven
-        /// kick/snare/hat motion over a dim spectrum base — hybrid,
-        /// default), `pulse` (whole-keyboard beat flash), `bass`
-        /// (brightness follows bass energy), `ambient` (follows overall
-        /// level), or `spectrum` (frequency mapped across keys). With
-        /// `--engine mixer`, a scene preset (`spectrum`, `party`,
-        /// `lava`, `equalizer`, `rainstorm`, `starry`, `pulse`,
-        /// `breathing`, `wave`, `spectrum-stars`) or a comma-separated
-        /// layer list with optional `=level` (`solid,breathing=0.5,
-        /// spectrum`); the clap default `beat` selects the `spectrum`
-        /// preset.
+        /// Visualiser, per engine. `legacy`: `beat` (default), `pulse`,
+        /// `bass`, `ambient`, `spectrum`. `mixer`: a scene preset
+        /// (`spectrum`, `party`, `lava`, `equalizer`, `rainstorm`,
+        /// `starry`, `pulse`, `breathing`, `wave`, `spectrum-stars`) or a
+        /// comma-separated layer list with optional `=level`
+        /// (`solid,breathing=0.5,spectrum`). `modes`: a rhythm-mode
+        /// shader (`dance-soft`, `dazzling-rock`, `clouds-rise`,
+        /// `light-field`, `gurgling-stream`, `blooming-passion`, `sine`,
+        /// `dynamic-spectrum` — default). The clap default `beat`
+        /// selects each engine's default scene/mode.
         #[arg(long, default_value = "beat")]
         effect: String,
         /// Dim uniform base brightness between beats, 0.0-1.0
@@ -4291,16 +4290,18 @@ enum Kb916Light {
         /// Renderer engine: `mixer` (additive layer mixer: spectrum/
         /// wave/pulse/ripple/rain/starry/breathing/lava layers blended
         /// with per-layer levels and palette hues, geometry mapped from
-        /// the keymap — default) or `legacy` (BeatViz/SpectrumViz/
+        /// the keymap — default), `modes` (single-shader rhythm modes:
+        /// column fills, chase heads, scrolling palette, bouncing beam,
+        /// gradient pattern), or `legacy` (BeatViz/SpectrumViz/
         /// PulseViz renderers).
         #[arg(long, default_value = "mixer")]
         engine: String,
-        /// Palette for `--engine mixer`: auto (preset palette, default),
-        /// rainbow|heat|ocean|sunset|neon|mono. An explicit name
-        /// overrides the preset's palette.
+        /// Palette for `--engine mixer`/`modes`: auto (preset palette,
+        /// or rainbow for modes — default), rainbow|heat|ocean|sunset|
+        /// neon|mono. An explicit name overrides the preset's palette.
         #[arg(long, default_value = "auto")]
         palette: String,
-        /// Effect speed 0.25-3.0 for `--engine mixer`.
+        /// Effect speed 0.25-3.0 for `--engine mixer`/`modes`.
         #[arg(long, default_value_t = 1.0)]
         speed: f32,
         /// Stop after this many seconds (default: until Ctrl-C).

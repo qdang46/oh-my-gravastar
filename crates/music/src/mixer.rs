@@ -663,6 +663,389 @@ impl LayerMixer {
     }
 }
 
+// ── Rhythm modes ──────────────────────────────────────────────────────
+//
+// Column/pattern shaders: vertical column fills driven by band
+// energies, position-chasing column heads, scrolling palettes and a
+// bouncing beam. Each mode keeps its own small state struct inside
+// [`ModeRenderer`]; all timing is `dt`-scaled so motion is identical
+// at any stream rate.
+
+/// A named rhythm mode — one self-contained shader over the key grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeKind {
+    /// Spectrum → per-column fill count (attack instant, decay linear).
+    DanceSoft,
+    /// Chasing head lights whole columns; frontier column flashes white.
+    DazzlingRock,
+    /// Per-column spectrum fill with per-column palette colours.
+    CloudsRise,
+    /// Global brightness pulse over a soft gradient field.
+    LightField,
+    /// Whole board lit, palette scrolls; last key per column boosted.
+    GurglingStream,
+    /// Rock chase + periodic column reshuffle + tip boost.
+    BloomingPassion,
+    /// Bouncing beam sweeping a row, rainbow along the beam.
+    Sine,
+    /// Static diagonal gradient pattern; tempo follows the music level.
+    DynamicSpectrum,
+}
+
+impl ModeKind {
+    /// All modes in display order.
+    pub const ALL: &'static [ModeKind] = &[
+        Self::DanceSoft,
+        Self::DazzlingRock,
+        Self::CloudsRise,
+        Self::LightField,
+        Self::GurglingStream,
+        Self::BloomingPassion,
+        Self::Sine,
+        Self::DynamicSpectrum,
+    ];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "dance-soft" | "dancesoft" | "dance" => Self::DanceSoft,
+            "dazzling-rock" | "rock" | "dazzling" => Self::DazzlingRock,
+            "clouds-rise" | "clouds" | "snow" => Self::CloudsRise,
+            "light-field" | "field" => Self::LightField,
+            "gurgling-stream" | "stream" | "gurgling" => Self::GurglingStream,
+            "blooming-passion" | "blooming" | "passion" => Self::BloomingPassion,
+            "sine" | "beam" => Self::Sine,
+            "dynamic-spectrum" | "spectrum-pattern" | "pattern" => {
+                Self::DynamicSpectrum
+            }
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DanceSoft => "dance-soft",
+            Self::DazzlingRock => "dazzling-rock",
+            Self::CloudsRise => "clouds-rise",
+            Self::LightField => "light-field",
+            Self::GurglingStream => "gurgling-stream",
+            Self::BloomingPassion => "blooming-passion",
+            Self::Sine => "sine",
+            Self::DynamicSpectrum => "dynamic-spectrum",
+        }
+    }
+}
+
+/// One rhythm-mode renderer. Geometry is installed once via
+/// [`ModeRenderer::set_geometry`]; [`ModeRenderer::frame`] returns
+/// per-slot linear RGB each call.
+pub struct ModeRenderer {
+    pub kind: ModeKind,
+    pub palette: Palette,
+    pub mono: Rgb,
+    /// Scene speed multiplier 0.25…3.
+    pub speed: f32,
+    /// Master brightness 0..1.
+    pub brightness: f32,
+    /// Input gain (`--sensitivity`).
+    pub gain: f32,
+
+    geom: Vec<KeyPoint>,
+    /// `n_cols` vertical columns; each holds slot ids ordered top→bottom.
+    cols: Vec<Vec<usize>>,
+    /// Per-slot flag: bottom-most key of its column (gurgling boost).
+    col_last: Vec<bool>,
+    /// 6×22 cell grid (row → col → slot) for pattern modes.
+    grid: Vec<Vec<Option<usize>>>,
+
+    t: f32,
+    hue: f32,
+    /// Chase position in column units (rock/bloom).
+    pos: f32,
+    /// Per-column smoothed lit-key counts (dance/clouds).
+    counts: Vec<f32>,
+    /// Phase clock driving the non-spectrum modes.
+    drive: f32,
+    frame_cnt: u32,
+}
+
+/// Split slots into `n` vertical columns by x; each column ordered
+/// top→bottom (row 0 first), matching the vendor column lists.
+fn column_sets(geom: &[KeyPoint], n: usize) -> Vec<Vec<usize>> {
+    let mut cols: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, k) in geom.iter().enumerate() {
+        let c = ((k.u() * n as f32) as usize).min(n - 1);
+        cols[c].push(i);
+    }
+    for col in cols.iter_mut() {
+        col.sort_by(|&a, &b| {
+            geom[a]
+                .y
+                .partial_cmp(&geom[b].y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(geom[a].x.partial_cmp(&geom[b].x).unwrap_or(std::cmp::Ordering::Equal))
+        });
+    }
+    cols
+}
+
+/// Bucket slots into a `rows`×`cols` cell grid (row = y, col = x).
+fn cell_grid(geom: &[KeyPoint], rows: usize, cols: usize) -> Vec<Vec<Option<usize>>> {
+    let mut grid = vec![vec![None; cols]; rows];
+    for (i, k) in geom.iter().enumerate() {
+        let r = (k.y.round() as usize).min(rows - 1);
+        let c = ((k.u() * cols as f32) as usize).min(cols - 1);
+        // First slot wins a cell; extras are dropped (grid is approximate).
+        if grid[r][c].is_none() {
+            grid[r][c] = Some(i);
+        }
+    }
+    grid
+}
+
+impl Default for ModeRenderer {
+    fn default() -> Self {
+        Self {
+            kind: ModeKind::DanceSoft,
+            palette: Palette::Sunset,
+            mono: Rgb { r: 1.0, g: 1.0, b: 1.0 },
+            speed: 1.0,
+            brightness: 1.0,
+            gain: 1.0,
+            geom: Vec::new(),
+            cols: Vec::new(),
+            col_last: Vec::new(),
+            grid: Vec::new(),
+            t: 0.0,
+            hue: 0.0,
+            pos: 0.0,
+            counts: Vec::new(),
+            drive: 0.0,
+            frame_cnt: 0,
+        }
+    }
+}
+
+impl ModeRenderer {
+    /// Install per-slot positions; rebuilds column/grid buckets.
+    pub fn set_geometry(&mut self, geom: Vec<KeyPoint>) {
+        self.cols = column_sets(&geom, 6);
+        self.col_last = vec![false; geom.len()];
+        for col in &self.cols {
+            if let Some(&last) = col.last() {
+                self.col_last[last] = true;
+            }
+        }
+        self.counts = vec![0.0; self.cols.len()];
+        self.grid = cell_grid(&geom, 6, 22);
+        self.geom = geom;
+    }
+
+    /// Number of colour slots covered.
+    pub fn slots(&self) -> usize {
+        self.geom.len()
+    }
+
+    /// Advance the shared phase clock. Non-spectrum modes are driven by
+    /// `drive = t·speed·(1.0 + 2.5·level)` so louder music runs the
+    /// animation faster — the role the vendor's external phase arg plays.
+    fn drive_phase(&mut self, f: &Feat) {
+        self.drive += f.dt * self.speed * (1.0 + f.level * 2.5);
+    }
+
+    /// Render one frame → per-slot linear RGB (len = `slots()`).
+    pub fn frame(&mut self, bands: &Bands, dt: f32) -> Vec<Rgb> {
+        self.t += dt;
+        self.hue = (self.hue + 0.075 * self.speed * dt).rem_euclid(1.0);
+        let f = make_feat(bands, self.t, dt, self.gain);
+        self.drive_phase(&f);
+        self.frame_cnt = self.frame_cnt.wrapping_add(1);
+        let mut out = vec![Rgb::BLACK; self.geom.len()];
+        match self.kind {
+            ModeKind::DanceSoft | ModeKind::CloudsRise => {
+                self.column_spectrum(&f, &mut out, self.kind == ModeKind::CloudsRise)
+            }
+            ModeKind::DazzlingRock | ModeKind::BloomingPassion => {
+                self.column_chase(&f, &mut out, self.kind == ModeKind::BloomingPassion)
+            }
+            ModeKind::LightField => self.light_field(&f, &mut out),
+            ModeKind::GurglingStream => self.gurgling(&f, &mut out),
+            ModeKind::Sine => self.sine_beam(&f, &mut out),
+            ModeKind::DynamicSpectrum => self.pattern(&f, &mut out),
+        }
+        out.iter()
+            .map(|c| c.clamp().scale(self.brightness))
+            .collect()
+    }
+
+    /// Shared column-fill shader (dance-soft / clouds-rise): per column
+    /// a band energy becomes a lit-key count — instant attack, linear
+    /// decay — and the first `count` keys (top→bottom) light up.
+    fn column_spectrum(&mut self, f: &Feat, out: &mut [Rgb], per_column_color: bool) {
+        let n = self.cols.len();
+        if n == 0 {
+            return;
+        }
+        let bpc = (SPECTRUM_BINS / n).max(1);
+        for (i, col) in self.cols.iter().enumerate() {
+            // Vendor band pick: column i samples band i·bpc − 1.
+            let band = (i * bpc).saturating_sub(1).min(SPECTRUM_BINS - 1);
+            let raw = f.bands[band] * 10.0;
+            // Wrap modulo the column length (vendor per-column divisor).
+            let m = if col.is_empty() {
+                0.0
+            } else {
+                (raw % col.len() as f32).clamp(0.0, col.len() as f32)
+            };
+            // Slew: instant attack, −1 key per frame decay (dt-scaled).
+            let c = &mut self.counts[i];
+            if m > *c {
+                *c = m;
+            } else {
+                *c = (*c - f.dt * 33.0).max(m);
+            }
+            let lit = (*c).ceil() as usize;
+            let col_color = if per_column_color {
+                self.palette.color(i as f32 / n as f32 + self.hue, self.mono)
+            } else {
+                self.palette.color(band as f32 / SPECTRUM_BINS as f32 + self.hue, self.mono)
+            };
+            for &slot in col.iter().take(lit) {
+                out[slot] = out[slot].add(col_color);
+            }
+        }
+    }
+
+    /// Shared chase shader (dazzling-rock / blooming-passion): a head
+    /// position slews ±1 column/frame toward `drive mod P`; the first
+    /// `int(pos)` columns light fully, the frontier column flashes.
+    fn column_chase(&mut self, f: &Feat, out: &mut [Rgb], reshuffle: bool) {
+        let n = self.cols.len();
+        if n == 0 {
+            return;
+        }
+        // Blooming reshuffles the column order every ~31 frames.
+        if reshuffle && self.frame_cnt % 31 == 0 && self.frame_cnt > 0 {
+            self.cols.rotate_left(1);
+        }
+        let period = if reshuffle { 5.0 } else { 8.0 };
+        let rem = self.drive.rem_euclid(period);
+        // Chase at ~33 columns/sec (vendor: ±1.0 per 30 ms frame).
+        let step = f.dt * 33.0 * self.speed;
+        if rem > self.pos {
+            self.pos = (self.pos + step).min(rem);
+        } else {
+            self.pos = (self.pos - step).max(rem);
+        }
+        if self.pos < 0.0 {
+            self.pos = 0.0;
+        }
+        let count = (self.pos as usize).min(n);
+        let frac = (self.pos - count as f32).max(0.0);
+        for (i, col) in self.cols.iter().enumerate() {
+            if i >= count {
+                break;
+            }
+            let base = self.palette.color(i as f32 / n as f32 + self.hue, self.mono);
+            let is_frontier = i + 1 == count;
+            for &slot in col.iter() {
+                let mut c = base;
+                if is_frontier {
+                    if reshuffle {
+                        // Tip boost: colour·frac + ~90/255 lift.
+                        c = Rgb {
+                            r: (c.r * frac + 0.35).min(1.0),
+                            g: (c.g * frac + 0.35).min(1.0),
+                            b: (c.b * frac + 0.35).min(1.0),
+                        };
+                    } else {
+                        // Frontier column goes white.
+                        c = Rgb { r: 1.0, g: 1.0, b: 1.0 };
+                    }
+                }
+                out[slot] = out[slot].add(c);
+            }
+        }
+        // Single lit column blinks: alternate white / dim every frame.
+        if count == 1 && !reshuffle {
+            let bright = self.frame_cnt % 2 == 0;
+            for col in self.cols.iter().take(1) {
+                for &slot in col.iter() {
+                    out[slot] = if bright {
+                        Rgb { r: 1.0, g: 1.0, b: 1.0 }
+                    } else {
+                        out[slot].scale(0.3)
+                    };
+                }
+            }
+        }
+    }
+
+    /// Light-field: whole board pulses 0→full brightness on a soft
+    /// palette gradient; `phase = drive mod 4` gives a ~4-unit cycle.
+    fn light_field(&mut self, _f: &Feat, out: &mut [Rgb]) {
+        let phase = self.drive.rem_euclid(4.0);
+        let v = (phase * 0.25).clamp(0.0, 1.0);
+        if v <= 0.01 {
+            return;
+        }
+        let drift = self.t * self.speed / 24.0 + self.hue;
+        for (i, k) in self.geom.iter().enumerate() {
+            out[i] = out[i].add(
+                self.palette
+                    .color(k.u() * 0.35 + drift, self.mono)
+                    .scale(v),
+            );
+        }
+    }
+
+    /// Gurgling stream: entire board one scrolling colour; the last
+    /// key of each column gets a 1.3× boost.
+    fn gurgling(&mut self, f: &Feat, out: &mut [Rgb]) {
+        // Palette advances once per frame (~scroll).
+        self.hue = (self.hue + f.dt * self.speed * 0.5).rem_euclid(1.0);
+        let col = self.palette.color(self.hue, self.mono);
+        for (i, o) in out.iter_mut().enumerate() {
+            let boost = if self.col_last.get(i).copied().unwrap_or(false) {
+                1.3
+            } else {
+                1.0
+            };
+            *o = o.add(col.scale(boost));
+        }
+    }
+
+    /// Sine beam: a band sweeps row 0→5→0; colour runs rainbow along x.
+    fn sine_beam(&mut self, f: &Feat, out: &mut [Rgb]) {
+        // Triangle sweep 0..5 rows at ~0.5 cycles/sec·speed.
+        let phase = (self.drive * 0.5).rem_euclid(10.0);
+        let row = if phase < 5.0 { phase } else { 10.0 - phase }.round() as usize;
+        self.hue = (self.hue + f.dt * self.speed * 0.8).rem_euclid(1.0);
+        for (i, k) in self.geom.iter().enumerate() {
+            if k.row() as usize != row.min(5) {
+                continue;
+            }
+            out[i] = out[i].add(
+                self.palette
+                    .color(k.u() * 0.6 + self.hue, self.mono),
+            );
+        }
+    }
+
+    /// Dynamic spectrum: static diagonal gradient over a 6×22 cell
+    /// grid; the pattern drifts slowly with the music level.
+    fn pattern(&mut self, f: &Feat, out: &mut [Rgb]) {
+        self.hue = (self.hue + f.dt * self.speed * (0.02 + f.level * 0.2)).rem_euclid(1.0);
+        for (r, row) in self.grid.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                let Some(slot) = cell else { continue };
+                // Vendor colour index = rowPage·256 + shade → /256.
+                let t = (((10 * r + 7 + 11 * c) % 256) as f32) / 256.0 + self.hue;
+                out[*slot] = out[*slot].add(self.palette.color(t, self.mono));
+            }
+        }
+    }
+}
+
 /// Pack per-slot linear RGB into the 378-byte cmd-8 frame payload.
 /// `planar` = `[R×126][G×126][B×126]`; `interleaved` = slot×RGB.
 pub fn pack_frame(colors: &[Rgb], slots: usize, planar: bool) -> Vec<u8> {
@@ -782,6 +1165,51 @@ mod tests {
         assert_eq!(layers[1], (LayerKind::Ripple, None));
         assert!(parse_layers("bogus").is_err());
         assert!(parse_layers("spectrum=2.0").is_err());
+    }
+
+    #[test]
+    fn mode_spectrum_modes_light_columns() {
+        for kind in [ModeKind::DanceSoft, ModeKind::CloudsRise] {
+            let mut m = ModeRenderer {
+                kind,
+                ..Default::default()
+            };
+            m.set_geometry(test_geom());
+            let mut b = loud_bass();
+            b.spectrum = [0.8; SPECTRUM_BINS];
+            let mut lit = 0usize;
+            for _ in 0..60 {
+                let frame = m.frame(&b, 0.02);
+                lit = frame.iter().filter(|c| c.r + c.g + c.b > 0.05).count();
+            }
+            assert!(lit > 10, "{kind:?} must light keys on loud input");
+        }
+    }
+
+    #[test]
+    fn mode_chase_and_pattern_always_render() {
+        for kind in ModeKind::ALL {
+            let mut m = ModeRenderer {
+                kind: *kind,
+                ..Default::default()
+            };
+            m.set_geometry(test_geom());
+            let mut any = false;
+            for i in 0..120 {
+                let b = if i % 30 == 0 { loud_bass() } else { Bands::default() };
+                let frame = m.frame(&b, 0.02);
+                any |= frame.iter().any(|c| c.r + c.g + c.b > 0.02);
+            }
+            assert!(any, "{kind:?} must produce light at some point");
+        }
+    }
+
+    #[test]
+    fn mode_parse_roundtrip() {
+        for kind in ModeKind::ALL {
+            assert_eq!(ModeKind::parse(kind.name()), Some(*kind));
+        }
+        assert!(ModeKind::parse("bogus").is_none());
     }
 
     #[test]

@@ -89,6 +89,43 @@ the rhythm modes on PC. Full RE notes live in the session artifacts
   `GetSupportedEffects` — driven by the khub webapp Rhythm page;
   launch via `bypc-MAxis://`.
 
+## Effect shader decode (vtable slot [18], all 8 modes)
+
+Full per-function notes: `.tmp-aula-hub/re/notes_{169_173,170_171,172_428_174}.md`
+(disassembly dumps `v18_*.asm`, `dance18.asm`, helper dumps
+`sine_sub*.asm`). Vendor runs ~33 fps (`Sleep(30)`); several modes are
+**not spectrum-driven in-render** — they chase an external phase arg
+(the companion's DSP clock), which our `ModeRenderer` reproduces as
+`drive = t·speed·(1 + 2.5·level)`.
+
+| mode | shader | audio link |
+|---|---|---|
+| 168 dance-soft | per-column band → lit-key count; attack instant, decay −1 key/frame; first N keys of column list lit; palette per column | spectrum ×10 mod col-len |
+| 169 dazzling-rock | chase head `pos` slews ±1/frame toward `t mod P`; first `int(pos)` columns fully lit, frontier white; single column blinks ×0.3/white; `0xAB 0xBA` header | none (phase-driven) |
+| 170 clouds-rise | same column-fill math as 168 but per-column palette index | spectrum ×10 mod divisor |
+| 171 light-field | uniform field `ch·0.25·phase`, `phase = t mod 4` sawtooth; `0xAB 0xBA` header + `buf[0x207]=0xFF` | none |
+| 172 gurgling-stream | whole board one colour, palette advances 1/frame; last key per column ×1.3 (mod-256 wrap) | none |
+| 173 blooming-passion | rock chase (P=5) + column table reshuffles every ~31 frames; frontier boost `rgb·frac + 90` | none |
+| 174 sine | bouncing beam over 6×23 key matrix; palette advances per key along beam; sub-modes pick sweep variant; self-`Sleep(30)` | none |
+| 428 dynamic-spectrum | pre-baked 6×22 pattern: `palette[rowPage·256 + shade]` raw bytes, no memset; brightness-count feedback nudges `cfg+0x40C` tempo | indirect only |
+
+Spatial data: 9 embedded `Audion_Configs/*.ini` (extracted to
+`.tmp-aula-hub/re/audion_configs.txt`) — `[Key_Columns]`/`[Key_Rows]`
+give 6×N key-offset grids (byte offsets into the 512 B payload, 3 B/key);
+`[Dazzling_rock]`/`[Blooming_passion]` sections carry custom band maps
+(`|` = band groups, `,` = keys). Only those two modes have custom maps;
+the rest use the base column layout.
+
+Our port (`ModeRenderer` in `crates/music/src/mixer.rs`,
+`--engine modes --effect <name>`): same shader structure over the
+K1 Pro keymap geometry — 6 x-bucketed columns (top→bottom order),
+6×22 cell grid for the pattern mode, dt-scaled timing. Vendor-only
+details dropped or approximated: per-column divisor bytes (we use
+column length), the `q & 0xff` fmod quirk, `Sleep()` pacing,
+`0xAB 0xBA`/`0xFF` header bytes (our cmd-8 frame already carries its
+own header), palette `ColorTyp` runtime tables (mapped to our
+`Palette`), and the 428 feedback loop.
+
 ## Not yet extracted
 
 - ~~Frame byte layout inside `HIDCom`~~ — resolved above for the

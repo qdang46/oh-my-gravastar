@@ -16,7 +16,8 @@ use anyhow::{anyhow, bail, Result};
 use omg_music::capture::{open_source, SourceKind};
 use omg_music::{
     grid_geometry, pack_frame, parse_layers, preset, Analyzer, Bands, BeatViz, FrameParams,
-    KeyPoint, KeyPos, LayerKind, LayerMixer, Palette, PulseMode, PulseViz, SpectrumViz,
+    KeyPoint, KeyPos, LayerKind, LayerMixer, ModeKind, ModeRenderer, Palette, PulseMode,
+    PulseViz, SpectrumViz,
 };
 use omg_proto_khub916::KeyValue;
 use serde_json::json;
@@ -221,6 +222,9 @@ enum Viz {
     /// Additive layer mixer — `planar` selects the byte order
     /// `pack_frame` writes.
     Mixer { mixer: LayerMixer, planar: bool },
+    /// Single-shader rhythm mode (column fills, chase heads, beam,
+    /// pattern) — `planar` selects the byte order `pack_frame` writes.
+    Mode { mode: ModeRenderer, planar: bool },
 }
 
 impl Viz {
@@ -231,6 +235,13 @@ impl Viz {
             Viz::Pulse(v) => v.frame(bands, t),
             Viz::Mixer { mixer, planar } => {
                 let colors = mixer.frame(bands, dt);
+                let bytes = pack_frame(&colors, 126, *planar);
+                let mut out = [0u8; omg_music::render::FRAME_BYTES];
+                out.copy_from_slice(&bytes[..omg_music::render::FRAME_BYTES]);
+                out
+            }
+            Viz::Mode { mode, planar } => {
+                let colors = mode.frame(bands, dt);
                 let bytes = pack_frame(&colors, 126, *planar);
                 let mut out = [0u8; omg_music::render::FRAME_BYTES];
                 out.copy_from_slice(&bytes[..omg_music::render::FRAME_BYTES]);
@@ -299,20 +310,38 @@ pub fn cmd(
     if !matches!(pixel_order, "planar" | "interleaved") {
         bail!("unknown --pixel-order '{pixel_order}' (want planar|interleaved)");
     }
-    if !matches!(engine, "legacy" | "mixer") {
-        bail!("unknown --engine '{engine}' (want legacy|mixer)");
+    if !matches!(engine, "legacy" | "mixer" | "modes") {
+        bail!("unknown --engine '{engine}' (want legacy|mixer|modes)");
     }
     // --effect means different things per engine: legacy visualiser
     // names for `legacy`; for `mixer` a preset name or a comma-separated
-    // layer list with optional `=level` overrides. The clap default
-    // "beat" is a legacy name — for the mixer it selects the default
-    // preset.
+    // layer list with optional `=level` overrides; for `modes` a rhythm
+    // mode name. The clap default "beat" is a legacy name — for the
+    // layer engines it selects their default scene/mode.
     let mut mixer_spec = String::new();
+    let mut mode_kind = ModeKind::DynamicSpectrum;
     if engine == "mixer" {
         mixer_spec = if effect == "beat" {
             "spectrum".to_string()
         } else {
             effect.to_string()
+        };
+    } else if engine == "modes" {
+        mode_kind = if effect == "beat" {
+            ModeKind::DynamicSpectrum
+        } else {
+            match ModeKind::parse(effect) {
+                Some(m) => m,
+                None => bail!(
+                    "unknown --effect '{effect}' for --engine modes \
+                     (want {})",
+                    ModeKind::ALL
+                        .iter()
+                        .map(|m| m.name())
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ),
+            }
         };
     } else if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
         bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
@@ -344,12 +373,19 @@ pub fn cmd(
     } else {
         (Vec::new(), None)
     };
-    // --palette: "auto" keeps the preset's palette (or Sunset for raw
-    // layer lists); an explicit name overrides it. Only the mixer
-    // consumes a palette — legacy ignores the flag entirely.
-    let mixer_palette = if engine == "mixer" {
+    // --palette: "auto" keeps the preset's palette (Sunset for raw
+    // layer lists, Rainbow for rhythm modes); an explicit name
+    // overrides it. Only the layer engines consume a palette —
+    // legacy ignores the flag entirely.
+    let mixer_palette = if engine == "legacy" {
+        Palette::Sunset
+    } else {
         match palette {
-            "auto" => preset_palette.unwrap_or(Palette::Sunset),
+            "auto" => preset_palette.unwrap_or(if engine == "modes" {
+                Palette::Rainbow
+            } else {
+                Palette::Sunset
+            }),
             other => match Palette::parse(other) {
                 Some(p) => p,
                 None => bail!(
@@ -358,11 +394,9 @@ pub fn cmd(
                 ),
             },
         }
-    } else {
-        Palette::Sunset
     };
-    if engine == "mixer" && !(0.25..=3.0).contains(&speed) {
-        bail!("--speed must be in 0.25..=3.0 for --engine mixer, got {speed}");
+    if engine != "legacy" && !(0.25..=3.0).contains(&speed) {
+        bail!("--speed must be in 0.25..=3.0 for --engine {engine}, got {speed}");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -431,6 +465,18 @@ pub fn cmd(
             mixer,
             planar: pixel_order == "planar",
         }
+    } else if engine == "modes" {
+        let mut mode = ModeRenderer::default();
+        mode.kind = mode_kind;
+        mode.palette = mixer_palette;
+        mode.speed = speed;
+        mode.brightness = brightness;
+        mode.gain = sensitivity;
+        mode.set_geometry(mixer_geometry(keymap.as_deref()));
+        Viz::Mode {
+            mode,
+            planar: pixel_order == "planar",
+        }
     } else {
         match effect {
         "beat" => {
@@ -497,9 +543,10 @@ pub fn cmd(
         let t = started.elapsed().as_secs_f32();
         let mut frame = viz.frame(&bands, t, period.as_secs_f32());
         match &viz {
-            // The mixer packs its byte order via `pack_frame`; only the
-            // legacy visualisers emit planar and may need conversion.
-            Viz::Mixer { .. } => {}
+            // The layer engines pack their byte order via `pack_frame`;
+            // only the legacy visualisers emit planar and may need
+            // conversion.
+            Viz::Mixer { .. } | Viz::Mode { .. } => {}
             _ => {
                 if pixel_order == "interleaved" {
                     frame = omg_music::to_interleaved(&frame);
