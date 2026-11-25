@@ -172,10 +172,18 @@ fn list_json(device: &omg_hid::DeviceInfo, blob: &[u8], keymap: &[u32]) -> Value
 fn print_list_human(blob: &[u8], keymap: &[u32]) {
     let entries = advkey::history_entries(blob);
     let bindings = advkey::scan_adv_bindings(keymap);
-    println!("adv-key history blob: {} bytes", advkey::normalize_blob(blob).len());
+    println!(
+        "adv-key history blob: {} bytes",
+        advkey::normalize_blob(blob).len()
+    );
     for kind in [AdvKind::Socd, AdvKind::Mt, AdvKind::Tgl] {
         let ks = entries.iter().filter(|e| e.kind == kind).count();
-        println!("  {}: {} entr{}", kind.name().to_uppercase(), ks, if ks == 1 { "y" } else { "ies" });
+        println!(
+            "  {}: {} entr{}",
+            kind.name().to_uppercase(),
+            ks,
+            if ks == 1 { "y" } else { "ies" }
+        );
         for e in entries.iter().filter(|e| e.kind == kind) {
             let vals: Vec<String> = e
                 .values
@@ -233,9 +241,7 @@ fn parse_direction(s: &str) -> Result<u8> {
         "1" | "a" | "key-a" | "keya" | "priority-a" | "absoluteprioritykeyone" => Ok(1),
         "2" | "b" | "key-b" | "keyb" | "priority-b" | "absoluteprioritykeytwo" => Ok(2),
         "3" | "cancel" | "all-cancel" | "allcancel" => Ok(3),
-        _ => bail!(
-            "bad SOCD direction '{s}' (want 0-3, last, key-a, key-b or cancel)"
-        ),
+        _ => bail!("bad SOCD direction '{s}' (want 0-3, last, key-a, key-b or cancel)"),
     }
 }
 
@@ -304,7 +310,10 @@ pub fn cmd(cli: &Cli, command: &Kb916Adv) -> Result<ExitCode> {
                 );
                 match detail {
                     AdvDetail::Socd { direction, key_b } => {
-                        println!("  direction: {direction}{}", if key_b { " (key B)" } else { " (key A)" });
+                        println!(
+                            "  direction: {direction}{}",
+                            if key_b { " (key B)" } else { " (key A)" }
+                        );
                     }
                     AdvDetail::Mt { time } => {
                         println!("  hold time: {time} ({} ms approx)", time as u32 * 10);
@@ -317,7 +326,11 @@ pub fn cmd(cli: &Cli, command: &Kb916Adv) -> Result<ExitCode> {
                             let l = advkey::value_label(v);
                             println!(
                                 "  payload 0x{v:08X}{}",
-                                if l.is_empty() { String::new() } else { format!("  {l}") }
+                                if l.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("  {l}")
+                                }
                             );
                         }
                     }
@@ -369,9 +382,7 @@ pub fn cmd(cli: &Cli, command: &Kb916Adv) -> Result<ExitCode> {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 match kb916_session(cli)? {
                     Ok((_d2, mut kb2)) => match kb2.adv_key_config() {
-                        Ok(back)
-                            if advkey::normalize_blob(&back) == plan.blob =>
-                        {
+                        Ok(back) if advkey::normalize_blob(&back) == plan.blob => {
                             history_verified = true;
                             " (verified by read-back on a fresh session)".to_string()
                         }
@@ -386,13 +397,28 @@ pub fn cmd(cli: &Cli, command: &Kb916Adv) -> Result<ExitCode> {
                 " (verified by read-back)".to_string()
             };
             let change = match command {
-                Kb916AdvSet::Mt { key, tap, hold, time, .. } => format!(
+                Kb916AdvSet::Mt {
+                    key,
+                    tap,
+                    hold,
+                    time,
+                    ..
+                } => format!(
                     "mt key[{key}] (pos {}): tap {} hold {} time {time}",
                     8 + key * 4,
-                    parse_kb916_key_value(tap).map(|v| format!("0x{v:08X}")).unwrap_or_default(),
-                    parse_kb916_key_value(hold).map(|v| format!("0x{v:08X}")).unwrap_or_default(),
+                    parse_kb916_key_value(tap)
+                        .map(|v| format!("0x{v:08X}"))
+                        .unwrap_or_default(),
+                    parse_kb916_key_value(hold)
+                        .map(|v| format!("0x{v:08X}"))
+                        .unwrap_or_default(),
                 ),
-                Kb916AdvSet::Socd { key_a, key_b, direction, .. } => format!(
+                Kb916AdvSet::Socd {
+                    key_a,
+                    key_b,
+                    direction,
+                    ..
+                } => format!(
                     "socd key[{key_a}]+key[{key_b}] (pos {}+{}): direction {}",
                     8 + key_a * 4,
                     8 + key_b * 4,

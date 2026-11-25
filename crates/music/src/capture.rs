@@ -192,7 +192,12 @@ pub mod system {
                 .with_channel_count(1);
             let mut stream = SCStream::new(&filter, &config)?;
             let queue = Arc::new(Mutex::new(Vec::new()));
-            stream.add_output_handler(AudioHandler { queue: queue.clone() }, SCStreamOutputType::Audio)?;
+            stream.add_output_handler(
+                AudioHandler {
+                    queue: queue.clone(),
+                },
+                SCStreamOutputType::Audio,
+            )?;
             stream.start_capture()?;
             Ok(Self {
                 queue,
@@ -233,9 +238,7 @@ pub mod system {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
-    use wasapi::{
-        initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat,
-    };
+    use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
     const SAMPLE_RATE: usize = 48_000;
     const CHANNELS: usize = 2;

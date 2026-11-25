@@ -387,13 +387,14 @@ fn fn_doctor_summary(r: &FnDoctorReport) -> String {
         FnKeyStatus::Empty => problems.push(format!(
             "the Fn key ({fn_display}) has no binding in the base layer"
         )),
-        FnKeyStatus::Rebound => problems.push(format!(
+        FnKeyStatus::Rebound => {
+            problems.push(format!(
             "the Fn key ({fn_display}) is rebound to {} — it no longer switches to the Fn layer",
             r.fn_key.label.clone().unwrap_or_else(|| "something else".into())
-        )),
-        FnKeyStatus::Unreadable => {
-            notes.push("the Fn key could not be checked — the base layer read was incomplete".into())
+        ))
         }
+        FnKeyStatus::Unreadable => notes
+            .push("the Fn key could not be checked — the base layer read was incomplete".into()),
         FnKeyStatus::NoLayout => {
             notes.push("the Fn key position is unknown for this model (no layout table)".into())
         }
@@ -475,9 +476,9 @@ pub(crate) fn cmd(
             .clone()
             .unwrap_or_else(|| format!("slot {}", fk.index.unwrap_or(0)));
         match fk.status {
-            FnKeyStatus::Fn => println!(
-                "Fn key check: {fk_name} still switches to the Fn layer (arg 0x00)"
-            ),
+            FnKeyStatus::Fn => {
+                println!("Fn key check: {fk_name} still switches to the Fn layer (arg 0x00)")
+            }
             FnKeyStatus::Empty => println!(
                 "Fn key check: {fk_name} reads 0x00000000 in the base layer — no binding at all"
             ),
@@ -489,11 +490,14 @@ pub(crate) fn cmd(
                 "Fn key check: could not read base-layer slot {} (incomplete read)",
                 fk.index.unwrap_or(0)
             ),
-            FnKeyStatus::NoLayout => println!(
-                "Fn key check: skipped — no layout table for this model"
-            ),
+            FnKeyStatus::NoLayout => {
+                println!("Fn key check: skipped — no layout table for this model")
+            }
         }
-        println!("read {} slots; this check sends queries only, never writes", report.slot_count);
+        println!(
+            "read {} slots; this check sends queries only, never writes",
+            report.slot_count
+        );
     }
     Ok(())
 }

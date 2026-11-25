@@ -56,10 +56,8 @@ const MOD_GUI: u32 = 0x0008_0000;
 /// Sided `L*`/`R*` variants and `control`/`win`/`meta` aliases collapse to
 /// the same bit — the encoding has no sidedness.
 pub const MODIFIER_NAMES: &[&str] = &[
-    "ctrl", "control", "lctrl", "rctrl",
-    "shift", "lshift", "rshift",
-    "alt", "lalt", "ralt",
-    "gui", "win", "meta", "lgui", "rgui", "lwin", "rwin",
+    "ctrl", "control", "lctrl", "rctrl", "shift", "lshift", "rshift", "alt", "lalt", "ralt", "gui",
+    "win", "meta", "lgui", "rgui", "lwin", "rwin",
 ];
 
 /// `(name, HID keyboard-page usage)` for named keys. Aliases are grouped;
@@ -126,15 +124,17 @@ pub fn valid_names() -> Vec<String> {
         .iter()
         .flat_map(|(names, _)| names.iter().map(|n| n.to_string()))
         .collect();
-    v.extend([
-        "a-z (or keya-keyz)",
-        "0-9 (or digit0-digit9)",
-        "f1-f24",
-        "fn, fn0-fn3",
-        "none",
-    ]
-    .iter()
-    .map(|s| s.to_string()));
+    v.extend(
+        [
+            "a-z (or keya-keyz)",
+            "0-9 (or digit0-digit9)",
+            "f1-f24",
+            "fn, fn0-fn3",
+            "none",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
     v.extend(MODIFIER_NAMES.iter().map(|s| s.to_string()));
     v
 }
@@ -176,7 +176,7 @@ fn base_usage(name: &str) -> Option<u16> {
                 } else {
                     // HID: '1'..='9' = 0x1E..=0x26, '0' = 0x27.
                     0x1D + u16::from(c - b'0')
-                })
+                });
             }
             // single-char punctuation ("-", "=", …) falls through to NAMED_KEYS
             _ => {}
@@ -326,9 +326,9 @@ fn resolve_action_object(o: &Map<String, Value>, path: &str) -> Result<u32, Conf
     };
 
     let kp = format!("{path}.key");
-    let name = kv.as_str().ok_or_else(|| {
-        ConfigError::invalid_document(format!("{kp} must be a string")).at(&kp)
-    })?;
+    let name = kv
+        .as_str()
+        .ok_or_else(|| ConfigError::invalid_document(format!("{kp} must be a string")).at(&kp))?;
     let lname = name.trim().to_ascii_lowercase();
 
     // A modifier used as the key itself → usage 0 + its bit (the
@@ -449,7 +449,9 @@ mod tests {
         assert!(e.details["valid_names"].is_array());
         // Unknown modifier.
         assert_eq!(
-            resolve(json!({"key":"KeyA","modifiers":["hyper"]})).unwrap_err().code,
+            resolve(json!({"key":"KeyA","modifiers":["hyper"]}))
+                .unwrap_err()
+                .code,
             "invalid_document"
         );
         // Modifier key + extra modifiers.
@@ -464,8 +466,18 @@ mod tests {
         assert_eq!(e.code, "unknown_property");
         // Things the encoding cannot express must not silently mis-encode:
         // they are simply unknown names (documented → raw hex).
-        for bad in ["Macro1", "TapHold", "SOCD", "Layer2", "MouseLeft", "MediaPlay"] {
-            assert!(resolve(json!({"key":bad})).is_err(), "{bad} should not encode");
+        for bad in [
+            "Macro1",
+            "TapHold",
+            "SOCD",
+            "Layer2",
+            "MouseLeft",
+            "MediaPlay",
+        ] {
+            assert!(
+                resolve(json!({"key":bad})).is_err(),
+                "{bad} should not encode"
+            );
         }
     }
 

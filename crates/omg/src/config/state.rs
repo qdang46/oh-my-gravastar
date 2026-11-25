@@ -60,7 +60,10 @@ fn resolve_target(kb: &mut Khub916) -> Result<(String, String), ConfigError> {
 fn read_keymap(kb: &mut Khub916) -> Result<Vec<(u8, u8, Vec<u32>)>, ConfigError> {
     let mut banks = Vec::with_capacity(schema::K1PRO_KEYMAP_BANKS);
     for arg in 0..schema::K1PRO_KEYMAP_BANKS as u8 {
-        let values = read(&format!("keymap read (cmd 131 arg {arg})"), kb.key_values(arg))?;
+        let values = read(
+            &format!("keymap read (cmd 131 arg {arg})"),
+            kb.key_values(arg),
+        )?;
         if values.len() != K1PRO_KEYS {
             return Err(ConfigError::state_read_failed(
                 format!("keymap read (cmd 131 arg {arg})"),
@@ -80,7 +83,9 @@ fn read_keymap(kb: &mut Khub916) -> Result<Vec<(u8, u8, Vec<u32>)>, ConfigError>
 /// (non-K1-Pro models are `unsupported` — no verified schema applies).
 /// Gated families get `model`/`firmware` = `None` (family-level ctx;
 /// `document::validate` rejects them as `unsupported` anyway).
-pub fn target_context(device: &DeviceInfo) -> Result<crate::config::document::TargetContext, ConfigError> {
+pub fn target_context(
+    device: &DeviceInfo,
+) -> Result<crate::config::document::TargetContext, ConfigError> {
     let schema_id = schema::schema_id_for_kind(device.kind).ok_or_else(|| {
         ConfigError::unsupported(format!(
             "{} ({}) has no config schema — wireless/screen transports expose no managed surface",
@@ -150,9 +155,7 @@ fn read_mode_colors(kb: &mut Khub916) -> Result<Vec<Value>, ConfigError> {
 
 /// Scan keymap banks for tag-3 macro references → per-macro bindings.
 /// `(layer, system, slot)` uses the physical key index.
-fn macro_bindings(
-    banks: &[(u8, u8, Vec<u32>)],
-) -> Vec<(usize, u8, u8, usize, u8, u8)> {
+fn macro_bindings(banks: &[(u8, u8, Vec<u32>)]) -> Vec<(usize, u8, u8, usize, u8, u8)> {
     let mut out = Vec::new();
     for &(layer, system, ref values) in banks {
         for (slot, &v) in values.iter().enumerate() {
@@ -162,14 +165,7 @@ fn macro_bindings(
                 index,
             } = decode_key_value(v)
             {
-                out.push((
-                    index as usize,
-                    layer,
-                    system,
-                    slot,
-                    macro_type,
-                    number,
-                ));
+                out.push((index as usize, layer, system, slot, macro_type, number));
             }
         }
     }
@@ -218,10 +214,7 @@ fn step_json(s: &macro916::MacroStep) -> Value {
 
 /// Read the macro region (cmd 133) and emit normalized entries with
 /// bindings resolved from the keymap.
-fn read_macros(
-    kb: &mut Khub916,
-    banks: &[(u8, u8, Vec<u32>)],
-) -> Result<Vec<Value>, ConfigError> {
+fn read_macros(kb: &mut Khub916, banks: &[(u8, u8, Vec<u32>)]) -> Result<Vec<Value>, ConfigError> {
     let raw = read("macro region read (cmd 133)", kb.macro_region())?;
     let entries = read("macro region parse", macro916::parse_macro_region(&raw))?;
     let bindings = macro_bindings(banks);
@@ -280,7 +273,10 @@ pub fn read_current(device: &DeviceInfo) -> Result<Value, ConfigError> {
     let sleep = profile.sleep_seconds().ok_or_else(|| {
         ConfigError::state_read_failed(
             "profile read (cmd 132)",
-            format!("blob too short for sleep byte ({} bytes)", profile.raw.len()),
+            format!(
+                "blob too short for sleep byte ({} bytes)",
+                profile.raw.len()
+            ),
         )
     })?;
     let light = light::decode_light_state(&profile).ok_or_else(|| {
@@ -297,7 +293,11 @@ pub fn read_current(device: &DeviceInfo) -> Result<Value, ConfigError> {
     if custom.len() != schema::K1PRO_KEYS {
         return Err(ConfigError::state_read_failed(
             "custom light colours read (cmd 134)",
-            format!("returned {} colours, expected {}", custom.len(), schema::K1PRO_KEYS),
+            format!(
+                "returned {} colours, expected {}",
+                custom.len(),
+                schema::K1PRO_KEYS
+            ),
         ));
     }
     let macros = read_macros(&mut kb, &banks)?;

@@ -61,13 +61,17 @@ pub fn text() -> String {
     for step in d["workflow"].as_array().unwrap() {
         s.push_str(&format!(
             "  {}. {} — {}\n",
-            step["step"], step["cmd"].as_str().unwrap(), step["does"].as_str().unwrap()
+            step["step"],
+            step["cmd"].as_str().unwrap(),
+            step["does"].as_str().unwrap()
         ));
     }
     s.push_str("\ndocument rules:\n");
     s.push_str("  - full desired state: every managed writable field required\n");
     s.push_str("  - envelope: format_version, schema_id, target, configuration\n");
-    s.push_str("  - keymap: 8 banks × 126 keys, 0x u32 hex or {key,modifiers} objects; colors #rrggbb\n");
+    s.push_str(
+        "  - keymap: 8 banks × 126 keys, 0x u32 hex or {key,modifiers} objects; colors #rrggbb\n",
+    );
     s.push_str("  - macros: bindings must match tag-3 keymap values\n");
     s.push_str("  - opaque/unknown values preserved verbatim (warnings, never editable)\n");
     s.push_str("\nerror codes: invalid_document schema_version_unsupported target_mismatch\n");

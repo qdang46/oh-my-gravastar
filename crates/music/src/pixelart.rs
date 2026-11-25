@@ -153,8 +153,7 @@ fn decode_glyph(pat: &str) -> [u8; GLYPH_H] {
 
 /// Font lookup; unknown chars → all-zero (blank) glyph.
 fn glyph(ch: char) -> [u8; GLYPH_H] {
-    FONT
-        .iter()
+    FONT.iter()
         .find(|(c, _)| *c == ch)
         .map(|(_, p)| decode_glyph(p))
         .unwrap_or([0u8; GLYPH_H])
@@ -173,7 +172,11 @@ pub enum ArtSource {
     /// Raw pixel art: `width`×`height` cells, row-major, each byte
     /// 0…=255 intensity (multiplies [`PixelArt::color`]). Shorter
     /// `pixels` read as zero-padded; longer are truncated.
-    Bitmap { width: usize, height: usize, pixels: Vec<u8> },
+    Bitmap {
+        width: usize,
+        height: usize,
+        pixels: Vec<u8>,
+    },
 }
 
 impl ArtSource {
@@ -183,7 +186,11 @@ impl ArtSource {
     }
     /// Convenience: bitmap art.
     pub fn bitmap(width: usize, height: usize, pixels: Vec<u8>) -> Self {
-        Self::Bitmap { width, height, pixels }
+        Self::Bitmap {
+            width,
+            height,
+            pixels,
+        }
     }
 }
 
@@ -259,7 +266,11 @@ impl Default for PixelArtSpec {
             motion: Motion::Static,
             repeat: true,
             speed: 6.0,
-            color: Rgb { r: 1.0, g: 1.0, b: 1.0 },
+            color: Rgb {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
             palette: None,
             background: Rgb::BLACK,
             brightness: 1.0,
@@ -271,7 +282,10 @@ impl Default for PixelArtSpec {
 impl PixelArtSpec {
     /// Spec showing `text` with all other defaults.
     pub fn text(text: impl Into<String>) -> Self {
-        Self { art: ArtSource::Text(text.into()), ..Default::default() }
+        Self {
+            art: ArtSource::Text(text.into()),
+            ..Default::default()
+        }
     }
 }
 
@@ -360,7 +374,11 @@ impl PixelArt {
     pub fn set_art(&mut self, art: ArtSource) {
         let (w, h, strip) = match art {
             ArtSource::Text(text) => rasterize_text(&text),
-            ArtSource::Bitmap { width, height, pixels } => {
+            ArtSource::Bitmap {
+                width,
+                height,
+                pixels,
+            } => {
                 let n = width.saturating_mul(height);
                 let mut strip = pixels;
                 strip.resize(n, 0);
@@ -381,7 +399,11 @@ impl PixelArt {
 
     /// Replace the bitmap (convenience for [`ArtSource::Bitmap`]).
     pub fn set_bitmap(&mut self, width: usize, height: usize, pixels: Vec<u8>) {
-        self.set_art(ArtSource::Bitmap { width, height, pixels });
+        self.set_art(ArtSource::Bitmap {
+            width,
+            height,
+            pixels,
+        });
     }
 
     /// Change the canvas size; remaps rows and (for [`MapMode::Keys`])
@@ -573,8 +595,7 @@ fn normalise_slots(geom: &[KeyPoint]) -> Vec<(f32, f32)> {
     if geom.is_empty() {
         return Vec::new();
     }
-    let (mut x0, mut x1, mut y0, mut y1) =
-        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
     for k in geom {
         x0 = x0.min(k.x);
         x1 = x1.max(k.x);
@@ -601,7 +622,11 @@ fn normalise_slots(geom: &[KeyPoint]) -> Vec<(f32, f32)> {
 /// Scale a colour by `k` (local helper — `Rgb::scale` is private to
 /// the mixer module).
 fn scale(c: Rgb, k: f32) -> Rgb {
-    Rgb { r: c.r * k, g: c.g * k, b: c.b * k }
+    Rgb {
+        r: c.r * k,
+        g: c.g * k,
+        b: c.b * k,
+    }
 }
 
 /// For each canvas row, the strip rows it covers. A strip row is
@@ -648,12 +673,7 @@ fn rasterize_text(text: &str) -> (usize, usize, Vec<u8>) {
     let nlines = lines.len().max(1);
     let art_w = lines
         .iter()
-        .map(|l| {
-            l.chars()
-                .count()
-                .saturating_mul(ADVANCE)
-                .saturating_sub(1)
-        })
+        .map(|l| l.chars().count().saturating_mul(ADVANCE).saturating_sub(1))
         .max()
         .unwrap_or(0);
     if art_w == 0 {
@@ -785,7 +805,7 @@ mod tests {
         a.motion = Motion::ScrollLeft;
         a.repeat = true;
         a.speed = 30.0; // fast: crosses 35-cell period in >1 s
-        // Run 5 s at 30 fps.
+                        // Run 5 s at 30 fps.
         let mut frames = Vec::new();
         for _ in 0..150 {
             frames.push(a.frame(1.0 / 30.0));
@@ -805,7 +825,12 @@ mod tests {
         for _ in 0..50 {
             b.frame(0.1);
         }
-        assert!((a.view() - b.view()).abs() < 1e-3, "view {} vs {}", a.view(), b.view());
+        assert!(
+            (a.view() - b.view()).abs() < 1e-3,
+            "view {} vs {}",
+            a.view(),
+            b.view()
+        );
         // Non-loop parks dark after one pass.
         let mut c = engine("HI");
         c.motion = Motion::ScrollLeft;
@@ -839,17 +864,25 @@ mod tests {
     fn palette_and_brightness_apply() {
         let mut p = engine("HI");
         p.palette = Some(Palette::Rainbow);
-        p.color = Rgb { r: 1.0, g: 0.0, b: 0.0 }; // mono fallback
+        p.color = Rgb {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        }; // mono fallback
         p.brightness = 0.5;
         let f = p.frame(0.016);
         let lit: Vec<&Rgb> = f.iter().filter(|c| c.r + c.g + c.b > 0.01).collect();
         assert!(!lit.is_empty());
         // brightness caps everything at 0.5.
-        assert!(f.iter().all(|c| c.r <= 0.5 + 1e-6 && c.g <= 0.5 + 1e-6 && c.b <= 0.5 + 1e-6));
+        assert!(f
+            .iter()
+            .all(|c| c.r <= 0.5 + 1e-6 && c.g <= 0.5 + 1e-6 && c.b <= 0.5 + 1e-6));
         // Rainbow: not all lit slots share the same colour.
         let first = lit[0];
         assert!(lit.iter().any(|c| {
-            (c.r - first.r).abs() > 0.01 || (c.g - first.g).abs() > 0.01 || (c.b - first.b).abs() > 0.01
+            (c.r - first.r).abs() > 0.01
+                || (c.g - first.g).abs() > 0.01
+                || (c.b - first.b).abs() > 0.01
         }));
     }
 
@@ -866,7 +899,11 @@ mod tests {
             cols: 3,
             rows: 3,
             map: MapMode::Cells,
-            background: Rgb { r: 0.1, g: 0.0, b: 0.0 },
+            background: Rgb {
+                r: 0.1,
+                g: 0.0,
+                b: 0.0,
+            },
             ..Default::default()
         });
         p.set_slots(9);

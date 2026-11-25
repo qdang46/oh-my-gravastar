@@ -169,8 +169,7 @@ impl SpectrumViz {
     pub fn frame(&mut self, bands: &Bands, t: f32) -> [u8; FRAME_BYTES] {
         // Update per-band envelopes.
         for (i, st) in self.bands.iter_mut().enumerate() {
-            let target =
-                (bands.spectrum[i] * self.params.sensitivity * bands.agc).clamp(0.0, 1.0);
+            let target = (bands.spectrum[i] * self.params.sensitivity * bands.agc).clamp(0.0, 1.0);
             // attack/decay params scale the per-frame lerp factors;
             // clamped below 1.0 so envelopes never overshoot.
             let atk = (ATTACK * self.params.attack).min(0.98);
@@ -217,8 +216,8 @@ impl SpectrumViz {
             // keys dark while others carry the spectrum.
             v = v.powf(2.0);
             v += bands.bass * 0.05; // bass pulse lifts everything slightly
-            // Configurable background floor, gated by level so silence
-            // still renders black (spec: "background brightness").
+                                    // Configurable background floor, gated by level so silence
+                                    // still renders black (spec: "background brightness").
             v += self.params.background * bands.level.clamp(0.0, 1.0);
             // Beat flash must respect params.brightness — BeatViz runs
             // this visualiser at ~6% brightness as ambient base, and an
@@ -226,7 +225,7 @@ impl SpectrumViz {
             // after every beat (the "all keys lit" bug).
             v = (v * self.params.brightness
                 + self.flash * 0.25 * self.params.brightness * (1.0 - x))
-            .clamp(0.0, 1.0);
+                .clamp(0.0, 1.0);
 
             // Frequency-mapped hue + slow drift.
             let hue = HUE_LOW + (HUE_HIGH - HUE_LOW) * x + t * self.params.hue_speed * 0.15;
@@ -376,9 +375,9 @@ impl BeatViz {
         // Scale rendered-frame ages into 30 fps reference units so motion
         // speed and impact TTLs are wall-clock stable at any --fps.
         let age_scale = (30.0 / self.params.fps.clamp(1.0, 240.0)).clamp(0.125, 8.0);
-        self.impacts
-            .retain(|i| self.frame_no.wrapping_sub(i.born) as f32 * age_scale
-                < impact_ttl(i.kind) as f32);
+        self.impacts.retain(|i| {
+            self.frame_no.wrapping_sub(i.born) as f32 * age_scale < impact_ttl(i.kind) as f32
+        });
         if self.impacts.len() > MAX_IMPACTS {
             let excess = self.impacts.len() - MAX_IMPACTS;
             self.impacts.drain(..excess);
@@ -406,11 +405,8 @@ impl BeatViz {
                 // below via `dcy`.
                 let ramp = ((age + 1.0) * self.params.attack / 4.0).min(1.0);
                 let dcy = self.params.decay.clamp(0.25, 4.0);
-                let s = (im.strength
-                    * self.params.brightness
-                    * 1.5
-                    * self.params.beat_intensity)
-                .min(1.0)
+                let s = (im.strength * self.params.brightness * 1.5 * self.params.beat_intensity)
+                    .min(1.0)
                     * ramp;
                 let (r, g, b) = match im.kind {
                     BeatKind::Kick => {
@@ -454,8 +450,7 @@ impl BeatViz {
                     }
                     BeatKind::Generic => {
                         let d = ((x - im.ox).powi(2) + (y - im.oy).powi(2)).sqrt();
-                        let i =
-                            (s * (-d / 0.12).exp() * (-age * dcy / 7.0).exp()).min(1.0);
+                        let i = (s * (-d / 0.12).exp() * (-age * dcy / 7.0).exp()).min(1.0);
                         (i, i * 0.9, i * 0.7)
                     }
                 };
@@ -572,8 +567,7 @@ impl PulseViz {
         // renders black — "keys off between beats", not dim glow.
         let drive = if self.env > 0.02 { self.env } else { 0.0 };
         let gate = bands.level.clamp(0.0, 1.0);
-        let v = ((drive * self.params.beat_intensity
-            + self.params.background * gate)
+        let v = ((drive * self.params.beat_intensity + self.params.background * gate)
             * self.params.brightness)
             .clamp(0.0, 1.0);
         // Warm white core with a whisper of hue drift; bass thickens it
@@ -725,7 +719,7 @@ mod tests {
         let mut viz = SpectrumViz::new(FrameParams::default());
         let mut b = Bands::default();
         b.spectrum[0] = 1.0; // bass-only energy
-        // First frame: envelope still ramping (attack < 1), but nonzero.
+                             // First frame: envelope still ramping (attack < 1), but nonzero.
         let f1 = viz.frame(&b, 0.0);
         let f2 = viz.frame(&b, 0.03);
         let energy = |f: &[u8; FRAME_BYTES]| f[..30].iter().map(|&v| v as u32).sum::<u32>();
@@ -744,11 +738,13 @@ mod tests {
     fn beat_kick_ignites_then_fades() {
         use crate::dsp::BeatEvent;
         let mut v = BeatViz::new(FrameParams::default());
-        let mut b = Bands::default();
-        b.events = vec![BeatEvent {
-            kind: BeatKind::Kick,
-            strength: 1.0,
-        }];
+        let b = Bands {
+            events: vec![BeatEvent {
+                kind: BeatKind::Kick,
+                strength: 1.0,
+            }],
+            ..Default::default()
+        };
         let lit = v.frame(&b, 0.0);
         assert!(lit.iter().any(|&x| x > 0), "kick should light keys");
         // After the impact TTL the field returns to black on silence.
@@ -801,8 +797,8 @@ mod tests {
         let mut between = loud.clone();
         between.beat_pulse = 0.0;
         between.beat_phase = 0.9; // crest far away
-        // Let the just-spawned kick impact decay (~0.5 s) so the
-        // between-beat measurement isn't contaminated by it.
+                                  // Let the just-spawned kick impact decay (~0.5 s) so the
+                                  // between-beat measurement isn't contaminated by it.
         let mut between_frame = [0u8; FRAME_BYTES];
         for i in 0..8 {
             between_frame = v.frame(&between, 1.2 + i as f32 * 0.1);
@@ -829,10 +825,12 @@ mod tests {
         let mut v = PulseViz::new(FrameParams::default(), PulseMode::Beat);
         let quiet = Bands::default();
         assert!(v.frame(&quiet, 0.0).iter().all(|&x| x == 0));
-        let mut b = Bands::default();
-        b.beat = true;
-        b.beat_pulse = 1.0;
-        b.level = 0.8;
+        let b = Bands {
+            beat: true,
+            beat_pulse: 1.0,
+            level: 0.8,
+            ..Default::default()
+        };
         let flash = v.frame(&b, 0.0);
         // Whole keyboard lit uniformly: every key identical, planes differ.
         assert!(flash.iter().all(|&x| x > 0));
@@ -856,8 +854,22 @@ mod tests {
             spectrum: [0.1; SPECTRUM_BINS],
             ..Bands::default()
         };
-        let dim = render_frame(&quiet, 0.0, &FrameParams { sensitivity: 0.5, ..Default::default() });
-        let hot = render_frame(&quiet, 0.0, &FrameParams { sensitivity: 3.0, ..Default::default() });
+        let dim = render_frame(
+            &quiet,
+            0.0,
+            &FrameParams {
+                sensitivity: 0.5,
+                ..Default::default()
+            },
+        );
+        let hot = render_frame(
+            &quiet,
+            0.0,
+            &FrameParams {
+                sensitivity: 3.0,
+                ..Default::default()
+            },
+        );
         let sum = |f: &[u8; FRAME_BYTES]| f.iter().map(|&v| v as u32).sum::<u32>();
         assert!(sum(&hot) > sum(&dim));
     }

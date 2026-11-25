@@ -253,8 +253,9 @@ fn one_of(name: &str, v: &str, allowed: &[&str]) -> Result<String> {
 /// → linear 0..1 [`Rgb`].
 fn parse_color(v: &Value, what: &str) -> Result<Rgb> {
     let c = match v {
-        Value::String(s) => omg_proto_mouse::Rgb::parse(s)
-            .map_err(|e| anyhow::anyhow!("{what}: {e:#}"))?,
+        Value::String(s) => {
+            omg_proto_mouse::Rgb::parse(s).map_err(|e| anyhow::anyhow!("{what}: {e:#}"))?
+        }
         Value::Object(map) => {
             let get = |k: &str| -> Result<u8> {
                 map.get(k)
@@ -280,9 +281,9 @@ fn parse_color(v: &Value, what: &str) -> Result<Rgb> {
 }
 
 fn parse_art(v: &Value) -> Result<ArtSource> {
-    let obj = v
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("art must be an object {{\"text\":…}} or {{\"bitmap\":…}}"))?;
+    let obj = v.as_object().ok_or_else(|| {
+        anyhow::anyhow!("art must be an object {{\"text\":…}} or {{\"bitmap\":…}}")
+    })?;
     for k in obj.keys() {
         if k != "text" && k != "bitmap" {
             bail!("unknown art field '{k}' (want text|bitmap)");
@@ -341,7 +342,7 @@ fn parse_session(v: &Value) -> Result<Session> {
             one_of("engine", &engine, &["legacy", "mixer", "modes"])?;
             let source = opt(d.source, "system".to_string());
             one_of("source", &source, &["system", "mic"])?;
-            let pixel_order = opt(d.pixel_order, "planar".to_string());
+            let pixel_order = opt(d.pixel_order, "interleaved".to_string());
             one_of("pixel_order", &pixel_order, &["planar", "interleaved"])?;
             let palette = opt(d.palette, "auto".to_string());
             one_of(
@@ -394,13 +395,11 @@ fn parse_session(v: &Value) -> Result<Session> {
                     let name = v
                         .as_str()
                         .ok_or_else(|| anyhow::anyhow!("palette must be a string or null"))?;
-                    Some(
-                        Palette::parse(name).ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "unknown palette '{name}' (want rainbow|heat|ocean|sunset|neon|mono)"
-                            )
-                        })?,
-                    )
+                    Some(Palette::parse(name).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown palette '{name}' (want rainbow|heat|ocean|sunset|neon|mono)"
+                        )
+                    })?)
                 }
             };
             let canvas = d.canvas.unwrap_or(CanvasDoc {
@@ -412,7 +411,7 @@ fn parse_session(v: &Value) -> Result<Session> {
             if !(1..=64).contains(&cols) || !(1..=16).contains(&rows) {
                 bail!("canvas cols must be 1..=64 and rows 1..=16, got {cols}x{rows}");
             }
-            let pixel_order = opt(d.pixel_order, "planar".to_string());
+            let pixel_order = opt(d.pixel_order, "interleaved".to_string());
             one_of("pixel_order", &pixel_order, &["planar", "interleaved"])?;
             let fps = req_f64("fps", d.fps, 10.0, 1.0, 30.0)?;
             let duration_s = match d.duration_s {
@@ -583,7 +582,10 @@ fn write_last(session: &Session, outcome: &Result<(ExitCode, Value)>) {
         }
     };
     let _ = std::fs::create_dir_all(state_dir());
-    let _ = std::fs::write(last_path(), serde_json::to_string_pretty(&doc).unwrap_or_default());
+    let _ = std::fs::write(
+        last_path(),
+        serde_json::to_string_pretty(&doc).unwrap_or_default(),
+    );
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -598,16 +600,10 @@ fn read_session_doc(file: &str) -> Result<Value> {
         std::fs::read_to_string(file)
             .map_err(|e| anyhow::anyhow!("cannot read session file '{file}': {e}"))?
     };
-    serde_json::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("invalid session JSON: {e}"))
+    serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("invalid session JSON: {e}"))
 }
 
-fn cmd_start(
-    cli: &Cli,
-    file: &str,
-    duration_flag: Option<f64>,
-    yes: &Yes,
-) -> Result<ExitCode> {
+fn cmd_start(cli: &Cli, file: &str, duration_flag: Option<f64>, yes: &Yes) -> Result<ExitCode> {
     let doc = read_session_doc(file)?;
     let session = parse_session(&doc)?;
     if let Some(d) = duration_flag {
@@ -641,7 +637,10 @@ fn cmd_start(
             print_json(&plan)?;
         } else {
             println!("runtime plan (nothing sent — re-run with --yes to start):");
-            println!("  {}", serde_json::to_string_pretty(&plan["session"]).unwrap_or_default());
+            println!(
+                "  {}",
+                serde_json::to_string_pretty(&plan["session"]).unwrap_or_default()
+            );
             println!("  target: {}", plan["target"].as_str().unwrap_or(""));
             if let Some(d) = duration {
                 println!("  duration cap: {d}s");
@@ -722,13 +721,7 @@ fn cmd_stop() -> Result<ExitCode> {
 
 // ── schema ─────────────────────────────────────────────────────────────
 
-fn field(
-    name: &str,
-    ty: &str,
-    required: bool,
-    default: Value,
-    notes: &str,
-) -> Value {
+fn field(name: &str, ty: &str, required: bool, default: Value, notes: &str) -> Value {
     json!({
         "name": name,
         "type": ty,
@@ -788,7 +781,7 @@ fn schema_doc() -> Value {
                     field("beat_intensity", "number", false, json!(1.0), "0.0..=2.0"),
                     field("attack", "number", false, json!(1.0), "0.25..=4.0"),
                     field("decay", "number", false, json!(1.0), "0.25..=4.0"),
-                    field("pixel_order", "string", false, json!("planar"), "planar|interleaved 378-byte layout"),
+                    field("pixel_order", "string", false, json!("interleaved"), "interleaved|planar 378-byte layout (interleaved live-verified)"),
                     field("fps", "number", false, json!(10.0), "1.0..=30.0 (runtime cap; vendor cadence ~5 pkt/s — higher is unverified)"),
                     field("duration_s", "number|null", false, Value::Null, "positive seconds; null = until stopped"),
                 ],
@@ -818,7 +811,7 @@ fn schema_doc() -> Value {
                     field("brightness", "number", false, json!(1.0), "0.0..=1.0 master brightness"),
                     field("canvas", "object", false, json!({"cols": 21, "rows": 6}), "{cols:1..=64, rows:1..=16}; 21x6 = one cell per K1 Pro slot"),
                     field("map", "string", false, json!("keys"), "keys (real keymap geometry) | cells (slot-order raster)"),
-                    field("pixel_order", "string", false, json!("planar"), "planar|interleaved 378-byte layout"),
+                    field("pixel_order", "string", false, json!("interleaved"), "interleaved|planar 378-byte layout (interleaved live-verified)"),
                     field("fps", "number", false, json!(10.0), "1.0..=30.0 (runtime cap)"),
                     field("duration_s", "number|null", false, Value::Null, "positive seconds; null = until stopped"),
                 ],
@@ -854,7 +847,10 @@ fn run_pixelart_session(
 ) -> Result<(ExitCode, Value)> {
     // Runtime sessions are capped at the verified cmd-8 ceiling.
     if !(1.0..=30.0).contains(&p.fps) || !p.fps.is_finite() {
-        bail!("fps must be in 1.0..=30.0 for runtime sessions, got {}", p.fps);
+        bail!(
+            "fps must be in 1.0..=30.0 for runtime sessions, got {}",
+            p.fps
+        );
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("duration must be positive seconds");
@@ -919,7 +915,9 @@ fn run_pixelart_session(
                 s["verified"].as_bool(),
                 s["error"].as_str(),
             ) {
-                (Some(step), Some(true), _) => println!("  {step}: verified (cmd {})", s["command"]),
+                (Some(step), Some(true), _) => {
+                    println!("  {step}: verified (cmd {})", s["command"])
+                }
                 (Some(step), _, Some(err)) => println!("  {step}: FAILED — {err}"),
                 _ => {}
             }
@@ -970,12 +968,14 @@ mod tests {
     #[test]
     fn music_session_parses_with_defaults() {
         let s = parse(r#"{"kind":"music"}"#).unwrap();
-        let Session::Music(m) = &s else { panic!("want music") };
+        let Session::Music(m) = &s else {
+            panic!("want music")
+        };
         assert_eq!(m.args.engine, "mixer");
         assert_eq!(m.args.source, "system");
         assert_eq!(m.args.effect, "beat");
         assert_eq!(m.args.palette, "auto");
-        assert_eq!(m.args.pixel_order, "planar");
+        assert_eq!(m.args.pixel_order, "interleaved");
         assert_eq!(m.fps, 10.0);
         assert_eq!(m.args.duration, None);
         assert_eq!(s.kind(), "music");
@@ -989,7 +989,9 @@ mod tests {
                 "duration_s":30}"#,
         )
         .unwrap();
-        let Session::Music(m) = &s else { panic!("want music") };
+        let Session::Music(m) = &s else {
+            panic!("want music")
+        };
         assert_eq!(m.args.engine, "modes");
         assert_eq!(m.args.source, "mic");
         assert_eq!(m.args.palette, "neon");
@@ -1006,7 +1008,9 @@ mod tests {
                 "canvas":{"cols":21,"rows":6},"duration_s":null}"##,
         )
         .unwrap();
-        let Session::PixelArt(p) = &s else { panic!("want pixel-art") };
+        let Session::PixelArt(p) = &s else {
+            panic!("want pixel-art")
+        };
         assert_eq!(p.spec.motion, Motion::ScrollLeft);
         assert_eq!(p.spec.cols, 21);
         assert_eq!(p.spec.rows, 6);
@@ -1024,7 +1028,9 @@ mod tests {
             r#"{"kind":"pixel-art","art":{"bitmap":{"width":2,"height":1,"pixels":[255,0]}},"map":"cells"}"#,
         )
         .unwrap();
-        let Session::PixelArt(p) = &s else { panic!("want pixel-art") };
+        let Session::PixelArt(p) = &s else {
+            panic!("want pixel-art")
+        };
         assert_eq!(p.spec.map, MapMode::Cells);
         assert!(matches!(p.spec.art, ArtSource::Bitmap { .. }));
     }
@@ -1063,7 +1069,10 @@ mod tests {
         assert!(parse(r#"{"kind":"music","fps":0}"#).is_err());
         assert!(parse(r#"{"kind":"music","fps":31}"#).is_err());
         assert!(parse(r#"{"kind":"music","duration_s":-5}"#).is_err());
-        assert!(parse(r#"{"kind":"pixel-art","art":{"text":"A"},"canvas":{"cols":0,"rows":6}}"#).is_err());
+        assert!(
+            parse(r#"{"kind":"pixel-art","art":{"text":"A"},"canvas":{"cols":0,"rows":6}}"#)
+                .is_err()
+        );
         assert!(parse(r##"{"kind":"pixel-art","art":{"text":"A"},"color":"notacolor"}"##).is_err());
     }
 
