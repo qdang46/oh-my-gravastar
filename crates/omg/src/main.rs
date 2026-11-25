@@ -18,6 +18,7 @@ use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
+mod config;
 mod device;
 mod kb916_adv;
 mod plan;
@@ -97,13 +98,44 @@ enum Commands {
         #[command(subcommand)]
         command: ProfileCommands,
     },
-    /// Machine-readable command schema for agents. With no path, lists
-    /// every command; with a path (`omg schema kb916 set key`) emits the
-    /// JSON schema document for that command's arguments, write flag,
-    /// target device family and output shape. Always JSON.
+    /// Desired-state configuration schema for agents (docs/specs/
+    /// rust-cli-config-migration-spec.md). With no `--device`, lists the
+    /// schema families; `--device <kind-or-schema-id>` emits that family's
+    /// JSON Schema 2020-12 document (works offline); `--device <physical>`
+    /// resolves the attached device (cmd 130 model check for khub916).
+    /// `--section` restricts the document to one configuration section.
+    /// Always JSON.
     Schema {
+        /// Device family selector (khub916_wired, he_keyboard_v2,
+        /// compx_mouse, sparkplayjoy) or a physical device selector
+        /// (path, VID:PID, product substring).
+        #[arg(long)]
+        device: Option<String>,
+        /// Restrict to one configuration section (e.g. `keymap`,
+        /// `lighting`, `macros`).
+        #[arg(long)]
+        section: Option<String>,
+    },
+    /// Machine-readable *command* schema for agents (the pre-config
+    /// meaning of `omg schema`). With no path, lists every command; with
+    /// a path (`omg cli-schema kb916 set key`) emits the JSON schema
+    /// document for that command's arguments, write flag, target device
+    /// family and output shape. Always JSON.
+    CliSchema {
         /// Command path segments, e.g. `kb916 set key`.
         path: Vec<String>,
+    },
+    /// Agent workflow guide for the read-only config surface: schema →
+    /// get → validate → diff, error codes, safety rules. `--json` for
+    /// the full machine-readable document.
+    Guide,
+    /// Desired-state configuration documents (read-only release):
+    /// `get` reads the device's current state as a valid document,
+    /// `validate` strictly checks a document, `diff` compares desired vs
+    /// current. `apply` is a stable not-implemented stub.
+    Config {
+        #[command(subcommand)]
+        command: config::commands::ConfigCommands,
     },
     /// Machine-readable device discovery: the supported-device catalog,
     /// per-device inspection, capability maps and connection status.
@@ -404,7 +436,12 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Kb916 { command } => cmd_kb916(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
         Commands::Profile { command } => cmd_profile(cli, command),
-        Commands::Schema { path } => cmd_schema(cli, path),
+        Commands::Schema { device, section } => {
+            config::commands::cmd_schema(cli, device.as_deref(), section.as_deref())
+        }
+        Commands::CliSchema { path } => cmd_schema(cli, path),
+        Commands::Guide => config::commands::cmd_guide(cli),
+        Commands::Config { command } => config::commands::run(cli, command),
         Commands::Device { command } => cmd_device(cli, command),
         Commands::Plan { command } => plan::cmd_plan(cli, command),
     }

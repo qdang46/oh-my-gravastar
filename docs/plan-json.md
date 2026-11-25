@@ -61,12 +61,14 @@ Safety contract (docs/plan.md §2, docs/SAFETY-SPEC.md):
 ```
 
 - `version` must be `1` (`schema` is accepted as an alias).
-- `op` is a **leaf command path** from `omg schema`, space-separated,
+- `op` is a **leaf command path** from `omg cli-schema` (the legacy
+  Clap-derived command listing; `omg schema` now emits the device
+  configuration schema — see the header note), space-separated,
   restricted to the device-driving families `kb`, `kb916`, `mouse`,
   `profile`. Introspection commands (`schema`, `device`, `devices`,
   `probe`) and `plan` itself cannot be planned.
 - `args` keys are clap **argument ids** (the `name` field of
-  `omg schema <cmd>`); the `--long` spelling (`interval-ms`) is also
+  `omg cli-schema <cmd>`); the `--long` spelling (`interval-ms`) is also
   accepted. Values are strings, numbers, booleans, or arrays (arrays
   repeat the token for `Vec` args like `codes`/`actions`/`colors`).
   Unknown args and clap-level errors (enums, ranges, required args,
