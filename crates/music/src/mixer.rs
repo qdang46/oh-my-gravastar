@@ -52,8 +52,7 @@ pub fn grid_geometry(n: usize) -> Vec<KeyPoint> {
     const COLS: usize = 21;
     (0..n)
         .map(|i| KeyPoint {
-            x: (i % COLS) as f32 * (BOARD_W / COLS as f32)
-                + BOARD_W / (COLS as f32 * 2.0),
+            x: (i % COLS) as f32 * (BOARD_W / COLS as f32) + BOARD_W / (COLS as f32 * 2.0),
             y: (i / COLS) as f32,
         })
         .collect()
@@ -70,12 +69,24 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    pub const BLACK: Rgb = Rgb { r: 0.0, g: 0.0, b: 0.0 };
+    pub const BLACK: Rgb = Rgb {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+    };
     fn add(self, o: Rgb) -> Rgb {
-        Rgb { r: self.r + o.r, g: self.g + o.g, b: self.b + o.b }
+        Rgb {
+            r: self.r + o.r,
+            g: self.g + o.g,
+            b: self.b + o.b,
+        }
     }
     fn scale(self, k: f32) -> Rgb {
-        Rgb { r: self.r * k, g: self.g * k, b: self.b * k }
+        Rgb {
+            r: self.r * k,
+            g: self.g * k,
+            b: self.b * k,
+        }
     }
     fn clamp(self) -> Rgb {
         Rgb {
@@ -147,30 +158,106 @@ impl Palette {
         let x = t.rem_euclid(1.0);
         match self {
             Palette::Rainbow => hsv(x, 1.0, 1.0),
-            Palette::Heat => gradient(x, &[
-                Rgb { r: 0.0, g: 1.0, b: 0.0 },
-                Rgb { r: 1.0, g: 1.0, b: 0.0 },
-                Rgb { r: 1.0, g: 0.3, b: 0.0 },
-                Rgb { r: 1.0, g: 0.0, b: 0.0 },
-            ]),
-            Palette::Ocean => gradient(x, &[
-                Rgb { r: 0.0, g: 0.2, b: 1.0 },
-                Rgb { r: 0.0, g: 0.8, b: 1.0 },
-                Rgb { r: 0.0, g: 1.0, b: 0.6 },
-                Rgb { r: 0.3, g: 0.3, b: 1.0 },
-            ]),
-            Palette::Sunset => gradient(x, &[
-                Rgb { r: 1.0, g: 0.1, b: 0.3 },
-                Rgb { r: 1.0, g: 0.5, b: 0.0 },
-                Rgb { r: 1.0, g: 0.85, b: 0.2 },
-                Rgb { r: 0.6, g: 0.0, b: 1.0 },
-            ]),
-            Palette::Neon => gradient(x, &[
-                Rgb { r: 1.0, g: 0.0, b: 1.0 },
-                Rgb { r: 0.0, g: 1.0, b: 1.0 },
-                Rgb { r: 0.5, g: 1.0, b: 0.0 },
-                Rgb { r: 1.0, g: 0.0, b: 0.5 },
-            ]),
+            Palette::Heat => gradient(
+                x,
+                &[
+                    Rgb {
+                        r: 0.0,
+                        g: 1.0,
+                        b: 0.0,
+                    },
+                    Rgb {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 0.0,
+                    },
+                    Rgb {
+                        r: 1.0,
+                        g: 0.3,
+                        b: 0.0,
+                    },
+                    Rgb {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.0,
+                    },
+                ],
+            ),
+            Palette::Ocean => gradient(
+                x,
+                &[
+                    Rgb {
+                        r: 0.0,
+                        g: 0.2,
+                        b: 1.0,
+                    },
+                    Rgb {
+                        r: 0.0,
+                        g: 0.8,
+                        b: 1.0,
+                    },
+                    Rgb {
+                        r: 0.0,
+                        g: 1.0,
+                        b: 0.6,
+                    },
+                    Rgb {
+                        r: 0.3,
+                        g: 0.3,
+                        b: 1.0,
+                    },
+                ],
+            ),
+            Palette::Sunset => gradient(
+                x,
+                &[
+                    Rgb {
+                        r: 1.0,
+                        g: 0.1,
+                        b: 0.3,
+                    },
+                    Rgb {
+                        r: 1.0,
+                        g: 0.5,
+                        b: 0.0,
+                    },
+                    Rgb {
+                        r: 1.0,
+                        g: 0.85,
+                        b: 0.2,
+                    },
+                    Rgb {
+                        r: 0.6,
+                        g: 0.0,
+                        b: 1.0,
+                    },
+                ],
+            ),
+            Palette::Neon => gradient(
+                x,
+                &[
+                    Rgb {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 1.0,
+                    },
+                    Rgb {
+                        r: 0.0,
+                        g: 1.0,
+                        b: 1.0,
+                    },
+                    Rgb {
+                        r: 0.5,
+                        g: 1.0,
+                        b: 0.0,
+                    },
+                    Rgb {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.5,
+                    },
+                ],
+            ),
             Palette::Mono => mono,
         }
     }
@@ -315,16 +402,61 @@ pub struct Preset {
 /// Curated scenes — each pairs reactive layers with a palette so the
 /// board always reads as one look instead of a random mix.
 pub const PRESETS: &[Preset] = &[
-    Preset { name: "spectrum", layers: &[LayerKind::Spectrum], palette: Palette::Rainbow },
-    Preset { name: "equalizer", layers: &[LayerKind::Spectrum, LayerKind::Ripple], palette: Palette::Heat },
-    Preset { name: "party", layers: &[LayerKind::Ripple, LayerKind::Rain, LayerKind::Starry, LayerKind::Pulse], palette: Palette::Rainbow },
-    Preset { name: "lava", layers: &[LayerKind::Wave, LayerKind::Pulse], palette: Palette::Heat },
-    Preset { name: "rainstorm", layers: &[LayerKind::Rain, LayerKind::Ripple], palette: Palette::Ocean },
-    Preset { name: "starry", layers: &[LayerKind::Starry, LayerKind::Wave], palette: Palette::Ocean },
-    Preset { name: "pulse", layers: &[LayerKind::Pulse, LayerKind::Ripple], palette: Palette::Sunset },
-    Preset { name: "breathing", layers: &[LayerKind::Breathing, LayerKind::Ripple], palette: Palette::Sunset },
-    Preset { name: "wave", layers: &[LayerKind::Wave, LayerKind::Ripple], palette: Palette::Rainbow },
-    Preset { name: "spectrum-stars", layers: &[LayerKind::Spectrum, LayerKind::Starry], palette: Palette::Rainbow },
+    Preset {
+        name: "spectrum",
+        layers: &[LayerKind::Spectrum],
+        palette: Palette::Rainbow,
+    },
+    Preset {
+        name: "equalizer",
+        layers: &[LayerKind::Spectrum, LayerKind::Ripple],
+        palette: Palette::Heat,
+    },
+    Preset {
+        name: "party",
+        layers: &[
+            LayerKind::Ripple,
+            LayerKind::Rain,
+            LayerKind::Starry,
+            LayerKind::Pulse,
+        ],
+        palette: Palette::Rainbow,
+    },
+    Preset {
+        name: "lava",
+        layers: &[LayerKind::Wave, LayerKind::Pulse],
+        palette: Palette::Heat,
+    },
+    Preset {
+        name: "rainstorm",
+        layers: &[LayerKind::Rain, LayerKind::Ripple],
+        palette: Palette::Ocean,
+    },
+    Preset {
+        name: "starry",
+        layers: &[LayerKind::Starry, LayerKind::Wave],
+        palette: Palette::Ocean,
+    },
+    Preset {
+        name: "pulse",
+        layers: &[LayerKind::Pulse, LayerKind::Ripple],
+        palette: Palette::Sunset,
+    },
+    Preset {
+        name: "breathing",
+        layers: &[LayerKind::Breathing, LayerKind::Ripple],
+        palette: Palette::Sunset,
+    },
+    Preset {
+        name: "wave",
+        layers: &[LayerKind::Wave, LayerKind::Ripple],
+        palette: Palette::Rainbow,
+    },
+    Preset {
+        name: "spectrum-stars",
+        layers: &[LayerKind::Spectrum, LayerKind::Starry],
+        palette: Palette::Rainbow,
+    },
 ];
 
 /// Look up a preset by name.
@@ -353,8 +485,7 @@ pub fn parse_layers(spec: &str) -> Result<Vec<(LayerKind, Option<f32>)>, String>
             }
             None => (item, None),
         };
-        let kind = LayerKind::parse(name)
-            .ok_or_else(|| format!("unknown layer '{name}'"))?;
+        let kind = LayerKind::parse(name).ok_or_else(|| format!("unknown layer '{name}'"))?;
         out.push((kind, level));
     }
     if out.is_empty() {
@@ -411,7 +542,11 @@ impl Default for LayerMixer {
             layers: vec![(LayerKind::Pulse, None), (LayerKind::Ripple, None)],
             palette: Palette::Sunset,
             speed: 1.0,
-            mono: Rgb { r: 1.0, g: 1.0, b: 1.0 },
+            mono: Rgb {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
             brightness: 1.0,
             gain: 1.0,
             geom: Vec::new(),
@@ -479,7 +614,9 @@ impl LayerMixer {
                 *o = o.add(l.clamp().scale(k));
             }
         }
-        out.iter().map(|c| c.clamp().scale(self.brightness)).collect()
+        out.iter()
+            .map(|c| c.clamp().scale(self.brightness))
+            .collect()
     }
 
     fn ctx(&self) -> (f32, Rgb) {
@@ -509,8 +646,7 @@ impl LayerMixer {
                 for (i, k) in self.geom.iter().enumerate() {
                     let u = k.u();
                     let v = 0.5
-                        + 0.5
-                            * ((u * 2.0 - self.wave_phase) * std::f32::consts::PI * 2.0).sin();
+                        + 0.5 * ((u * 2.0 - self.wave_phase) * std::f32::consts::PI * 2.0).sin();
                     out[i] = out[i].add(
                         pal.color(u - self.wave_phase * 0.5, mono)
                             .scale(bright * (0.35 + 0.65 * v)),
@@ -518,16 +654,19 @@ impl LayerMixer {
                 }
             }
             LayerKind::Starry => {
-                let rate = (0.6 + f.treble * 25.0 + if f.beat { 6.0 } else { 0.0 })
-                    * self.speed
-                    * f.dt;
+                let rate =
+                    (0.6 + f.treble * 25.0 + if f.beat { 6.0 } else { 0.0 }) * self.speed * f.dt;
                 let mut spawn = rate;
                 while spawn > 0.0 {
                     if self.rng.f32() < spawn {
                         let i = self.rng.below(self.geom.len());
                         self.stars[i] = 1.0;
                         self.star_colors[i] = if self.rng.f32() < 0.35 {
-                            Rgb { r: 1.0, g: 1.0, b: 1.0 }
+                            Rgb {
+                                r: 1.0,
+                                g: 1.0,
+                                b: 1.0,
+                            }
                         } else {
                             pal.color(self.rng.f32() + hue, mono)
                         };
@@ -544,8 +683,7 @@ impl LayerMixer {
             }
             LayerKind::Spectrum => {
                 for (i, k) in self.geom.iter().enumerate() {
-                    let band = ((k.u() * SPECTRUM_BINS as f32) as usize)
-                        .min(SPECTRUM_BINS - 1);
+                    let band = ((k.u() * SPECTRUM_BINS as f32) as usize).min(SPECTRUM_BINS - 1);
                     let height = 5 - k.row();
                     let fill = (f.bands[band] * 6.0 - height as f32).clamp(0.0, 1.0);
                     if fill <= 0.0 {
@@ -614,7 +752,8 @@ impl LayerMixer {
                 }
                 for (i, k) in self.geom.iter().enumerate() {
                     out[i] = out[i].add(
-                        pal.color(k.u() * 0.3 + hue, mono).scale(self.pulse_env * 0.9),
+                        pal.color(k.u() * 0.3 + hue, mono)
+                            .scale(self.pulse_env * 0.9),
                     );
                 }
             }
@@ -724,9 +863,7 @@ impl ModeKind {
             "gurgling-stream" | "stream" | "gurgling" => Self::GurglingStream,
             "blooming-passion" | "blooming" | "passion" => Self::BloomingPassion,
             "sine" | "beam" => Self::Sine,
-            "dynamic-spectrum" | "spectrum-pattern" | "pattern" => {
-                Self::DynamicSpectrum
-            }
+            "dynamic-spectrum" | "spectrum-pattern" | "pattern" => Self::DynamicSpectrum,
             _ => return None,
         })
     }
@@ -792,7 +929,12 @@ fn column_sets(geom: &[KeyPoint], n: usize) -> Vec<Vec<usize>> {
                 .y
                 .partial_cmp(&geom[b].y)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then(geom[a].x.partial_cmp(&geom[b].x).unwrap_or(std::cmp::Ordering::Equal))
+                .then(
+                    geom[a]
+                        .x
+                        .partial_cmp(&geom[b].x)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
         });
     }
     cols
@@ -817,7 +959,11 @@ impl Default for ModeRenderer {
         Self {
             kind: ModeKind::DanceSoft,
             palette: Palette::Sunset,
-            mono: Rgb { r: 1.0, g: 1.0, b: 1.0 },
+            mono: Rgb {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
             speed: 1.0,
             brightness: 1.0,
             gain: 1.0,
@@ -927,12 +1073,12 @@ impl ModeRenderer {
                 // Vendor palette index is `j*2` (key position ×2) — a
                 // ~36-entry wheel → normalize to a full hue sweep.
                 let col_color = match color {
-                    ColumnColor::PerKey => {
-                        self.palette.color(j as f32 * 2.0 / 36.0 + self.hue, self.mono)
-                    }
-                    ColumnColor::PerColumn => {
-                        self.palette.color(i as f32 / n as f32 + self.hue, self.mono)
-                    }
+                    ColumnColor::PerKey => self
+                        .palette
+                        .color(j as f32 * 2.0 / 36.0 + self.hue, self.mono),
+                    ColumnColor::PerColumn => self
+                        .palette
+                        .color(i as f32 / n as f32 + self.hue, self.mono),
                 };
                 out[slot] = out[slot].add(col_color);
             }
@@ -969,7 +1115,9 @@ impl ModeRenderer {
             if i >= count {
                 break;
             }
-            let base = self.palette.color(i as f32 / n as f32 + self.hue, self.mono);
+            let base = self
+                .palette
+                .color(i as f32 / n as f32 + self.hue, self.mono);
             let is_frontier = i + 1 == count;
             for &slot in col.iter() {
                 let mut c = base;
@@ -983,7 +1131,11 @@ impl ModeRenderer {
                         };
                     } else {
                         // Frontier column goes white.
-                        c = Rgb { r: 1.0, g: 1.0, b: 1.0 };
+                        c = Rgb {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                        };
                     }
                 }
                 out[slot] = out[slot].add(c);
@@ -995,7 +1147,11 @@ impl ModeRenderer {
             for col in self.cols.iter().take(1) {
                 for &slot in col.iter() {
                     out[slot] = if bright {
-                        Rgb { r: 1.0, g: 1.0, b: 1.0 }
+                        Rgb {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                        }
                     } else {
                         out[slot].scale(0.3)
                     };
@@ -1014,11 +1170,7 @@ impl ModeRenderer {
         }
         let drift = self.t * self.speed / 24.0 + self.hue;
         for (i, k) in self.geom.iter().enumerate() {
-            out[i] = out[i].add(
-                self.palette
-                    .color(k.u() * 0.35 + drift, self.mono)
-                    .scale(v),
-            );
+            out[i] = out[i].add(self.palette.color(k.u() * 0.35 + drift, self.mono).scale(v));
         }
     }
 
@@ -1048,10 +1200,7 @@ impl ModeRenderer {
             if k.row() as usize != row.min(5) {
                 continue;
             }
-            out[i] = out[i].add(
-                self.palette
-                    .color(k.u() * 0.6 + self.hue, self.mono),
-            );
+            out[i] = out[i].add(self.palette.color(k.u() * 0.6 + self.hue, self.mono));
         }
     }
 
@@ -1098,12 +1247,13 @@ mod tests {
     use super::*;
 
     fn loud_bass() -> Bands {
-        let mut b = Bands::default();
-        b.bass = 0.9;
-        b.treble = 0.3;
-        b.level = 0.6;
-        b.spectrum = [0.5; SPECTRUM_BINS];
-        b
+        Bands {
+            bass: 0.9,
+            treble: 0.3,
+            level: 0.6,
+            spectrum: [0.5; SPECTRUM_BINS],
+            ..Default::default()
+        }
     }
 
     fn test_geom() -> Vec<KeyPoint> {
@@ -1172,10 +1322,14 @@ mod tests {
         let frame = eng.frame(&b, 0.02);
         // Grid geometry: slot i → x=(i%21)+0.5, y=i/21. Bottom row =
         // slots 105..125. Left columns (x<4) bottom row must be lit.
-        let bottom_lit = (105..110).filter(|&i| frame[i].r + frame[i].g + frame[i].b > 0.05).count();
+        let bottom_lit = (105..110)
+            .filter(|&i| frame[i].r + frame[i].g + frame[i].b > 0.05)
+            .count();
         assert!(bottom_lit > 0, "bottom-row keys must light on bass");
         // Top rows need much more energy — should stay dark.
-        let top_lit = (0..21).filter(|&i| frame[i].r + frame[i].g + frame[i].b > 0.05).count();
+        let top_lit = (0..21)
+            .filter(|&i| frame[i].r + frame[i].g + frame[i].b > 0.05)
+            .count();
         assert_eq!(top_lit, 0, "top row must stay dark at low band energy");
     }
 
@@ -1220,7 +1374,11 @@ mod tests {
             m.set_geometry(test_geom());
             let mut any = false;
             for i in 0..120 {
-                let b = if i % 30 == 0 { loud_bass() } else { Bands::default() };
+                let b = if i % 30 == 0 {
+                    loud_bass()
+                } else {
+                    Bands::default()
+                };
                 let frame = m.frame(&b, 0.02);
                 any |= frame.iter().any(|c| c.r + c.g + c.b > 0.02);
             }
@@ -1238,7 +1396,14 @@ mod tests {
 
     #[test]
     fn pack_frame_planar_and_interleaved() {
-        let colors = vec![Rgb { r: 1.0, g: 0.0, b: 0.0 }; 126];
+        let colors = vec![
+            Rgb {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0
+            };
+            126
+        ];
         let planar = pack_frame(&colors, 126, true);
         assert_eq!(planar[0], 255);
         assert_eq!(planar[126], 0);

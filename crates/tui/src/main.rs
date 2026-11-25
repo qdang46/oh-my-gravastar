@@ -346,7 +346,10 @@ impl Khub916Screen {
 }
 
 /// One read-only cmd-131 round trip; errors are strings for display.
-fn fetch_keymap(kb: &mut khub::Khub916, arg: u8) -> std::result::Result<Vec<khub::KeyValue>, String> {
+fn fetch_keymap(
+    kb: &mut khub::Khub916,
+    arg: u8,
+) -> std::result::Result<Vec<khub::KeyValue>, String> {
     kb.keymap(arg).map_err(|e| format!("{e:#}"))
 }
 
@@ -704,7 +707,9 @@ impl App {
     /// (Re)fetch the keymap for `arg` through the live session. In demo
     /// mode the synthetic keymap is kept as-is.
     fn kh916_keymap(&mut self, arg: u8) {
-        let Some(st) = self.kh916.as_mut() else { return };
+        let Some(st) = self.kh916.as_mut() else {
+            return;
+        };
         st.keymap_arg = arg;
         st.keymap_scroll = 0;
         // Split the borrows: the session and the display fields are
@@ -932,7 +937,9 @@ impl App {
     /// arg (read-only fetches only — this screen never writes).
     fn kh916_key(&mut self, key: KeyEvent) {
         let arg = {
-            let Some(st) = self.kh916.as_mut() else { return };
+            let Some(st) = self.kh916.as_mut() else {
+                return;
+            };
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     st.keymap_scroll = st.keymap_scroll.saturating_add(1);
@@ -1693,11 +1700,8 @@ fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
             .or_else(|| st.info_err.clone())
             .unwrap_or_else(|| "no khub916 wired keyboard detected".into());
         f.render_widget(
-            Paragraph::new(format!("{msg}\n\nsee Devices screen for detected hardware")).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" K1/K98 "),
-            ),
+            Paragraph::new(format!("{msg}\n\nsee Devices screen for detected hardware"))
+                .block(Block::default().borders(Borders::ALL).title(" K1/K98 ")),
             area,
         );
         return;
@@ -1721,7 +1725,10 @@ fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
         // (privacy rule, AGENTS.md §5); the catalog name identifies it.
         lines.push(Line::from("uuid:       [redacted]"));
         match info.screen {
-            Some((w, h)) => lines.push(Line::from(format!("screen:     {w}x{h} (code {})", info.screen_size))),
+            Some((w, h)) => lines.push(Line::from(format!(
+                "screen:     {w}x{h} (code {})",
+                info.screen_size
+            ))),
             None => lines.push(Line::from("screen:     none on this interface")),
         }
     } else if let Some(e) = &st.info_err {
@@ -1764,8 +1771,10 @@ fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
                 "monochrome"
             }
         )));
-        if let (Some(data), Some(mode)) = (&st.light_data, st.profile.as_ref().and_then(|p| p.light_mode()))
-        {
+        if let (Some(data), Some(mode)) = (
+            &st.light_data,
+            st.profile.as_ref().and_then(|p| p.light_mode()),
+        ) {
             if let Some(c) = khub::light::group_color(data, mode) {
                 lines.push(Line::from(format!(
                     "colour:     #{:02X}{:02X}{:02X}",
@@ -1842,7 +1851,10 @@ fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
     klines.push(Line::from(""));
     match &st.keymap {
         Some(km) => {
-            let assigned = km.iter().filter(|kv| !matches!(kv, khub::KeyValue::Empty)).count();
+            let assigned = km
+                .iter()
+                .filter(|kv| !matches!(kv, khub::KeyValue::Empty))
+                .count();
             klines.push(Line::from(format!(
                 "{} slots · {} assigned",
                 km.len(),
@@ -1881,11 +1893,7 @@ fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
             f.render_widget(
                 Paragraph::new(klines)
                     .scroll((scroll, 0))
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" Keymap "),
-                    ),
+                    .block(Block::default().borders(Borders::ALL).title(" Keymap ")),
                 cols[1],
             );
         }
@@ -1899,11 +1907,8 @@ fn draw_khub916(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Yellow),
             )));
             f.render_widget(
-                Paragraph::new(klines).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Keymap "),
-                ),
+                Paragraph::new(klines)
+                    .block(Block::default().borders(Borders::ALL).title(" Keymap ")),
                 cols[1],
             );
         }

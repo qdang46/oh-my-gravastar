@@ -20,11 +20,11 @@ use serde_json::json;
 
 mod device;
 mod kb916_adv;
-mod plan;
 mod kb916_doctor;
-mod kb916_macro;
 mod kb916_light;
+mod kb916_macro;
 mod kb916_music;
+mod plan;
 mod profile;
 mod schema;
 
@@ -485,7 +485,11 @@ fn device_targets(cli: &Cli) -> Result<Option<Vec<DeviceInfo>>> {
             None => Ok(None),
         };
     }
-    Ok(if devices.is_empty() { None } else { Some(devices) })
+    Ok(if devices.is_empty() {
+        None
+    } else {
+        Some(devices)
+    })
 }
 
 fn cmd_device(cli: &Cli, command: &DeviceCommands) -> Result<ExitCode> {
@@ -510,8 +514,7 @@ fn cmd_device(cli: &Cli, command: &DeviceCommands) -> Result<ExitCode> {
         }
         DeviceCommands::Status => {
             let devices = find_devices()?;
-            let entries: Vec<serde_json::Value> =
-                devices.iter().map(device_entry).collect();
+            let entries: Vec<serde_json::Value> = devices.iter().map(device_entry).collect();
             if cli.json {
                 print_json(&json!({
                     "connected": !devices.is_empty(),
@@ -2442,8 +2445,7 @@ fn csv_u16(s: &str) -> Result<Vec<u16>> {
 fn csv_u8(s: &str) -> Result<Vec<u8>> {
     s.split(',')
         .map(|p| {
-            let v = parse_maybe_hex(p.trim())
-                .map_err(|_| anyhow!("invalid byte '{p}' in list"))?;
+            let v = parse_maybe_hex(p.trim()).map_err(|_| anyhow!("invalid byte '{p}' in list"))?;
             u8::try_from(v).map_err(|_| anyhow!("value {v} out of byte range in '{s}'"))
         })
         .collect()
@@ -2485,7 +2487,10 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
         if !bad.is_empty() {
             bail!(
                 "parameter(s) {} not used by --mode {}",
-                bad.iter().map(|n| format!("--{n}")).collect::<Vec<_>>().join(", "),
+                bad.iter()
+                    .map(|n| format!("--{n}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 a.mode
             );
         }
@@ -2506,7 +2511,11 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
     let kcs = |n: usize| -> Result<Vec<u16>> {
         let v = csv_u16(req("kcs")?)?;
         if v.len() != n {
-            bail!("--kcs for mode {} needs exactly {n} values, got {}", a.mode, v.len());
+            bail!(
+                "--kcs for mode {} needs exactly {n} values, got {}",
+                a.mode,
+                v.len()
+            );
         }
         Ok(v)
     };
@@ -2528,7 +2537,10 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
             let k = kcs(4)?;
             let t = csv_u8(req("trps")?)?;
             if t.len() != 4 {
-                bail!("--trps for mode dks needs exactly 4 values, got {}", t.len());
+                bail!(
+                    "--trps for mode dks needs exactly 4 values, got {}",
+                    t.len()
+                );
             }
             let d = csv_f32(req("dbs")?)?;
             if d.len() != 2 {
@@ -2569,10 +2581,7 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
             reject_extras(&["kcs", "time"])?;
             let k = kcs(1)?;
             let time = req_u16("time", a.time)?;
-            Ok(he::HigherKeyParams::Tgl(he::TglParams {
-                kcs: k[0],
-                time,
-            }))
+            Ok(he::HigherKeyParams::Tgl(he::TglParams { kcs: k[0], time }))
         }
         "end" => {
             reject_extras(&["kcs", "delay"])?;
@@ -2655,11 +2664,9 @@ fn hk_config_text(c: &he::HigherKeyConfig) -> String {
             hk_kcs_text(&params.kcs),
             params.dbs
         ),
-        he::HigherKeyConfig::Mt { params, .. } => format!(
-            "mt kcs=[{}] time={}",
-            hk_kcs_text(&params.kcs),
-            params.time
-        ),
+        he::HigherKeyConfig::Mt { params, .. } => {
+            format!("mt kcs=[{}] time={}", hk_kcs_text(&params.kcs), params.time)
+        }
         he::HigherKeyConfig::Tgl { params, .. } => {
             format!("tgl kc=0x{:04X} time={}", params.kcs, params.time)
         }
@@ -2695,20 +2702,16 @@ fn hk_params_text(p: &he::HigherKeyParams) -> String {
             d.trps,
             d.dbs
         ),
-        he::HigherKeyParams::Mpt(m) => format!(
-            "mpt kcs=[{}] dbs={:?} mm",
-            hk_kcs_text(&m.kcs),
-            m.dbs
-        ),
+        he::HigherKeyParams::Mpt(m) => {
+            format!("mpt kcs=[{}] dbs={:?} mm", hk_kcs_text(&m.kcs), m.dbs)
+        }
         he::HigherKeyParams::Mt(m) => {
             format!("mt kcs=[{}] time={}", hk_kcs_text(&m.kcs), m.time)
         }
         he::HigherKeyParams::Tgl(t) => format!("tgl kc=0x{:04X} time={}", t.kcs, t.time),
-        he::HigherKeyParams::End(e) => format!(
-            "end kcs=[{}] delay={}",
-            hk_kcs_text(&e.kcs),
-            e.delay
-        ),
+        he::HigherKeyParams::End(e) => {
+            format!("end kcs=[{}] delay={}", hk_kcs_text(&e.kcs), e.delay)
+        }
         he::HigherKeyParams::Socd(s) => format!(
             "socd partner=r{}c{} kcs=[{}] delay={} dir={:?}",
             s.row2,
@@ -2841,7 +2844,10 @@ fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
                     println!("row {r}:");
                     for (col, &c) in codes.iter().enumerate() {
                         if c != 0 {
-                            println!("  col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                            println!(
+                                "  col {col:<2} 0x{c:04X}  {}",
+                                omg_model::key_label(c, false)
+                            );
                         }
                     }
                 }
@@ -2938,11 +2944,7 @@ fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
                 ExitCode::from(1)
             })
         }
-        KbKeys::Default {
-            system,
-            func,
-            row,
-        } => {
+        KbKeys::Default { system, func, row } => {
             if *system > 15 || *func > 15 {
                 bail!("system/func are nibbles and must be 0..=15");
             }
@@ -2961,7 +2963,10 @@ fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
                 println!("default layout system {system} func {func} row {row}:");
                 for (col, &c) in layout.key_codes.iter().enumerate() {
                     if c != 0 {
-                        println!("  col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                        println!(
+                            "  col {col:<2} 0x{c:04X}  {}",
+                            omg_model::key_label(c, false)
+                        );
                     }
                 }
             }
@@ -3075,12 +3080,23 @@ fn cmd_kb_macro(cli: &Cli, command: &KbMacro) -> Result<ExitCode> {
                 );
                 for e in &entries {
                     if let Some(err) = e.get("error") {
-                        println!("  slot {}: unreadable ({})", e["id"], err.as_str().unwrap_or("?"));
+                        println!(
+                            "  slot {}: unreadable ({})",
+                            e["id"],
+                            err.as_str().unwrap_or("?")
+                        );
                     } else {
                         println!(
                             "  slot {}: {} actions, rep {}, mode {}{}",
-                            e["id"], e["act_num"], e["rep_num"], e["mode"],
-                            if e["valid"] == json!(true) { "" } else { " (invalid)" }
+                            e["id"],
+                            e["act_num"],
+                            e["rep_num"],
+                            e["mode"],
+                            if e["valid"] == json!(true) {
+                                ""
+                            } else {
+                                " (invalid)"
+                            }
                         );
                     }
                 }
@@ -4698,7 +4714,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         | Kb916Commands::Macro { .. }
         | Kb916Commands::Light { .. }
         | Kb916Commands::Adv { .. }
-        | Kb916Commands::Doctor { .. } => unreachable!("handled before the session is opened")
+        | Kb916Commands::Doctor { .. } => unreachable!("handled before the session is opened"),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -5023,8 +5039,7 @@ fn screen_push_plan(
     // frame_delay after each frame.
     let est_secs = |p: khub::ScreenPacing| -> f64 {
         frames as f64
-            * (chunks_per_frame as f64 * p.chunk_delay.as_secs_f64()
-                + p.frame_delay.as_secs_f64())
+            * (chunks_per_frame as f64 * p.chunk_delay.as_secs_f64() + p.frame_delay.as_secs_f64())
     };
     Ok(json!({
         "width": width,
@@ -5845,10 +5860,7 @@ mod tests {
         a.direction = Some("cover".into());
         assert!(hk_params(&a).is_err());
         a.direction = None;
-        assert!(matches!(
-            hk_params(&a).unwrap(),
-            he::HigherKeyParams::Rs(_)
-        ));
+        assert!(matches!(hk_params(&a).unwrap(), he::HigherKeyParams::Rs(_)));
 
         // blacklisted keycodes rejected while building params.
         let mut a = hkset("mt");
@@ -5883,9 +5895,6 @@ mod tests {
             params.delay = 99;
         }
         assert!(!hk_same(&other, &p));
-        assert!(!hk_same(
-            &he::HigherKeyConfig::None { row: 1, col: 2 },
-            &p
-        ));
+        assert!(!hk_same(&he::HigherKeyConfig::None { row: 1, col: 2 }, &p));
     }
 }
