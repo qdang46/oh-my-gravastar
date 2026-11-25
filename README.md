@@ -141,14 +141,16 @@ omg guide --json                     # workflow + safety/approval rules
 omg config get --device current --json          # current state as config doc
 omg config validate desired.json --device current --json
 omg config diff desired.json --device current --json
+omg config verify desired.json --device current --json   # exit 0 = match, 1 = drift
 omg config apply desired.json --device current --yes   # khub916 K1 Pro
 ```
 
 `config apply` writes a validated document to the khub916 K1 Pro
 (`--yes` required, dry-run plan printed without it, every section
-write read-back verified). `config verify`/`rollback` are **not
-implemented yet** — use `config diff` after apply to confirm, and
-`omg kb916 light apply`/`omg profile` for section-level restores. The
+write read-back verified). `config rollback` is **not implemented** — restore by
+`omg config get > snapshot.json` before changes and
+`omg config apply snapshot.json --yes` to roll back (the snapshot is
+itself a valid desired-state document). The
 legacy command-plan format (`omg plan`,
 [docs/plan-json.md](docs/plan-json.md)) remains the compatibility path
 for multi-step CLI automation.

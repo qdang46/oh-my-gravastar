@@ -1,10 +1,9 @@
 //! `omg schema` / `omg guide` / `omg config *` command implementations.
 //!
 //! These are the agent-facing config surface (ADR + migration spec §15
-//! R1/R2). All output is JSON — success documents and the §8 error
-//! envelope alike — so agents never parse human text. The surface is
-//! **read-only**: `config apply` exists only to return a stable
-//! `unsupported` error.
+//! R1/R2+). All output is JSON — success documents and the §8 error
+//! envelope alike — so agents never parse human text. Writes exist only
+//! through `config apply` (khub916-k1pro, `--yes`-gated).
 
 use omg_hid::{find_devices, DeviceInfo};
 
@@ -33,6 +32,14 @@ pub enum ConfigCommands {
         /// Desired-state JSON document (`-` = stdin).
         file: String,
     },
+    /// Verify the device matches a desired-state document: reads
+    /// current state, normalizes both sides and reports `verified:
+    /// true|false` plus the differing leaves. Exit 0 on match, 1 on
+    /// drift — the scripting counterpart of `config diff`.
+    Verify {
+        /// Desired-state JSON document (`-` = stdin).
+        file: String,
+    },
     /// Apply a validated desired-state document to the device
     /// (khub916-k1pro only). Requires `--yes`; every section write is
     /// read-back verified and the command stops on the first failure.
@@ -50,6 +57,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> anyhow::Result<std::process::
         ConfigCommands::Get => cmd_get(cli),
         ConfigCommands::Validate { file } => cmd_validate(cli, file),
         ConfigCommands::Diff { file } => cmd_diff(cli, file),
+        ConfigCommands::Verify { file } => cmd_verify(cli, file),
         ConfigCommands::Apply { file, yes } => apply::apply(cli, file, yes),
     }
 }
@@ -273,6 +281,56 @@ fn cmd_validate(cli: &Cli, file: &str) -> anyhow::Result<std::process::ExitCode>
         }
         Err(e) => fail(e),
     }
+}
+
+/// `config verify <file>` — diff with a pass/fail verdict for agents.
+fn cmd_verify(cli: &Cli, file: &str) -> anyhow::Result<std::process::ExitCode> {
+    let doc = match document::read_document(file) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    if let Some(sel) = cli.device.as_deref() {
+        if schema::selector_schema_id(sel).is_some() {
+            return fail(ConfigError::unsupported(
+                "config verify needs a physical device, not a family selector",
+            ));
+        }
+    }
+    let devs = match devices() {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    let d = match pick_device(&devs, cli.device.as_deref()) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    let ctx = match state::target_context(&d) {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    if !schema::is_writable(&ctx.schema_id) {
+        return fail(ConfigError::unsupported(format!(
+            "schema '{}' has no verifiable writable surface in this release",
+            ctx.schema_id
+        )));
+    }
+    let desired = match document::validate(&doc, &ctx) {
+        Ok(v) => v.doc,
+        Err(e) => return fail(e),
+    };
+    let current = match state::read_current(&d) {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    let out = diff::diff_documents(&current, &desired);
+    let equal = out["equal"] == serde_json::json!(true);
+    print_json(&serde_json::json!({
+        "ok": true,
+        "kind": "omg.config.verify",
+        "verified": equal,
+        "diff": out,
+    }))?;
+    Ok(std::process::ExitCode::from(if equal { 0 } else { 1 }))
 }
 
 /// `config diff <file>` — desired vs current; physical device required.

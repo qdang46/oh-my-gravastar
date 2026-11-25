@@ -17,7 +17,8 @@ pub fn doc() -> Value {
             {"step": 2, "cmd": "omg config get --device <sel>", "does": "read the device's current configuration as a valid desired-state document (baseline)"},
             {"step": 3, "cmd": "omg config validate <file> --device <sel>", "does": "strictly validate a desired-state document; `config get` output is always valid input"},
             {"step": 4, "cmd": "omg config diff <file> --device <sel>", "does": "compare desired vs current; `equal:true` means nothing would change"},
-            {"step": 5, "cmd": "omg config apply <file> --yes", "does": "apply the validated document (khub916-k1pro only); prints a dry-run plan without --yes; every section write is read-back verified and stops on first failure"},
+            {"step": 4.5, "cmd": "omg config verify <file> --device <sel>", "does": "same comparison as diff but exits 0 on match / 1 on drift — the scripting verdict"},
+            {"step": 5, "cmd": "omg config apply <file> --yes", "does": "apply the validated document (khub916-k1pro only); prints a dry-run plan without --yes; every section write is read-back verified and stops on first failure; re-run `config verify` afterwards to confirm"},
         ],
         "document": {
             "envelope": ["format_version", "schema_id", "target{device_kind,model,firmware}", "configuration{...}"],
