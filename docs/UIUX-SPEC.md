@@ -1,5 +1,12 @@
 # UI/UX Spec
 
+> **Superseded in part by**
+> [specs/web-uiux-improvement-spec.md](specs/web-uiux-improvement-spec.md),
+> which is the current Web UI direction (goal-based ≤5 nav, Simple-first
+> progressive disclosure, Web/CLI independence — "one shared core" below
+> means a Web-local engine only, never a Rust backend). This file remains
+> the reference for the Simple/Expert mode model and per-area detail.
+
 Target: 7 areas, two modes, one engine (`docs/vision-full-custom.md` §"Target
 UI"). Current app: Vite+TS+WebHID PWA, vendor-clone dark shell, khub916-only,
 pages `lighting · keys · macro · advanced · device` + secondary
