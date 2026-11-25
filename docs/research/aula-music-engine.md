@@ -100,7 +100,7 @@ Full per-function notes: `.tmp-aula-hub/re/notes_{169_173,170_171,172_428_174}.m
 
 | mode | shader | audio link |
 |---|---|---|
-| 168 dance-soft | per-column band → lit-key count; attack instant, decay −1 key/frame; first N keys of column list lit; palette per column | spectrum ×10 mod col-len |
+| 168 dance-soft | per-column band → lit-key count; attack instant, decay −1 key/frame; first N keys of column list lit; **colour = palette index `j*2` per key** (vertical rainbow gradient, `0x421BB0` predicate selects fixed entry 0 for non-colourful configs) | spectrum ×10 mod col-len |
 | 169 dazzling-rock | chase head `pos` slews ±1/frame toward `t mod P`; first `int(pos)` columns fully lit, frontier white; single column blinks ×0.3/white; `0xAB 0xBA` header | none (phase-driven) |
 | 170 clouds-rise | same column-fill math as 168 but per-column palette index | spectrum ×10 mod divisor |
 | 171 light-field | uniform field `ch·0.25·phase`, `phase = t mod 4` sawtooth; `0xAB 0xBA` header + `buf[0x207]=0xFF` | none |

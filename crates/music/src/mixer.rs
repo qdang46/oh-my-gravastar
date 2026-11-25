@@ -671,10 +671,20 @@ impl LayerMixer {
 // [`ModeRenderer`]; all timing is `dt`-scaled so motion is identical
 // at any stream rate.
 
+/// How the column-fill shader picks a colour for a lit key.
+#[derive(Clone, Copy)]
+enum ColumnColor {
+    /// One colour per column (clouds-rise).
+    PerColumn,
+    /// Vertical rainbow: vendor palette index `j*2` per key (dance-soft).
+    PerKey,
+}
+
 /// A named rhythm mode — one self-contained shader over the key grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeKind {
-    /// Spectrum → per-column fill count (attack instant, decay linear).
+    /// Spectrum → per-column fill count; keys coloured by position
+    /// (vertical rainbow gradient, vendor palette index `j*2`).
     DanceSoft,
     /// Chasing head lights whole columns; frontier column flashes white.
     DazzlingRock,
@@ -861,9 +871,15 @@ impl ModeRenderer {
         self.frame_cnt = self.frame_cnt.wrapping_add(1);
         let mut out = vec![Rgb::BLACK; self.geom.len()];
         match self.kind {
-            ModeKind::DanceSoft | ModeKind::CloudsRise => {
-                self.column_spectrum(&f, &mut out, self.kind == ModeKind::CloudsRise)
-            }
+            ModeKind::DanceSoft | ModeKind::CloudsRise => self.column_spectrum(
+                &f,
+                &mut out,
+                if self.kind == ModeKind::CloudsRise {
+                    ColumnColor::PerColumn
+                } else {
+                    ColumnColor::PerKey
+                },
+            ),
             ModeKind::DazzlingRock | ModeKind::BloomingPassion => {
                 self.column_chase(&f, &mut out, self.kind == ModeKind::BloomingPassion)
             }
@@ -880,7 +896,10 @@ impl ModeRenderer {
     /// Shared column-fill shader (dance-soft / clouds-rise): per column
     /// a band energy becomes a lit-key count — instant attack, linear
     /// decay — and the first `count` keys (top→bottom) light up.
-    fn column_spectrum(&mut self, f: &Feat, out: &mut [Rgb], per_column_color: bool) {
+    /// `dance-soft` colors each key by its index in the column
+    /// (vendor palette index `j*2` → vertical rainbow gradient);
+    /// `clouds-rise` colors the whole column by column index.
+    fn column_spectrum(&mut self, f: &Feat, out: &mut [Rgb], color: ColumnColor) {
         let n = self.cols.len();
         if n == 0 {
             return;
@@ -904,12 +923,17 @@ impl ModeRenderer {
                 *c = (*c - f.dt * 33.0).max(m);
             }
             let lit = (*c).ceil() as usize;
-            let col_color = if per_column_color {
-                self.palette.color(i as f32 / n as f32 + self.hue, self.mono)
-            } else {
-                self.palette.color(band as f32 / SPECTRUM_BINS as f32 + self.hue, self.mono)
-            };
-            for &slot in col.iter().take(lit) {
+            for (j, &slot) in col.iter().take(lit).enumerate() {
+                // Vendor palette index is `j*2` (key position ×2) — a
+                // ~36-entry wheel → normalize to a full hue sweep.
+                let col_color = match color {
+                    ColumnColor::PerKey => {
+                        self.palette.color(j as f32 * 2.0 / 36.0 + self.hue, self.mono)
+                    }
+                    ColumnColor::PerColumn => {
+                        self.palette.color(i as f32 / n as f32 + self.hue, self.mono)
+                    }
+                };
                 out[slot] = out[slot].add(col_color);
             }
         }
