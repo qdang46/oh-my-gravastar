@@ -120,8 +120,10 @@ Our port (`ModeRenderer` in `crates/music/src/mixer.rs`,
 `--engine modes --effect <name>`): same shader structure over the
 K1 Pro keymap geometry — 6 x-bucketed columns (top→bottom order),
 6×22 cell grid for the pattern mode, dt-scaled timing. Vendor-only
-details dropped or approximated: per-column divisor bytes (we use
-column length), the `q & 0xff` fmod quirk, `Sleep()` pacing,
+details dropped or approximated: per-column divisor bytes — the ini
+carries no divisor field, so `colobj+4` is derived at runtime and
+column length is the best available proxy (verified: clouds-rise
+reads `colobj+4` low byte as the fmod divisor); the `q & 0xff` fmod quirk, `Sleep()` pacing,
 `0xAB 0xBA`/`0xFF` header bytes (our cmd-8 frame already carries its
 own header), palette `ColorTyp` runtime tables (mapped to our
 `Palette`), and the 428 feedback loop.
