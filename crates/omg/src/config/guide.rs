@@ -17,7 +17,7 @@ pub fn doc() -> Value {
             {"step": 2, "cmd": "omg config get --device <sel>", "does": "read the device's current configuration as a valid desired-state document (baseline)"},
             {"step": 3, "cmd": "omg config validate <file> --device <sel>", "does": "strictly validate a desired-state document; `config get` output is always valid input"},
             {"step": 4, "cmd": "omg config diff <file> --device <sel>", "does": "compare desired vs current; `equal:true` means nothing would change"},
-            {"step": 5, "cmd": "omg config apply <file> --yes", "does": "NOT IMPLEMENTED in this release — the config surface is read-only"},
+            {"step": 5, "cmd": "omg config apply <file> --yes", "does": "apply the validated document (khub916-k1pro only); prints a dry-run plan without --yes; every section write is read-back verified and stops on first failure"},
         ],
         "document": {
             "envelope": ["format_version", "schema_id", "target{device_kind,model,firmware}", "configuration{...}"],
@@ -40,11 +40,12 @@ pub fn doc() -> Value {
                 "device_not_found": "--device matched nothing (exit 2)",
                 "device_ambiguous": "--device or auto-detect matched several devices (exit 2)",
                 "state_read_failed": "a required device read failed or was short — never defaulted (exit 1)",
+                "confirmation_required": "config apply needs --yes (exit 1)",
             },
         },
         "exit_codes": {"0": "ok", "1": "error", "2": "no/ambiguous device", "3": "unsupported"},
         "safety": [
-            "read-only: no config command sends a write in this release",
+            "apply is write-gated: --yes required, dry-run plan printed without it; khub916-k1pro only",
             "every managed field is required — there are no partial updates",
             "opaque/unknown values are preserved verbatim and never defaulted",
             "a failed or short device read aborts with state_read_failed; nothing is guessed",
@@ -57,7 +58,7 @@ pub fn doc() -> Value {
 /// Condensed human rendering for `omg guide` without `--json`.
 pub fn text() -> String {
     let d = doc();
-    let mut s = String::from("omg config guide (read-only release)\n\nworkflow:\n");
+    let mut s = String::from("omg config guide\n\nworkflow:\n");
     for step in d["workflow"].as_array().unwrap() {
         s.push_str(&format!(
             "  {}. {} — {}\n",
@@ -77,7 +78,8 @@ pub fn text() -> String {
     s.push_str("\nerror codes: invalid_document schema_version_unsupported target_mismatch\n");
     s.push_str("  unknown_property missing_required_field capability_unverified\n");
     s.push_str("  unsupported device_not_found device_ambiguous state_read_failed\n");
-    s.push_str("\nsafety: read-only release — `omg config apply` is not implemented.\n");
+    s.push_str("\nsafety: `omg config apply` writes only with --yes (khub916-k1pro);\n");
+    s.push_str("  every section write is read-back verified and stops on first failure.\n");
     s.push_str("  Failed/short device reads abort (state_read_failed); nothing is guessed.\n");
     s.push_str("  Run `omg guide --json` for the full machine-readable guide.\n");
     s

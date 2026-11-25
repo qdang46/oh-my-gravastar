@@ -141,12 +141,17 @@ omg guide --json                     # workflow + safety/approval rules
 omg config get --device current --json          # current state as config doc
 omg config validate desired.json --device current --json
 omg config diff desired.json --device current --json
+omg config apply desired.json --device current --yes   # khub916 K1 Pro
 ```
 
-`config apply`/`verify`/`rollback` are **not implemented yet** — this
-slice never writes to a device. The legacy command-plan format
-(`omg plan`, [docs/plan-json.md](docs/plan-json.md)) remains the
-compatibility path for multi-step CLI automation.
+`config apply` writes a validated document to the khub916 K1 Pro
+(`--yes` required, dry-run plan printed without it, every section
+write read-back verified). `config verify`/`rollback` are **not
+implemented yet** — use `config diff` after apply to confirm, and
+`omg kb916 light apply`/`omg profile` for section-level restores. The
+legacy command-plan format (`omg plan`,
+[docs/plan-json.md](docs/plan-json.md)) remains the compatibility path
+for multi-step CLI automation.
 
 HE keyboard (needs an HE v2 board such as a Mercury V75):
 

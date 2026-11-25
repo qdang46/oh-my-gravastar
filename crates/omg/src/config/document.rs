@@ -189,7 +189,7 @@ fn parse_step_key(v: &Value, path: &str) -> Result<(u8, Option<StepKind>), Confi
 /// `kind` defaults from the key name (or "key"); `nibble` is required iff
 /// `kind == "other"` and forbidden otherwise. Returns the wire step plus
 /// its canonical JSON form.
-fn parse_step(v: &Value, path: &str) -> Result<(MacroStep, Value), ConfigError> {
+pub(crate) fn parse_step(v: &Value, path: &str) -> Result<(MacroStep, Value), ConfigError> {
     let o = as_obj(v, path)?;
     only_keys(o, path, &["action", "delay_ms", "key", "kind", "nibble"])?;
     let action = match as_str(req(o, path, "action")?, &format!("{path}.action"))? {

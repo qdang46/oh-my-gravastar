@@ -15,9 +15,10 @@
 //! - [`guide`] — concise workflow/safety guide.
 //! - [`commands`] — `omg schema`, `omg guide`, `omg config get|validate|diff`.
 //!
-//! **No writes exist in this slice.** `config apply` is intentionally a
-//! stub; the only device traffic is documented read-only queries.
+//! `config apply` writes a validated document for `khub916-k1pro` only,
+//! behind `--yes` with per-section read-back verify (see [`apply`]).
 
+pub mod apply;
 pub mod commands;
 pub mod diff;
 pub mod document;

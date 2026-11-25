@@ -9,7 +9,7 @@
 use omg_hid::{find_devices, DeviceInfo};
 
 use crate::config::document::{self, TargetContext};
-use crate::config::{diff, guide, schema, state, ConfigError};
+use crate::config::{apply, diff, guide, schema, state, ConfigError};
 use crate::{device, print_json, Cli};
 
 /// `omg config` subcommands.
@@ -33,12 +33,14 @@ pub enum ConfigCommands {
         /// Desired-state JSON document (`-` = stdin).
         file: String,
     },
-    /// Apply a validated document — NOT IMPLEMENTED in this release.
-    /// The config surface is read-only; this exists so the command path
-    /// is stable for agents.
+    /// Apply a validated desired-state document to the device
+    /// (khub916-k1pro only). Requires `--yes`; every section write is
+    /// read-back verified and the command stops on the first failure.
     Apply {
         /// Desired-state JSON document (`-` = stdin).
         file: String,
+        #[command(flatten)]
+        yes: crate::Yes,
     },
 }
 
@@ -48,10 +50,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> anyhow::Result<std::process::
         ConfigCommands::Get => cmd_get(cli),
         ConfigCommands::Validate { file } => cmd_validate(cli, file),
         ConfigCommands::Diff { file } => cmd_diff(cli, file),
-        ConfigCommands::Apply { file: _ } => fail(ConfigError::unsupported(
-            "config apply is not implemented in this release — the config surface is read-only \
-             (see `omg guide`); only get/validate/diff/schema exist",
-        )),
+        ConfigCommands::Apply { file, yes } => apply::apply(cli, file, yes),
     }
 }
 
@@ -131,7 +130,7 @@ pub fn cmd_guide(cli: &Cli) -> anyhow::Result<std::process::ExitCode> {
 // ── device resolution ──────────────────────────────────────────────────
 
 /// Enumerate GravaStar devices; HID enumeration failure is a read error.
-fn devices() -> Result<Vec<DeviceInfo>, ConfigError> {
+pub(crate) fn devices() -> Result<Vec<DeviceInfo>, ConfigError> {
     find_devices().map_err(|e| ConfigError::state_read_failed("device enumeration", e))
 }
 
@@ -148,7 +147,10 @@ fn kind_selector_matches(d: &DeviceInfo, sel: &str) -> bool {
 /// (auto-pick; ambiguous when several are attached). Mirrors
 /// `select_device` semantics but yields the §8 error codes:
 /// `device_not_found` / `device_ambiguous` instead of anyhow bails.
-fn pick_device(devices: &[DeviceInfo], sel: Option<&str>) -> Result<DeviceInfo, ConfigError> {
+pub(crate) fn pick_device(
+    devices: &[DeviceInfo],
+    sel: Option<&str>,
+) -> Result<DeviceInfo, ConfigError> {
     let sel = sel.filter(|s| *s != "current");
     let matches: Vec<DeviceInfo> = match sel {
         Some(s) => devices
