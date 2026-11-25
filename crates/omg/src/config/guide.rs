@@ -22,7 +22,7 @@ pub fn doc() -> Value {
         "document": {
             "envelope": ["format_version", "schema_id", "target{device_kind,model,firmware}", "configuration{...}"],
             "semantics": "full desired state — every managed writable field is required; missing fields are errors, never 'leave unchanged'",
-            "keymap": "configuration.keymap.layers: exactly 8 banks (4 layers × 2 systems), each with exactly 126 keys as 0x-prefixed u32 hex",
+            "keymap": "configuration.keymap.layers: exactly 8 banks (4 layers × 2 systems), each with exactly 126 keys — items are 0x-prefixed u32 hex OR semantic objects {\"key\":\"KeyA\",\"modifiers\":[\"shift\"]} (names: a-z/0-9, keya-keyz, digit0-digit9, f1-f24, Enter/Esc/arrows/…, fn/fn0-fn3, modifiers ctrl/shift/alt/gui; normalized output is always 0x hex; macro refs/SOCD/MT/TGL/tap-hold/media/mouse need raw hex)",
             "colors": "#rrggbb strings; mode_colors has exactly 23 entries; per_key.colors exactly 126",
             "macros": "configuration.macros: entries with id==position, steps, and bindings that must agree with tag-3 keymap values",
             "opaque": "unknown keymap tags and unrecognized macro step nibbles are preserved byte-identical and reported as warnings — never authored as editable fields",
@@ -69,7 +69,9 @@ pub fn text() -> String {
     s.push_str("\ndocument rules:\n");
     s.push_str("  - full desired state: every managed writable field required\n");
     s.push_str("  - envelope: format_version, schema_id, target, configuration\n");
-    s.push_str("  - keymap: 8 banks × 126 keys, raw 0x u32 hex; colors #rrggbb\n");
+    s.push_str(
+        "  - keymap: 8 banks × 126 keys, 0x u32 hex or {key,modifiers} objects; colors #rrggbb\n",
+    );
     s.push_str("  - macros: bindings must match tag-3 keymap values\n");
     s.push_str("  - opaque/unknown values preserved verbatim (warnings, never editable)\n");
     s.push_str("\nerror codes: invalid_document schema_version_unsupported target_mismatch\n");

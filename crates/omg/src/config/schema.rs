@@ -208,6 +208,40 @@ fn hex_color() -> Value {
 
 // ── khub916-k1pro (the writable slice) ─────────────────────────────────
 
+/// One `keys[]` item: raw `"0x........"` u32 hex (canonical form) OR a
+/// semantic key-action object `{"key": name, "modifiers": [...]}` that the
+/// validator resolves to the same u32 (bead 112). The object form accepts
+/// `key` and/or `modifiers` (at least one required); `modifiers` entries
+/// are ctrl/shift/alt/gui with L/R variants collapsing to one bit.
+fn key_item_schema() -> Value {
+    json!({
+        "anyOf": [
+            {
+                "type": "string",
+                "pattern": "^0[xX][0-9A-Fa-f]{8}$",
+                "description": "raw u32 keymap value, big-endian hex (canonical form, e.g. 0x00020028); opaque tags are preserved byte-identical",
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "key name, case-insensitive: a-z/0-9, keya-keyz, digit0-digit9, f1-f24, named keys (Enter, Esc, Tab, Space, Backspace, Delete, Insert, Home, End, PageUp, PageDown, CapsLock, NumLock, ScrollLock, Pause, PrintScreen, Menu, ArrowUp/Down/Left/Right, US punctuation, numpad keys), fn/fn0-fn3 (tag-0x0D layer keys), a modifier name (bare-modifier encoding), or 'None' for a bare modifier chord",
+                    },
+                    "modifiers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "modifier names: ctrl/shift/alt/gui (+ control/win/meta aliases and L*/R* sided variants — sidedness is NOT expressible in the u32 encoding and collapses to one bit per class)",
+                    },
+                },
+                "anyOf": [{"required": ["key"]}, {"required": ["modifiers"]}],
+                "description": "semantic key action resolved at validate time to (modifier_bits<<16)|HID_usage or a tag-0x0D Fn value; normalized output is always 0x hex. NOT expressible (use raw hex): macro refs (tag 3 — bind via configuration.macros), secondary-layer (7), SOCD/MT/TGL (0x20-0x22), tag-8 Fn actions, tap-hold/one-shot/layer-switch, two-key combos, media/mouse keys",
+            },
+        ],
+    })
+}
+
 fn k1pro_keymap_schema() -> Value {
     let layer_entry = obj(
         props(vec![
@@ -230,11 +264,7 @@ fn k1pro_keymap_schema() -> Value {
                         "type": "array",
                         "minItems": K1PRO_KEYS,
                         "maxItems": K1PRO_KEYS,
-                        "items": {
-                            "type": "string",
-                            "pattern": "^0x[0-9A-Fa-f]{8}$",
-                            "description": "raw u32 key value, big-endian hex (e.g. 0x00000029); opaque tags are preserved byte-identical",
-                        },
+                        "items": key_item_schema(),
                     }),
                     None,
                     &format!(
@@ -264,7 +294,7 @@ fn k1pro_keymap_schema() -> Value {
             &["layers"],
         ),
         Some(WRITABLE_LIVE),
-        "keymap: 4 layers × 2 systems, 126 keys per bank, raw u32 hex values",
+        "keymap: 4 layers × 2 systems, 126 keys per bank, u32 values as 0x hex or {key,modifiers} objects",
     )
 }
 
@@ -479,7 +509,7 @@ fn k1pro_macros_schema() -> Value {
             (
                 "name",
                 ann(
-                    json!({"type":"string"}),
+                    json!({"type":"string","maxLength":MACRO_NAME_MAX_BYTES}),
                     None,
                     "macro name, UTF-8, ≤255 bytes",
                 ),
@@ -593,7 +623,7 @@ fn k1pro_schema_doc() -> Value {
             "guide": "omg guide --json",
             "notes": [
                 "full desired state: every managed writable field is required; missing fields are validation errors",
-                "keymap keys are raw u32 hex strings preserved byte-identical — opaque/unknown tags are never interpreted or defaulted",
+                "keymap keys are raw u32 hex strings or {\"key\",\"modifiers\"} semantic objects (resolved to u32, normalized to hex) — opaque/unknown tags are never interpreted or defaulted",
                 "macro bindings must agree with the tag-3 keymap values they reference",
             ],
         },
@@ -1116,6 +1146,183 @@ mod tests {
         let obs = doc["observed"].as_object().unwrap();
         assert_eq!(obs.len(), 1);
         assert!(obs.contains_key("identity"));
+    }
+
+    /// Navigate a schema doc by object keys (`["a","b"]` → `doc["a"]["b"]`).
+    fn at<'a>(v: &'a Value, path: &[&str]) -> &'a Value {
+        let mut cur = v;
+        for p in path {
+            cur = cur.get(*p).unwrap_or_else(|| panic!("schema missing {p}"));
+        }
+        cur
+    }
+
+    /// Meta-test (bead bda): every constraint `document::validate` relies
+    /// on must actually be present in the emitted schema document — the
+    /// schema is the structural source of truth, so a constraint that
+    /// exists only in Rust would silently drift. If this fails, either add
+    /// the constraint to the schema or move the check to the semantic
+    /// layer deliberately.
+    #[test]
+    fn emitted_schema_carries_validator_constraints() {
+        let doc = schema_doc(KHUB916_K1PRO, None).unwrap();
+        // Envelope.
+        let root_req = doc["required"].as_array().unwrap();
+        for f in ["format_version", "schema_id", "target", "configuration"] {
+            assert!(root_req.contains(&json!(f)), "root required missing {f}");
+        }
+        assert_eq!(doc["additionalProperties"], json!(false));
+        assert_eq!(
+            doc["properties"]["format_version"]["const"],
+            json!(FORMAT_VERSION)
+        );
+        assert_eq!(
+            doc["properties"]["schema_id"]["const"],
+            json!(KHUB916_K1PRO)
+        );
+        let target = &doc["properties"]["target"];
+        assert_eq!(target["additionalProperties"], json!(false));
+        for f in ["device_kind", "model", "firmware"] {
+            assert!(target["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert_eq!(
+            target["properties"]["device_kind"]["const"],
+            json!("khub916_wired")
+        );
+
+        // configuration sections.
+        let conf = &doc["properties"]["configuration"];
+        assert_eq!(conf["additionalProperties"], json!(false));
+        for s in ["keymap", "device", "lighting", "macros"] {
+            assert!(conf["required"].as_array().unwrap().contains(&json!(s)));
+            assert!(conf["properties"].get(s).is_some(), "section {s}");
+        }
+
+        // keymap: 8 banks × (layer 0-3, system 0-1, 126 keys), closed objects.
+        let layers = at(conf, &["properties", "keymap", "properties", "layers"]);
+        assert_eq!(layers["minItems"], json!(K1PRO_KEYMAP_BANKS));
+        assert_eq!(layers["maxItems"], json!(K1PRO_KEYMAP_BANKS));
+        let entry = &layers["items"];
+        assert_eq!(entry["additionalProperties"], json!(false));
+        for f in ["layer", "system", "keys"] {
+            assert!(entry["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert_eq!(entry["properties"]["layer"]["minimum"], json!(0));
+        assert_eq!(entry["properties"]["layer"]["maximum"], json!(3));
+        assert_eq!(entry["properties"]["system"]["maximum"], json!(1));
+        let keys = &entry["properties"]["keys"];
+        assert_eq!(keys["minItems"], json!(K1PRO_KEYS));
+        assert_eq!(keys["maxItems"], json!(K1PRO_KEYS));
+        // items: hex string OR semantic {key,modifiers} object.
+        let branches = keys["items"]["anyOf"].as_array().unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(
+            branches[0]["pattern"].as_str().unwrap(),
+            "^0[xX][0-9A-Fa-f]{8}$"
+        );
+        assert_eq!(branches[1]["type"], json!("object"));
+        assert_eq!(branches[1]["additionalProperties"], json!(false));
+        assert!(branches[1]["properties"].get("key").is_some());
+        assert!(branches[1]["properties"].get("modifiers").is_some());
+
+        // device.sleep_timeout_seconds 0..=255.
+        let sleep = at(
+            conf,
+            &[
+                "properties",
+                "device",
+                "properties",
+                "sleep_timeout_seconds",
+            ],
+        );
+        assert_eq!(sleep["minimum"], json!(0));
+        assert_eq!(sleep["maximum"], json!(255));
+
+        // lighting.effect: required fields, mode enum, speed/brightness caps.
+        let effect = at(conf, &["properties", "lighting", "properties", "effect"]);
+        for f in ["mode", "speed", "brightness", "color_model"] {
+            assert!(effect["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert!(
+            effect["properties"]["mode"]["enum"]
+                .as_array()
+                .unwrap()
+                .len()
+                > 1
+        );
+        assert_eq!(
+            effect["properties"]["speed"]["maximum"],
+            json!(LIGHT_SPEED_MAX)
+        );
+        assert_eq!(
+            effect["properties"]["brightness"]["maximum"],
+            json!(LIGHT_BRIGHTNESS_MAX)
+        );
+        assert_eq!(
+            effect["properties"]["color_model"]["enum"],
+            json!(["monochrome", "mixing"])
+        );
+
+        // lighting.mode_colors: exactly 23 groups, mode 0..=22, #rrggbb.
+        let mc = at(
+            conf,
+            &["properties", "lighting", "properties", "mode_colors"],
+        );
+        assert_eq!(mc["minItems"], json!(K1PRO_MODE_COLORS));
+        assert_eq!(mc["maxItems"], json!(K1PRO_MODE_COLORS));
+        let mc_entry = &mc["items"];
+        assert_eq!(mc_entry["additionalProperties"], json!(false));
+        for f in ["mode", "color"] {
+            assert!(mc_entry["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert_eq!(
+            mc_entry["properties"]["mode"]["maximum"],
+            json!((K1PRO_MODE_COLORS - 1) as u64)
+        );
+        assert!(mc_entry["properties"]["color"]["pattern"]
+            .as_str()
+            .unwrap()
+            .contains("#"));
+
+        // lighting.per_key: mode const "explicit", exactly 126 colours.
+        let pk = at(conf, &["properties", "lighting", "properties", "per_key"]);
+        assert_eq!(pk["properties"]["mode"]["const"], json!("explicit"));
+        let pkc = &pk["properties"]["colors"];
+        assert_eq!(pkc["minItems"], json!(K1PRO_KEYS));
+        assert_eq!(pkc["maxItems"], json!(K1PRO_KEYS));
+
+        // macros: entry shape, step shape/ranges, binding ranges, ≤512 B.
+        let macros = &conf["properties"]["macros"];
+        let mentry = &macros["items"];
+        assert_eq!(mentry["additionalProperties"], json!(false));
+        for f in ["id", "name", "steps", "bindings"] {
+            assert!(mentry["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert_eq!(mentry["properties"]["name"]["maxLength"], json!(255));
+        let step = &mentry["properties"]["steps"]["items"];
+        assert_eq!(step["additionalProperties"], json!(false));
+        for f in ["action", "delay_ms", "key"] {
+            assert!(step["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert_eq!(step["properties"]["action"]["enum"], json!(["down", "up"]));
+        assert_eq!(
+            step["properties"]["delay_ms"]["maximum"],
+            json!(MACRO_STEP_DELAY_MAX)
+        );
+        assert_eq!(
+            step["properties"]["kind"]["enum"],
+            json!(["key", "modifier", "mouse", "other"])
+        );
+        let binding = &mentry["properties"]["bindings"]["items"];
+        for f in ["layer", "system", "key_index", "macro_type", "loop_count"] {
+            assert!(binding["required"].as_array().unwrap().contains(&json!(f)));
+        }
+        assert_eq!(binding["properties"]["key_index"]["maximum"], json!(125));
+        assert_eq!(binding["properties"]["loop_count"]["minimum"], json!(1));
+        assert_eq!(binding["properties"]["loop_count"]["maximum"], json!(255));
+        // The ≤512 B macro-region cap is runtime metadata (x-omg), asserted
+        // here so it cannot be dropped silently.
+        assert_eq!(doc["x-omg"]["key_counts"]["macro_region_bytes"], json!(512));
     }
 
     #[test]

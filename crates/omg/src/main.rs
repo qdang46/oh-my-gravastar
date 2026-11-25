@@ -27,6 +27,7 @@ mod kb916_macro;
 mod kb916_music;
 mod plan;
 mod profile;
+mod runtime;
 mod schema;
 
 #[derive(Parser)]
@@ -149,6 +150,15 @@ enum Commands {
     Plan {
         #[command(subcommand)]
         command: plan::PlanCommands,
+    },
+    /// Live runtime sessions (spec §4.4 — `runtime`, not persistent
+    /// config): music-reactive and LED pixel-art cmd-8 frame streams to
+    /// a khub916 wired keyboard. `start` requires `--yes` (without it
+    /// the plan is printed and nothing is sent); `stop` is always
+    /// allowed; both restore the pre-session lighting on exit.
+    Runtime {
+        #[command(subcommand)]
+        command: runtime::RuntimeCommands,
     },
 }
 
@@ -444,6 +454,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Config { command } => config::commands::run(cli, command),
         Commands::Device { command } => cmd_device(cli, command),
         Commands::Plan { command } => plan::cmd_plan(cli, command),
+        Commands::Runtime { command } => runtime::run(cli, command),
     }
 }
 

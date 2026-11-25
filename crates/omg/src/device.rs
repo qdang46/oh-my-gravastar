@@ -93,7 +93,7 @@ pub(crate) fn capabilities(kind: DeviceKind) -> Value {
             "profile_import": {"supported": false, "reason": "not-implemented",
                 "detail": "export-only; no whole-profile mapping"},
             "factory_reset": {"supported": false, "blacklisted": true, "reason": "not-implemented",
-                "detail": "protocol blacklist: cmd 17 reset and all writes per docs/protocol-khub916.md §6"},
+                "detail": "cmd 17 exists (fire-and-forget, no read-back) but reset coverage is unverified — see docs/research/reset-coverage.md; L4-blocked pending reset_verified evidence"},
         }),
         DeviceKind::Khub916Screen => json!({
             "verification": "code-verified",
