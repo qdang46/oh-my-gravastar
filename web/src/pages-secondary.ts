@@ -941,8 +941,10 @@ export const SECONDARY_RENDERERS: Record<SecondaryPageId, (root: HTMLElement) =>
 };
 
 // Profile history auto-capture (bead th0): wraps session write methods
-// once; captures post-write snapshots into localStorage.
-initProfileHistory();
+// once; captures post-write snapshots into localStorage. Deferred past
+// module evaluation — profiles.ts ↔ pages-secondary.ts is an import
+// cycle, and calling synchronously here can hit `historyStarted`'s TDZ.
+queueMicrotask(initProfileHistory);
 
 // Clear module state when the device disconnects.
 subscribe(() => {
