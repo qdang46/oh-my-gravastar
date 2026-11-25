@@ -6,15 +6,17 @@
 //! `light stream`: `--yes` gate before any device access, profile +
 //! cmd-138 light-data snapshot, verified restore on exit/Ctrl-C/error.
 //!
-//! `--source system` uses ScreenCaptureKit display-audio capture on
-//! macOS (needs Screen Recording permission). `--source mic` uses the
-//! default cpal input — useful for testing, but only hears what the mic
-//! hears (TWS earbuds leak almost nothing).
+//! `--source system` uses WASAPI loopback on Windows and
+//! ScreenCaptureKit display-audio capture on macOS (needs Screen
+//! Recording permission). `--source mic` uses the default cpal input —
+//! useful for testing, but only hears what the mic hears (TWS earbuds
+//! leak almost nothing).
 
 use anyhow::{anyhow, bail, Result};
 use omg_music::capture::{open_source, SourceKind};
 use omg_music::{
-    Analyzer, Bands, BeatViz, FrameParams, KeyPos, PulseMode, PulseViz, SpectrumViz,
+    grid_geometry, pack_frame, parse_layers, preset, Analyzer, Bands, BeatViz, FrameParams,
+    KeyPoint, KeyPos, LayerKind, LayerMixer, Palette, PulseMode, PulseViz, SpectrumViz,
 };
 use omg_proto_khub916::KeyValue;
 use serde_json::json;
@@ -146,9 +148,11 @@ const MOD_CELLS: [[(f32, u8); 2]; 4] = [
     [(1.75, 5), (10.6, 5)], // GUI/Win
 ];
 
-/// Build normalised [`KeyPos`] for every keymap slot. Falls back to the
-/// linear slot position for values we cannot place (Fn, macros, empty).
-fn key_positions(keymap: &[KeyValue]) -> Vec<KeyPos> {
+/// Build per-slot positions in **key units** for the layer mixer:
+/// `(x, row)` where x is 0…16.5 left→right and row 0…5 top→bottom.
+/// Falls back to a linear spread for values we cannot place (Fn,
+/// macros, empty).
+fn key_cells(keymap: &[KeyValue]) -> Vec<(f32, f32)> {
     let n = keymap.len().max(1);
     let mut mod_used = [0usize; MOD_CELLS.len()];
     keymap
@@ -169,36 +173,54 @@ fn key_positions(keymap: &[KeyValue]) -> Vec<KeyPos> {
                         // Bare modifier: pick the first set mod's next
                         // unused left/right candidate.
                         let flags = [*ctrl, *shift, *alt, *gui];
-                        flags.iter().position(|f| *f).and_then(|m| {
+                        flags.iter().position(|f| *f).map(|m| {
                             let cells = MOD_CELLS[m];
                             let idx = mod_used[m].min(1);
                             mod_used[m] += 1;
-                            Some(cells[idx])
+                            cells[idx]
                         })
                     }
                 }
                 _ => None,
             };
             match cell {
-                Some((x, row)) => ((x / 16.5).clamp(0.0, 1.0), row as f32 / 6.0),
-                None => (i as f32 / (n - 1).max(1) as f32, 0.5),
+                Some((x, row)) => (x, row as f32),
+                None => (i as f32 / (n - 1).max(1) as f32 * 16.5, 3.0),
             }
         })
         .collect()
 }
 
-/// Unified frame renderer over the two visualisers.
+/// Normalised [`KeyPos`] for the legacy visualisers (0..1 both axes).
+fn key_positions(keymap: &[KeyValue]) -> Vec<KeyPos> {
+    key_cells(keymap)
+        .iter()
+        .map(|&(x, row)| ((x / 16.5).clamp(0.0, 1.0), (row / 6.0).clamp(0.0, 1.0)))
+        .collect()
+}
+
+/// Mixer geometry for all 126 colour slots: real positions where the
+/// keymap decodes them, grid fallback for the rest.
+fn mixer_geometry(keymap: Option<&[KeyValue]>) -> Vec<KeyPoint> {
+    let fallback = grid_geometry(126);
+    let cells = keymap.map(key_cells).unwrap_or_default();
+    (0..126)
+        .map(|i| match cells.get(i) {
+            Some(&(x, y)) => KeyPoint { x, y },
+            None => fallback[i],
+        })
+        .collect()
+}
+
+/// Unified frame renderer over the visualisers. All variants emit the
+/// 378-byte cmd-8 payload; the mixer packs per-slot RGB directly.
 enum Viz {
     Spectrum(SpectrumViz),
     Beat(BeatViz),
     Pulse(PulseViz),
-    /// Vendor F75 layer-mixer port — `frame` returns **interleaved**
-    /// LED×RGB bytes (see `omg_music::f75`), converted by the caller.
-    F75 {
-        engine: omg_music::VendorEngine,
-        /// Engine emits interleaved; planar output needs `to_planar`.
-        interleaved: bool,
-    },
+    /// Additive layer mixer — `planar` selects the byte order
+    /// `pack_frame` writes.
+    Mixer { mixer: LayerMixer, planar: bool },
 }
 
 impl Viz {
@@ -207,7 +229,13 @@ impl Viz {
             Viz::Spectrum(v) => v.frame(bands, t),
             Viz::Beat(v) => v.frame(bands, t),
             Viz::Pulse(v) => v.frame(bands, t),
-            Viz::F75 { engine, .. } => engine.frame(bands, dt, &[]),
+            Viz::Mixer { mixer, planar } => {
+                let colors = mixer.frame(bands, dt);
+                let bytes = pack_frame(&colors, 126, *planar);
+                let mut out = [0u8; omg_music::render::FRAME_BYTES];
+                out.copy_from_slice(&bytes[..omg_music::render::FRAME_BYTES]);
+                out
+            }
         }
     }
 }
@@ -271,47 +299,70 @@ pub fn cmd(
     if !matches!(pixel_order, "planar" | "interleaved") {
         bail!("unknown --pixel-order '{pixel_order}' (want planar|interleaved)");
     }
-    // --effect means different things per engine: legacy names for
-    // `legacy`, a comma-separated vendor layer list for `f75`.
-    let f75_layers: Vec<(omg_music::VendorLayer, Option<f32>)> = if engine == "f75" {
-        if effect == "beat" {
-            // "beat" is the clap default and not a vendor layer name —
-            // treat it as "use the vendor default mix".
-            Vec::new()
+    if !matches!(engine, "legacy" | "mixer") {
+        bail!("unknown --engine '{engine}' (want legacy|mixer)");
+    }
+    // --effect means different things per engine: legacy visualiser
+    // names for `legacy`; for `mixer` a preset name or a comma-separated
+    // layer list with optional `=level` overrides. The clap default
+    // "beat" is a legacy name — for the mixer it selects the default
+    // preset.
+    let mut mixer_spec = String::new();
+    if engine == "mixer" {
+        mixer_spec = if effect == "beat" {
+            "spectrum".to_string()
         } else {
-            let mut v = Vec::new();
-            for name in effect.split(',') {
-                let name = name.trim();
-                match omg_music::VendorLayer::parse(name) {
-                    Some(l) => v.push((l, None)),
-                    None => bail!(
-                        "unknown --effect layer '{name}' for --engine f75 \
-                         (want solid|breathing|wave|starry|spectrum|ripple|pulse|rain, comma-separated)"
-                    ),
-                }
+            effect.to_string()
+        };
+    } else if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
+        bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
+    }
+    // Resolve the mixer scene: a preset name wins over a bare layer
+    // name; anything with ','/'=' is a layer list.
+    let (mixer_layers, preset_palette) = if engine == "mixer" {
+        if let Some(p) = preset(&mixer_spec) {
+            (
+                p.layers.iter().map(|&l| (l, None)).collect::<Vec<_>>(),
+                Some(p.palette),
+            )
+        } else {
+            match parse_layers(&mixer_spec) {
+                Ok(v) => (v, None),
+                Err(e) => bail!(
+                    "unknown --effect '{mixer_spec}' for --engine mixer: {e} \
+                     (presets: {}; layers: {}; `name=0.5` sets a level)",
+                    omg_music::PRESETS
+                        .iter()
+                        .map(|p| p.name)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    (LayerKind::Solid.name().to_string()
+                        + ",breathing,wave,starry,spectrum,ripple,pulse,rain"),
+                ),
             }
-            v
         }
     } else {
-        if !matches!(effect, "spectrum" | "beat" | "pulse" | "bass" | "ambient") {
-            bail!("unknown --effect '{effect}' (want spectrum|beat|pulse|bass|ambient)");
+        (Vec::new(), None)
+    };
+    // --palette: "auto" keeps the preset's palette (or Sunset for raw
+    // layer lists); an explicit name overrides it. Only the mixer
+    // consumes a palette — legacy ignores the flag entirely.
+    let mixer_palette = if engine == "mixer" {
+        match palette {
+            "auto" => preset_palette.unwrap_or(Palette::Sunset),
+            other => match Palette::parse(other) {
+                Some(p) => p,
+                None => bail!(
+                    "unknown --palette '{other}' \
+                     (want auto|rainbow|heat|ocean|sunset|neon|mono)"
+                ),
+            },
         }
-        Vec::new()
+    } else {
+        Palette::Sunset
     };
-    if !matches!(engine, "legacy" | "f75") {
-        bail!("unknown --engine '{engine}' (want legacy|f75)");
-    }
-    let f75_palette = match palette {
-        "rainbow" => omg_music::Palette::Rainbow,
-        "heat" => omg_music::Palette::Heat,
-        "ocean" => omg_music::Palette::Ocean,
-        "sunset" => omg_music::Palette::Sunset,
-        "neon" => omg_music::Palette::Neon,
-        "mono" => omg_music::Palette::Mono,
-        other => bail!("unknown --palette '{other}' (want rainbow|heat|ocean|sunset|neon|mono)"),
-    };
-    if !(0.25..=3.0).contains(&speed) {
-        bail!("--speed must be in 0.25..=3.0 for --engine f75, got {speed}");
+    if engine == "mixer" && !(0.25..=3.0).contains(&speed) {
+        bail!("--speed must be in 0.25..=3.0 for --engine mixer, got {speed}");
     }
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
@@ -353,9 +404,10 @@ pub fn cmd(
 
     // Map colour slots to physical key positions via the keymap so
     // effects follow the real keyboard geometry, not slot order.
-    let positions = kb
-        .keymap(0)
-        .map(|km| key_positions(&km))
+    let keymap = kb.keymap(0).ok();
+    let positions = keymap
+        .as_deref()
+        .map(key_positions)
         .unwrap_or_default();
     let params = FrameParams {
         sensitivity,
@@ -367,17 +419,17 @@ pub fn cmd(
         decay,
         ..FrameParams::default()
     };
-    let mut viz = if engine == "f75" {
-        let mut eng = omg_music::VendorEngine::default();
-        eng.palette = f75_palette;
-        eng.speed = speed;
-        eng.brightness = brightness;
-        if !f75_layers.is_empty() {
-            eng.layers = f75_layers;
-        }
-        Viz::F75 {
-            engine: eng,
-            interleaved: pixel_order == "interleaved",
+    let mut viz = if engine == "mixer" {
+        let mut mixer = LayerMixer::default();
+        mixer.layers = mixer_layers;
+        mixer.palette = mixer_palette;
+        mixer.speed = speed;
+        mixer.brightness = brightness;
+        mixer.gain = sensitivity;
+        mixer.set_geometry(mixer_geometry(keymap.as_deref()));
+        Viz::Mixer {
+            mixer,
+            planar: pixel_order == "planar",
         }
     } else {
         match effect {
@@ -444,14 +496,10 @@ pub fn cmd(
         }
         let t = started.elapsed().as_secs_f32();
         let mut frame = viz.frame(&bands, t, period.as_secs_f32());
-        match &mut viz {
-            // F75 engine already emits interleaved; convert only when the
-            // user asked for planar output.
-            Viz::F75 { interleaved, .. } => {
-                if !*interleaved {
-                    frame = omg_music::to_planar(&frame);
-                }
-            }
+        match &viz {
+            // The mixer packs its byte order via `pack_frame`; only the
+            // legacy visualisers emit planar and may need conversion.
+            Viz::Mixer { .. } => {}
             _ => {
                 if pixel_order == "interleaved" {
                     frame = omg_music::to_interleaved(&frame);

@@ -73,23 +73,39 @@ Actor/message framework (`ea_mgr` = manager, `ea_actor` = actor base,
   6 modes (`169-173` named + `428` "dynamic spectrum"), color list,
   `bypc-MAxis://` plugin handshake.
 
-## F75 layer-mixer port (2026-11-25)
+## Layer-mixer engine (2026-11-25, reworked)
 
-The macOS reference (`raghavt20/aula-f75-macos`, MIT) was ported into
-`crates/music/src/f75.rs` as `VendorEngine` and exposed via
-`omg kb916 light music --engine f75` (`--effect` = comma-separated
-vendor layer list, `--palette`, `--speed`). Layers: solid, breathing,
-lave, starry, spectrum, ripple, pulse, rain — mixer sums per-layer
-renders scaled by vendor `defaultLevel`, beat rule = vendor bass
-threshold OR'd with our flux beat. Frames are interleaved LED×RGB
-(`led = col*6+row` on the F75 map); `--pixel-order planar` converts
-back for the K1 Pro slot order.
+`crates/music/src/mixer.rs` is the default renderer behind
+`omg kb916 light music --engine mixer` (`legacy` keeps the older
+BeatViz/SpectrumViz/PulseViz path). It is a generic 126-slot additive
+layer mixer:
 
-Offline contrast sim (`cargo run -p omg-music --example f75_sim`,
-kick every 0.5 s): pulse-only floor 0.08 / peak 0.32, ripple-only
-0.03 / 0.04, spectrum-only flat 0.12 (bands held constant), default
-pulse+ripple floor 0.11 / peak 0.35 — versus the legacy BeatViz
-which bottomed at ~0.25 mean between beats. The pulse layer's
-`env > 0.02` hard gate means true silence still renders all-black
-(unit-tested). Live hardware verification pending — needs music
-playing through system loopback.
+- **Geometry** — per-slot `KeyPoint`s built from the device keymap
+  (`kb916_music::key_cells`, x in key units / row in row units), with a
+  21×6 `grid_geometry` fallback when the keymap can't be read.
+- **Layers** — `solid`, `breathing`, `wave`, `starry`, `spectrum`,
+  `ripple`, `pulse`, `rain`; the mixer sums each layer's per-slot RGB
+  scaled by its level (`name=0.5` in `--effect` overrides the default).
+- **Presets** — `PRESETS` names curated layer+palette scenes
+  (`spectrum`, `equalizer`, `party`, `lava`, `rainstorm`, `starry`,
+  `pulse`, `breathing`, `wave`, `spectrum-stars`); `--effect <name>`
+  accepts a preset or a comma-separated layer list, `--palette auto`
+  keeps the preset palette.
+- **Feature feed** — `make_feat` applies AGC + `--sensitivity` once;
+  beat = bass-onset rule OR'd with the dsp flux beat flag; palette hue
+  drifts per-second (frame-rate independent).
+- **Packing** — `pack_frame` emits planar or interleaved RGB per
+  `--pixel-order`.
+
+`--source system` now works on Windows too: WASAPI render-endpoint
+loopback (`wasapi` crate, dedicated `omg-music-loopback` thread,
+event-driven shared-mode capture, f32 stereo → mono) alongside the
+macOS ScreenCaptureKit backend.
+
+Offline contrast sim (kick every 0.5 s): pulse-only floor 0.08 /
+peak 0.32, ripple-only 0.03 / 0.04, spectrum-only flat 0.12, mixed
+floor 0.11 / peak 0.35 — versus the legacy BeatViz which bottomed at
+~0.25 mean between beats. The pulse layer's `env > 0.02` hard gate
+means true silence still renders all-black (unit-tested). Live
+hardware verification pending — needs music playing through system
+loopback.

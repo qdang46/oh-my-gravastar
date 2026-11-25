@@ -555,8 +555,8 @@ impl PulseViz {
         let target = match self.mode {
             // dsp's decaying beat pulse, snapped to 1 on a fresh beat.
             PulseMode::Beat => bands.beat_pulse.max(if bands.beat { 1.0 } else { 0.0 }),
-            // Vendor PulseLayer: bass^1.3 — kicks punch through harder
-            // than a linear bass read (aula-f75-macos Effects.swift).
+            // Bass^1.3 — kicks punch through harder than a linear bass
+            // read.
             PulseMode::Bass => (bands.bass * bands.agc).clamp(0.0, 1.0).powf(1.3),
             PulseMode::Ambient => bands.level.clamp(0.0, 1.0),
         };
@@ -568,7 +568,7 @@ impl PulseViz {
             (0.35 * self.params.decay).min(0.98)
         };
         self.env += k * (target - self.env);
-        // Hard gate (vendor PulseLayer): below ~2% the whole field
+        // Hard gate: below ~2% the whole field
         // renders black — "keys off between beats", not dim glow.
         let drive = if self.env > 0.02 { self.env } else { 0.0 };
         let gate = bands.level.clamp(0.0, 1.0);
@@ -605,9 +605,8 @@ fn hash01(n: u32) -> f32 {
 }
 
 /// Convert a planar `[R×126][G×126][B×126]` frame to interleaved
-/// `LED×(R,G,B)` order. Needed for devices whose cmd-8 stream indexes
-/// LEDs as `led*3` (Aula F75 family per raghavt20/aula-f75-macos) rather
-/// than the K1 Pro planar assumption.
+/// `LED×(R,G,B)` order. Needed for devices whose LED stream indexes
+/// LEDs as `led*3` rather than the planar assumption.
 pub fn to_interleaved(frame: &[u8; FRAME_BYTES]) -> [u8; FRAME_BYTES] {
     let mut out = [0u8; FRAME_BYTES];
     for k in 0..KEY_SLOTS {
@@ -619,8 +618,8 @@ pub fn to_interleaved(frame: &[u8; FRAME_BYTES]) -> [u8; FRAME_BYTES] {
 }
 
 /// Inverse of [`to_interleaved`]: interleaved `LED×(R,G,B)` → planar
-/// `[R×126][G×126][B×126]`. The vendor F75 engine emits interleaved
-/// frames; the K1 Pro planar path needs this conversion.
+/// `[R×126][G×126][B×126]`. The layer mixer packs interleaved frames;
+/// the planar path needs this conversion.
 pub fn to_planar(frame: &[u8; FRAME_BYTES]) -> [u8; FRAME_BYTES] {
     let mut out = [0u8; FRAME_BYTES];
     for k in 0..KEY_SLOTS {

@@ -4236,13 +4236,13 @@ enum Kb916Light {
         #[command(flatten)]
         yes: Yes,
     },
-    /// Music-reactive lighting: capture system audio (macOS
-    /// ScreenCaptureKit loopback, needs Screen Recording permission) or
-    /// the microphone, analyse with FFT and drive cmd-8 frames in real
-    /// time (omg-music crate). Requires `--yes`; snapshots and restores
-    /// the pre-run lighting on exit/Ctrl-C.
+    /// Music-reactive lighting: capture system audio (WASAPI loopback on
+    /// Windows, ScreenCaptureKit on macOS) or the microphone, analyse
+    /// with FFT and drive cmd-8 frames in real time (omg-music crate).
+    /// Requires `--yes`; snapshots and restores the pre-run lighting on
+    /// exit/Ctrl-C.
     Music {
-        /// Audio source: `system` (output loopback, macOS only) or `mic`.
+        /// Audio source: `system` (output loopback) or `mic`.
         #[arg(long, default_value = "system")]
         source: String,
         /// Frames per second for LED updates (default 10; vendor report
@@ -4256,11 +4256,17 @@ enum Kb916Light {
         /// Output brightness 0.0-1.0 (default 1.0 = full).
         #[arg(long, default_value_t = 1.0)]
         brightness: f32,
-        /// Visualiser: `beat` (onset-driven kick/snare/hat motion over a
-        /// dim spectrum base — hybrid, default), `pulse` (whole-keyboard
-        /// beat flash), `bass` (brightness follows bass energy),
-        /// `ambient` (follows overall level), or `spectrum` (frequency
-        /// mapped across keys).
+        /// Visualiser: with `--engine legacy`, `beat` (onset-driven
+        /// kick/snare/hat motion over a dim spectrum base — hybrid,
+        /// default), `pulse` (whole-keyboard beat flash), `bass`
+        /// (brightness follows bass energy), `ambient` (follows overall
+        /// level), or `spectrum` (frequency mapped across keys). With
+        /// `--engine mixer`, a scene preset (`spectrum`, `party`,
+        /// `lava`, `equalizer`, `rainstorm`, `starry`, `pulse`,
+        /// `breathing`, `wave`, `spectrum-stars`) or a comma-separated
+        /// layer list with optional `=level` (`solid,breathing=0.5,
+        /// spectrum`); the clap default `beat` selects the `spectrum`
+        /// preset.
         #[arg(long, default_value = "beat")]
         effect: String,
         /// Dim uniform base brightness between beats, 0.0-1.0
@@ -4279,20 +4285,22 @@ enum Kb916Light {
         #[arg(long, default_value_t = 1.0)]
         decay: f32,
         /// LED byte order in the 378-byte frame: `planar` = [R×126][G×126]
-        /// [B×126] (K1 Pro assumption), `interleaved` = per-LED RGB
-        /// (Aula F75 family per raghavt20/aula-f75-macos).
+        /// [B×126] (K1 Pro assumption), `interleaved` = per-LED RGB.
         #[arg(long, default_value = "planar")]
         pixel_order: String,
-        /// Renderer engine: `legacy` (BeatViz/SpectrumViz/PulseViz) or
-        /// `f75` (vendor F75 layer-mixer port: spectrum/wave/pulse/
-        /// ripple/rain/starry layers, palette hues, per-layer levels —
-        /// layout per raghavt20/aula-f75-macos).
-        #[arg(long, default_value = "legacy")]
+        /// Renderer engine: `mixer` (additive layer mixer: spectrum/
+        /// wave/pulse/ripple/rain/starry/breathing/lava layers blended
+        /// with per-layer levels and palette hues, geometry mapped from
+        /// the keymap — default) or `legacy` (BeatViz/SpectrumViz/
+        /// PulseViz renderers).
+        #[arg(long, default_value = "mixer")]
         engine: String,
-        /// Palette for `--engine f75`: rainbow|heat|ocean|sunset|neon|mono.
-        #[arg(long, default_value = "sunset")]
+        /// Palette for `--engine mixer`: auto (preset palette, default),
+        /// rainbow|heat|ocean|sunset|neon|mono. An explicit name
+        /// overrides the preset's palette.
+        #[arg(long, default_value = "auto")]
         palette: String,
-        /// Effect speed 0.25-3.0 for `--engine f75` (vendor `speed`).
+        /// Effect speed 0.25-3.0 for `--engine mixer`.
         #[arg(long, default_value_t = 1.0)]
         speed: f32,
         /// Stop after this many seconds (default: until Ctrl-C).
