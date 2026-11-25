@@ -1,4 +1,16 @@
-# Plan JSON — `omg plan`
+# Plan JSON — `omg plan` (legacy command-plan format)
+
+> **Status: compatibility format.** This document describes the
+> *command-oriented* plan (`{version:1, steps:[{op,args}]}`) where `op`
+> is a leaf CLI command path. It remains supported for multi-step CLI
+> automation, but it is **not** the Agent configuration contract.
+>
+> The target Agent surface is the schema-driven desired-state document
+> (`omg schema` / `omg guide` / `omg config get|validate|diff|apply`)
+> specified in [specs/rust-cli-config-migration-spec.md](specs/rust-cli-config-migration-spec.md)
+> and [specs/ADR-full-desired-state-config.md](specs/ADR-full-desired-state-config.md).
+> `config apply` is not implemented yet — the read-only slice
+> (`schema`, `guide`, `config get|validate|diff`) is landing first.
 
 Machine-readable multi-step device plans. This is the interchange format
 for agents (and later the web agent engine): describe desired changes as
