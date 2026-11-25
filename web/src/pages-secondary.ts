@@ -288,6 +288,13 @@ export async function applyParsedImport(p: ParsedImport): Promise<string[]> {
         'This backup was made for a different keyboard model. ' +
         'Applying it may produce unexpected results.',
       details: p.compatWarnings,
+      impact: {
+        affected: p.sections.map((s) => s.name),
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'partial',
+        restartRisk: false,
+      },
       confirmLabel: 'Apply anyway',
       cancelLabel: 'Cancel',
       danger: true,
@@ -678,23 +685,46 @@ function renderConfig(root: HTMLElement): void {
           renderConfig(root);
           return;
         }
-        void (async () => {
-          importBusy = true;
-          importConfirm = false;
-          importLog = [];
-          renderConfig(root);
-          try {
-            // Shared hardened apply path (applyParsedImport) — also used
-            // by profile-history restore in profiles.ts.
-            importLog = await applyParsedImport(p);
-          } catch (e) {
-            importLog = [`FAILED: ${msg(e)}`];
-          } finally {
-            importBusy = false;
-            importPreview = null;
+        // §7: the armed second click opens the shared write-confirmation
+        // surface — the section list above is the preview; this dialog
+        // states persistence / backup / rollback coverage explicitly.
+        void confirmDialog({
+          title: `Write ${p.sections.length} part(s) from "${p.fileName}" to the keyboard?`,
+          bodyText:
+            'Only the parts listed above change. A backup of the current ' +
+            'state is saved before anything is written; each part is ' +
+            'checked on the keyboard afterwards.',
+          impact: {
+            affected: p.sections.map((s) => `${s.name}: ${s.summary}`),
+            persistent: true,
+            backupCaptured: true,
+            // rollbackSections covers the snapshot-mapped sections;
+            // parts without a captured section are reported, not hidden.
+            rollback: 'partial',
+            restartRisk: false,
+          },
+          confirmLabel: 'Write to keyboard',
+          danger: true,
+        }).then((ok) => {
+          if (!ok) return;
+          void (async () => {
+            importBusy = true;
+            importConfirm = false;
+            importLog = [];
             renderConfig(root);
-          }
-        })();
+            try {
+              // Shared hardened apply path (applyParsedImport) — also used
+              // by profile-history restore in profiles.ts.
+              importLog = await applyParsedImport(p);
+            } catch (e) {
+              importLog = [`FAILED: ${msg(e)}`];
+            } finally {
+              importBusy = false;
+              importPreview = null;
+              renderConfig(root);
+            }
+          })();
+        });
       });
       im.body.append(applyBtn);
       im.body.append(
@@ -816,11 +846,33 @@ function renderSetting(root: HTMLElement): void {
       renderSetting(root);
       return;
     }
-    sleepBusy = true;
-    sleepConfirm = false;
-    sleepLog = [];
-    renderSetting(root);
-    void (async () => {
+    // §7: the armed second click opens the shared write-confirmation
+    // surface before any byte is sent.
+    void confirmDialog({
+      title: `Set the sleep timer to ${seconds} seconds?`,
+      bodyText:
+        'Only the sleep time changes — lighting and key assignments stay ' +
+        'the same. The change is saved on the keyboard and checked on the device.',
+      impact: {
+        affected: ['Sleep timer'],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
+      confirmLabel: 'Save to keyboard',
+      danger: true,
+    }).then((ok) => {
+      if (!ok) {
+        sleepConfirm = false;
+        renderSetting(root);
+        return;
+      }
+      sleepBusy = true;
+      sleepConfirm = false;
+      sleepLog = [];
+      renderSetting(root);
+      void (async () => {
       const session = app.connected?.session;
       const writeProfile = session ? sessionWrites(session).writeProfile : undefined;
       if (!session || !writeProfile) {
@@ -842,7 +894,8 @@ function renderSetting(root: HTMLElement): void {
         sleepBusy = false;
         renderSetting(root);
       }
-    })();
+      })();
+    });
   });
   row.append(applyBtn);
   c.body.append(row);

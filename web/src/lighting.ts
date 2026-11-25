@@ -1000,6 +1000,15 @@ class LightingView {
         'checks each step was saved correctly. This overwrites the lighting ' +
         'settings currently stored on the keyboard. Key assignments and ' +
         'macros stay the same. The keyboard may blink while it updates.',
+      impact: {
+        affected: ['Lighting effect', 'Colours', 'Speed'],
+        persistent: true,
+        // apply() captures a SnapshotStore restore point before the
+        // first write byte (may be partial if a device read fails).
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
       preText: json,
       hint: 'You can save a full backup of the keyboard first on the Backup & restore page.',
       confirmLabel: 'Save to keyboard',

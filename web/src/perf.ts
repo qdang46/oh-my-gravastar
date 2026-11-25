@@ -355,6 +355,14 @@ async function savePerf(row: number, col: number, draft: PerfDraft): Promise<voi
       'The app reads the settings back afterwards and reports whether the keyboard confirmed them.',
     details: changes,
     hint: HE_UNVERIFIED_NOTE,
+    impact: {
+      affected: [`Actuation settings for key r${row}c${col}`],
+      persistent: true,
+      // HE sessions have no SnapshotStore/profile-history backup path.
+      backupCaptured: false,
+      rollback: 'none',
+      restartRisk: false,
+    },
     confirmLabel: 'Save to keyboard',
   });
   if (!ok) return;
@@ -405,6 +413,13 @@ async function saveHk(
       `This writes the ${summary} configuration to the keyboard immediately — there is no undo. ` +
       'Advanced-key writes are confirmed by the device echo; the app reports what came back.',
     hint: HE_UNVERIFIED_NOTE,
+    impact: {
+      affected: [`Advanced-key settings for key r${row}c${col}`],
+      persistent: true,
+      backupCaptured: false,
+      rollback: 'none',
+      restartRisk: false,
+    },
     confirmLabel: 'Save to keyboard',
   });
   if (!ok) return;
@@ -443,6 +458,14 @@ async function runCalibration(start: boolean): Promise<void> {
       'There is no read-back for this command; the app reports "sent", not "verified".',
       HE_UNVERIFIED_NOTE,
     ],
+    impact: {
+      affected: ['Whole-keyboard travel calibration'],
+      persistent: true,
+      backupCaptured: false,
+      rollback: 'none',
+      // Calibration mode changes how every key reports until finished.
+      restartRisk: true,
+    },
     confirmLabel: start ? 'Start calibration' : 'Finish calibration',
     danger: start,
   });

@@ -3262,3 +3262,198 @@ details.beh-more .beh-choices {
 .diag-chatter-row--flag {
   color: var(--warn);
 }
+
+/* ── W0 UX foundation ─────────────────────────────────────────────────
+   Design tokens live in the :root block at the top of this file
+   (spacing --space-*, type scale via body/heading sizes, surfaces
+   --surface*, semantic colors --success/--warn/--danger/--error,
+   motion tokens --motion-fast/--motion-base/--ease). This section adds the W0 components:
+   connection phase chip, language switcher, first-run onboarding,
+   capability list, status tags and the §7 write-impact dialog block. */
+
+/* Connection phase chip (topbar) — label + tone, never colour-only:
+   the text itself carries the state. */
+.conn-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-2);
+  background: var(--surface);
+  white-space: nowrap;
+}
+.conn-phase::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.conn-phase.phase-ok { color: var(--success); border-color: rgba(57, 255, 136, 0.35); }
+.conn-phase.phase-warn { color: var(--warn); border-color: rgba(255, 243, 77, 0.35); }
+.conn-phase.phase-error { color: var(--error); border-color: rgba(255, 123, 114, 0.4); }
+.conn-phase.phase-info { color: var(--accent); border-color: rgba(198, 245, 78, 0.3); }
+.conn-phase.phase-muted { color: var(--muted); }
+
+/* Language switcher (topbar). */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 12px;
+  color: var(--muted);
+}
+.lang-switch-label {
+  /* visible text label — also the select's accessible name */
+}
+.lang-select {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-ctl);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 12px;
+  font-family: inherit;
+}
+.lang-select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* First-run onboarding card (Home, disconnected). */
+.onboard-req {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.onboard-req-title {
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+}
+.onboard-steps {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+.onboard-steps li::marker {
+  color: var(--accent);
+}
+
+/* Capability summary list (Home). */
+.cap-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cap-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+.cap-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.cap-name {
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 9em;
+}
+.cap-blurb {
+  font-size: 13px;
+  color: var(--muted);
+  flex: 1 1 16em;
+}
+
+/* Backup nudge on Home quick actions. */
+.backup-nudge {
+  margin-top: var(--space-3);
+}
+.backup-nudge a {
+  color: var(--accent);
+}
+
+/* Status vocabulary chips (ui/status.ts) — text label + tone; the
+   word itself carries the meaning so colour is never the only signal. */
+.status-tag {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: var(--surface);
+  vertical-align: middle;
+}
+.status-tag.tag-verified { color: var(--success); border-color: rgba(57, 255, 136, 0.35); }
+.status-tag.tag-warn { color: var(--warn); border-color: rgba(255, 243, 77, 0.35); }
+.status-tag.tag-error { color: var(--error); border-color: rgba(255, 123, 114, 0.4); }
+.dash-audit-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+/* §7 write-impact block inside confirm dialogs. */
+.modal-impact {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.modal-impact-title {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.modal-impact-list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.modal-impact-list dt {
+  color: var(--muted);
+}
+.modal-impact-list dd {
+  margin: 0;
+  color: var(--fg-2);
+}
+
+/* Reduced motion (spec §7): collapse transitions/animations for users
+   who ask for it. Functional state changes are instant, never hidden. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -407,6 +407,17 @@ function confirmWrite(title: string, lines: string[], confirmLabel: string): Pro
   return confirmDialog({
     title,
     details: lines,
+    // §7 impact block: persistent keymap write, read-back verified.
+    // Profile-history auto-capture keeps a restore point for the
+    // keymap section (baseline on connect + after each write), so a
+    // Backup & restore rollback covers this change.
+    impact: {
+      affected: ['Key assignments on the edited layer(s)'],
+      persistent: true,
+      backupCaptured: true,
+      rollback: 'full',
+      restartRisk: false,
+    },
     hint:
       'Only the keys listed above change — everything else stays the same. ' +
       'The keyboard checks each change was saved.',
