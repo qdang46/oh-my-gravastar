@@ -61,7 +61,9 @@ pub fn text() -> String {
     for step in d["workflow"].as_array().unwrap() {
         s.push_str(&format!(
             "  {}. {} — {}\n",
-            step["step"], step["cmd"].as_str().unwrap(), step["does"].as_str().unwrap()
+            step["step"],
+            step["cmd"].as_str().unwrap(),
+            step["does"].as_str().unwrap()
         ));
     }
     s.push_str("\ndocument rules:\n");

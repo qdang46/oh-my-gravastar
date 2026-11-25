@@ -343,7 +343,11 @@ fn k1pro_lighting_schema() -> Value {
             props(vec![
                 (
                     "mode",
-                    ann(json!({"const":"explicit"}), None, "only explicit full tables are desired state"),
+                    ann(
+                        json!({"const":"explicit"}),
+                        None,
+                        "only explicit full tables are desired state",
+                    ),
                 ),
                 (
                     "colors",
@@ -423,8 +427,22 @@ fn k1pro_macros_schema() -> Value {
     );
     let binding = obj(
         props(vec![
-            ("layer", ann(json!({"type":"integer","minimum":0,"maximum":3}), None, "keymap layer")),
-            ("system", ann(json!({"type":"integer","minimum":0,"maximum":1}), None, "keymap system bank")),
+            (
+                "layer",
+                ann(
+                    json!({"type":"integer","minimum":0,"maximum":3}),
+                    None,
+                    "keymap layer",
+                ),
+            ),
+            (
+                "system",
+                ann(
+                    json!({"type":"integer","minimum":0,"maximum":1}),
+                    None,
+                    "keymap system bank",
+                ),
+            ),
             (
                 "key_index",
                 ann(
@@ -435,11 +453,19 @@ fn k1pro_macros_schema() -> Value {
             ),
             (
                 "macro_type",
-                ann(json!({"type":"integer","minimum":0,"maximum":255}), None, "tag-3 type byte (bits 23..16)"),
+                ann(
+                    json!({"type":"integer","minimum":0,"maximum":255}),
+                    None,
+                    "tag-3 type byte (bits 23..16)",
+                ),
             ),
             (
                 "loop_count",
-                ann(json!({"type":"integer","minimum":1,"maximum":255}), None, "tag-3 loop count (bits 15..8)"),
+                ann(
+                    json!({"type":"integer","minimum":1,"maximum":255}),
+                    None,
+                    "tag-3 loop count (bits 15..8)",
+                ),
             ),
         ]),
         &["layer", "system", "key_index", "macro_type", "loop_count"],
@@ -578,7 +604,13 @@ fn k1pro_schema_doc() -> Value {
 
 /// Shared envelope for families whose surface is documented but gated
 /// off (`writable: false`); `document::validate` rejects their documents.
-fn gated_schema_doc(schema_id: &str, device_kind: &str, title: &str, configuration: Value, note: &str) -> Value {
+fn gated_schema_doc(
+    schema_id: &str,
+    device_kind: &str,
+    title: &str,
+    configuration: Value,
+    note: &str,
+) -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": format!("urn:oh-my-gravastar:config:{schema_id}:v1"),
@@ -617,7 +649,8 @@ fn gated_schema_doc(schema_id: &str, device_kind: &str, title: &str, configurati
 /// Mark every leaf of a declared configuration schema non-writable.
 fn gate_unwritable(v: &mut Value) {
     if let Some(o) = v.as_object_mut() {
-        let is_schema_node = o.contains_key("type") || o.contains_key("enum") || o.contains_key("const");
+        let is_schema_node =
+            o.contains_key("type") || o.contains_key("enum") || o.contains_key("const");
         if is_schema_node {
             let meta = o
                 .get("x-omg")
@@ -872,7 +905,10 @@ fn spark_doc() -> Value {
 /// Build the schema/observation document for `schema_id`, optionally
 /// filtered to one top-level `configuration` section (or `observed`
 /// section for the SparkPlayJoy document).
-pub fn schema_doc(schema_id: &str, section: Option<&str>) -> Result<Value, crate::config::error::ConfigError> {
+pub fn schema_doc(
+    schema_id: &str,
+    section: Option<&str>,
+) -> Result<Value, crate::config::error::ConfigError> {
     use crate::config::error::ConfigError;
     let mut doc = match schema_id {
         KHUB916_K1PRO => k1pro_schema_doc(),
@@ -911,7 +947,9 @@ fn filter_section(doc: &mut Value, section: &str) -> Result<(), crate::config::e
         let observed = doc
             .get_mut("observed")
             .and_then(Value::as_object_mut)
-            .ok_or_else(|| ConfigError::invalid_document("observation doc has no 'observed' object"))?;
+            .ok_or_else(|| {
+                ConfigError::invalid_document("observation doc has no 'observed' object")
+            })?;
         if !observed.contains_key(section) {
             return Err(ConfigError::invalid_document(format!(
                 "unknown section '{section}' — valid: {}",
@@ -927,7 +965,9 @@ fn filter_section(doc: &mut Value, section: &str) -> Result<(), crate::config::e
         .and_then(|p| p.get_mut("configuration"))
         .and_then(|c| c.get_mut("properties"))
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| ConfigError::invalid_document("schema doc has no configuration properties"))?;
+        .ok_or_else(|| {
+            ConfigError::invalid_document("schema doc has no configuration properties")
+        })?;
     if !conf.contains_key(section) {
         return Err(ConfigError::invalid_document(format!(
             "unknown section '{section}' for this schema"
@@ -943,7 +983,10 @@ fn filter_section(doc: &mut Value, section: &str) -> Result<(), crate::config::e
         .and_then(|c| c.get_mut("required"))
         .and_then(Value::as_array_mut)
     {
-        req.retain(|r| r.as_str() == Some(section) || names.contains(&r.as_str().unwrap_or_default().to_string()));
+        req.retain(|r| {
+            r.as_str() == Some(section)
+                || names.contains(&r.as_str().unwrap_or_default().to_string())
+        });
         req.retain(|r| r.as_str() == Some(section));
     }
     if let Some(x) = doc.get_mut("x-omg").and_then(Value::as_object_mut) {
@@ -994,12 +1037,21 @@ mod tests {
     #[test]
     fn k1pro_schema_is_valid_shape() {
         let doc = schema_doc(KHUB916_K1PRO, None).unwrap();
-        assert_eq!(doc["$schema"], "https://json-schema.org/draft/2020-12/schema");
+        assert_eq!(
+            doc["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
         assert_eq!(doc["properties"]["schema_id"]["const"], KHUB916_K1PRO);
         let conf = &doc["properties"]["configuration"];
         for section in ["keymap", "device", "lighting", "macros"] {
-            assert!(conf["properties"].get(section).is_some(), "missing {section}");
-            assert!(conf["required"].as_array().unwrap().contains(&json!(section)));
+            assert!(
+                conf["properties"].get(section).is_some(),
+                "missing {section}"
+            );
+            assert!(conf["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(section)));
         }
         // Cardinalities.
         let layers = &conf["properties"]["keymap"]["properties"]["layers"];
@@ -1021,7 +1073,10 @@ mod tests {
         // Excluded areas declared.
         let excl = doc["x-omg"]["excluded"].as_array().unwrap();
         for area in ["advanced_keys", "screen", "wireless", "reset", "firmware"] {
-            assert!(excl.iter().any(|e| e["area"] == area), "excluded missing {area}");
+            assert!(
+                excl.iter().any(|e| e["area"] == area),
+                "excluded missing {area}"
+            );
         }
     }
 
@@ -1033,7 +1088,10 @@ mod tests {
             assert_eq!(doc["x-omg"]["managed_writable"], json!([]));
             // No writable leaf may leak through.
             let s = doc.to_string();
-            assert!(!s.contains("\"writable\":true"), "{id} advertises a writable field");
+            assert!(
+                !s.contains("\"writable\":true"),
+                "{id} advertises a writable field"
+            );
         }
     }
 
@@ -1048,7 +1106,9 @@ mod tests {
     #[test]
     fn section_filter_works_and_rejects_unknown() {
         let doc = schema_doc(KHUB916_K1PRO, Some("lighting")).unwrap();
-        let props = doc["properties"]["configuration"]["properties"].as_object().unwrap();
+        let props = doc["properties"]["configuration"]["properties"]
+            .as_object()
+            .unwrap();
         assert_eq!(props.len(), 1);
         assert!(props.contains_key("lighting"));
         assert!(schema_doc(KHUB916_K1PRO, Some("bogus")).is_err());

@@ -91,9 +91,8 @@ fn as_int_range(v: &Value, path: &str, min: u64, max: u64) -> Result<u64, Config
 }
 
 fn as_str<'a>(v: &'a Value, path: &str) -> Result<&'a str, ConfigError> {
-    v.as_str().ok_or_else(|| {
-        ConfigError::invalid_document(format!("{path} must be a string")).at(path)
-    })
+    v.as_str()
+        .ok_or_else(|| ConfigError::invalid_document(format!("{path} must be a string")).at(path))
 }
 
 /// `#rrggbb` (case-insensitive); normalized to lowercase-with-`#` on output.
@@ -128,9 +127,8 @@ fn parse_key_hex(v: &Value, path: &str) -> Result<(u32, String), ConfigError> {
         ))
         .at(path));
     }
-    let n = u32::from_str_radix(hex, 16).map_err(|_| {
-        ConfigError::invalid_document(format!("{path}: bad hex {s:?}")).at(path)
-    })?;
+    let n = u32::from_str_radix(hex, 16)
+        .map_err(|_| ConfigError::invalid_document(format!("{path}: bad hex {s:?}")).at(path))?;
     Ok((n, format!("0x{n:08X}")))
 }
 
@@ -203,10 +201,10 @@ fn parse_step_key(v: &Value, path: &str) -> Result<(u8, Option<StepKind>), Confi
             }
             Ok((u as u8, None))
         }
-        _ => Err(ConfigError::invalid_document(format!(
-            "{path}: key must be a string or number"
-        ))
-        .at(path)),
+        _ => Err(
+            ConfigError::invalid_document(format!("{path}: key must be a string or number"))
+                .at(path),
+        ),
     }
 }
 
@@ -255,8 +253,10 @@ fn parse_step(v: &Value, path: &str) -> Result<(MacroStep, Value), ConfigError> 
         },
     };
     if !matches!(kind, StepKind::Other(_)) && o.contains_key("nibble") {
-        return Err(ConfigError::unknown_property(format!("{path}.nibble"), "nibble")
-            .with_details(json!({"reason": "nibble is only valid with kind \"other\""})));
+        return Err(
+            ConfigError::unknown_property(format!("{path}.nibble"), "nibble")
+                .with_details(json!({"reason": "nibble is only valid with kind \"other\""})),
+        );
     }
     let step = MacroStep {
         action,
@@ -407,7 +407,12 @@ fn validate_lighting(conf: &Map<String, Value>) -> Result<Value, ConfigError> {
         ))
         .at(format!("{ep}.mode")));
     }
-    let speed = as_int_range(req(e, &ep, "speed")?, &format!("{ep}.speed"), 0, schema::LIGHT_SPEED_MAX)?;
+    let speed = as_int_range(
+        req(e, &ep, "speed")?,
+        &format!("{ep}.speed"),
+        0,
+        schema::LIGHT_SPEED_MAX,
+    )?;
     let bright = as_int_range(
         req(e, &ep, "brightness")?,
         &format!("{ep}.brightness"),
@@ -444,12 +449,17 @@ fn validate_lighting(conf: &Map<String, Value>) -> Result<Value, ConfigError> {
         let p = format!("{mp}[{i}]");
         let mo = as_obj(mv, &p)?;
         only_keys(mo, &p, &["mode", "color"])?;
-        let m = as_int_range(req(mo, &p, "mode")?, &format!("{p}.mode"), 0, (K1PRO_MODE_COLORS - 1) as u64)? as usize;
+        let m = as_int_range(
+            req(mo, &p, "mode")?,
+            &format!("{p}.mode"),
+            0,
+            (K1PRO_MODE_COLORS - 1) as u64,
+        )? as usize;
         if seen[m] {
-            return Err(ConfigError::invalid_document(format!(
-                "{p}.mode {m} is duplicated"
-            ))
-            .at(format!("{p}.mode")));
+            return Err(
+                ConfigError::invalid_document(format!("{p}.mode {m} is duplicated"))
+                    .at(format!("{p}.mode")),
+            );
         }
         seen[m] = true;
         let color = parse_color(req(mo, &p, "color")?, &format!("{p}.color"))?;
@@ -558,10 +568,14 @@ fn validate_macros(
                 &["layer", "system", "key_index", "macro_type", "loop_count"],
             )?;
             let layer = as_int_range(req(bo, &bp, "layer")?, &format!("{bp}.layer"), 0, 3)? as u8;
-            let system = as_int_range(req(bo, &bp, "system")?, &format!("{bp}.system"), 0, 1)? as u8;
-            let key_index =
-                as_int_range(req(bo, &bp, "key_index")?, &format!("{bp}.key_index"), 0, (K1PRO_KEYS - 1) as u64)?
-                    as u8;
+            let system =
+                as_int_range(req(bo, &bp, "system")?, &format!("{bp}.system"), 0, 1)? as u8;
+            let key_index = as_int_range(
+                req(bo, &bp, "key_index")?,
+                &format!("{bp}.key_index"),
+                0,
+                (K1PRO_KEYS - 1) as u64,
+            )? as u8;
             let macro_type = as_int_range(
                 req(bo, &bp, "macro_type")?,
                 &format!("{bp}.macro_type"),
@@ -668,8 +682,12 @@ fn check_macro_bindings(
                 .at("configuration.keymap"));
             }
             let declared = bindings.iter().any(|&(bid, bl, bs, bk, bt, bn)| {
-                bid == id && bl == layer && bs == system && bk as usize == slot
-                    && bt == macro_type && bn == number
+                bid == id
+                    && bl == layer
+                    && bs == system
+                    && bk as usize == slot
+                    && bt == macro_type
+                    && bn == number
             });
             if !declared {
                 return Err(ConfigError::invalid_document(format!(
@@ -746,7 +764,11 @@ pub fn read_document(file: &str) -> Result<Value, ConfigError> {
 pub fn validate(doc: &Value, ctx: &TargetContext) -> Result<Validated, ConfigError> {
     const ROOT: &str = "(document)";
     let root = as_obj(doc, ROOT)?;
-    only_keys(root, ROOT, &["format_version", "schema_id", "target", "configuration"])?;
+    only_keys(
+        root,
+        ROOT,
+        &["format_version", "schema_id", "target", "configuration"],
+    )?;
 
     // Envelope: all four fields required.
     for f in ["format_version", "schema_id", "target", "configuration"] {
@@ -774,7 +796,10 @@ pub fn validate(doc: &Value, ctx: &TargetContext) -> Result<Validated, ConfigErr
     for f in ["device_kind", "model", "firmware"] {
         req(t, tpath, f)?;
     }
-    let dk = as_str(req(t, tpath, "device_kind")?, &format!("{tpath}.device_kind"))?;
+    let dk = as_str(
+        req(t, tpath, "device_kind")?,
+        &format!("{tpath}.device_kind"),
+    )?;
     if dk != ctx.device_kind {
         return Err(ConfigError::target_mismatch(
             "device_kind",
@@ -800,8 +825,7 @@ pub fn validate(doc: &Value, ctx: &TargetContext) -> Result<Validated, ConfigErr
         return Err(ConfigError::unsupported(format!(
             "schema '{}' has no writable configuration surface in this release \
              (declared fields are code-tested/read-only — see `omg schema --device {}`)",
-            ctx.schema_id,
-            ctx.device_kind
+            ctx.schema_id, ctx.device_kind
         )));
     }
 
@@ -881,7 +905,10 @@ mod tests {
         let v = validate(&valid_doc(), &ctx()).unwrap();
         assert_eq!(v.doc["schema_id"], schema::KHUB916_K1PRO);
         assert_eq!(
-            v.doc["configuration"]["keymap"]["layers"].as_array().unwrap().len(),
+            v.doc["configuration"]["keymap"]["layers"]
+                .as_array()
+                .unwrap()
+                .len(),
             8
         );
         assert!(v.warnings.is_empty());
@@ -901,11 +928,17 @@ mod tests {
         // bad format_version
         let mut d = valid_doc();
         d["format_version"] = json!(2);
-        assert_eq!(validate(&d, &c).unwrap_err().code, "schema_version_unsupported");
+        assert_eq!(
+            validate(&d, &c).unwrap_err().code,
+            "schema_version_unsupported"
+        );
         // wrong schema_id
         let mut d = valid_doc();
         d["schema_id"] = json!("khub916-k1");
-        assert_eq!(validate(&d, &c).unwrap_err().code, "schema_version_unsupported");
+        assert_eq!(
+            validate(&d, &c).unwrap_err().code,
+            "schema_version_unsupported"
+        );
         // target mismatches
         let mut d = valid_doc();
         d["target"]["model"] = json!("916_K1");
@@ -952,7 +985,8 @@ mod tests {
         // duplicate bank
         let mut d = valid_doc();
         let l1 = d["configuration"]["keymap"]["layers"][1].clone();
-        d["configuration"]["keymap"]["layers"][1] = d["configuration"]["keymap"]["layers"][0].clone();
+        d["configuration"]["keymap"]["layers"][1] =
+            d["configuration"]["keymap"]["layers"][0].clone();
         let _ = l1;
         assert!(validate(&d, &c).is_err());
         // bad key hex
@@ -961,7 +995,10 @@ mod tests {
         assert_eq!(validate(&d, &c).unwrap_err().code, "invalid_document");
         // missing bank entirely (7 layers)
         let mut d = valid_doc();
-        d["configuration"]["keymap"]["layers"].as_array_mut().unwrap().pop();
+        d["configuration"]["keymap"]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
         assert_eq!(validate(&d, &c).unwrap_err().code, "invalid_document");
         // sleep out of range
         let mut d = valid_doc();
@@ -998,7 +1035,10 @@ mod tests {
             "bindings": [{"layer":0,"system":0,"key_index":10,"macro_type":1,"loop_count":1}],
         }]);
         let v = validate(&d, &c).unwrap();
-        assert_eq!(v.doc["configuration"]["macros"][0]["steps"][0]["key"], "KeyA");
+        assert_eq!(
+            v.doc["configuration"]["macros"][0]["steps"][0]["key"],
+            "KeyA"
+        );
 
         // Missing binding → error.
         let mut d2 = d.clone();

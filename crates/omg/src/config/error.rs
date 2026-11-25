@@ -57,12 +57,9 @@ impl ConfigError {
 
     /// A property the schema does not declare (additionalProperties:false).
     pub fn unknown_property(path: impl Into<String>, key: &str) -> Self {
-        Self::new(
-            "unknown_property",
-            format!("unknown property '{key}'"),
-        )
-        .at(path)
-        .with_details(json!({ "property": key }))
+        Self::new("unknown_property", format!("unknown property '{key}'"))
+            .at(path)
+            .with_details(json!({ "property": key }))
     }
 
     /// A required managed writable field is absent.
@@ -116,10 +113,7 @@ impl ConfigError {
     /// A required device read failed or returned a short/garbled payload.
     /// AGENTS.md §Safety 6: fail closed, never substitute defaults.
     pub fn state_read_failed(what: impl Into<String>, source: impl std::fmt::Display) -> Self {
-        Self::new(
-            "state_read_failed",
-            format!("{}: {source}", what.into()),
-        )
+        Self::new("state_read_failed", format!("{}: {source}", what.into()))
     }
 
     /// The stable §8 envelope.

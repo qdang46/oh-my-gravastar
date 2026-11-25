@@ -33,9 +33,7 @@ pub fn diff_documents(current: &Value, desired: &Value) -> Value {
     let mut sections = serde_json::Map::new();
     for c in &changes {
         if let Some(sec) = c["path"].as_str().and_then(|p| p.split('.').nth(1)) {
-            let e = sections
-                .entry(sec.to_string())
-                .or_insert_with(|| json!(0));
+            let e = sections.entry(sec.to_string()).or_insert_with(|| json!(0));
             if let Some(n) = e.as_u64() {
                 *e = json!(n + 1);
             }
@@ -108,7 +106,10 @@ mod tests {
         assert_eq!(r["equal"], false);
         let changes = r["changes"].as_array().unwrap();
         assert_eq!(changes.len(), 2);
-        assert_eq!(changes[0]["path"], "configuration.device.sleep_timeout_seconds");
+        assert_eq!(
+            changes[0]["path"],
+            "configuration.device.sleep_timeout_seconds"
+        );
         assert_eq!(changes[1]["path"], "configuration.keymap.layers[0].keys[1]");
         assert_eq!(r["summary"]["sections"]["device"], 1);
         assert_eq!(r["summary"]["sections"]["keymap"], 1);
