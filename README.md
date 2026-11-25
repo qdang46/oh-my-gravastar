@@ -274,6 +274,20 @@ writing, and verifies every change by read-back. khub916 and SparkPlayJoy
 are export-only for now (khub916 has verified `kb916 set` writes but no
 whole-profile import mapping; SparkPlayJoy has no write path).
 
+`omg profile watch` follows the foreground app and can auto-switch the
+HE keyboard profile (macOS only for now — Linux/Windows detection is
+documented future work):
+
+```sh
+omg profile watch --rules rules.json            # report app→profile matches
+omg profile watch --rules rules.json --apply --yes   # switch on match
+```
+
+`rules.json` is `{"rules":[{"app"|"bundle": "substring", "profile": N}]}`
+— first match wins, `profile` is the 0-based HE profile index. `--apply`
+opens the HE keyboard once, range-checks every switch and verifies by
+read-back; khub916 has no profile-switch command so apply is HE-only.
+
 ### JSON output
 
 Every data-emitting command accepts `--json` (global flag, any position):

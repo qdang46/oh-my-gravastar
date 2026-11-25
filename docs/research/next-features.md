@@ -7,6 +7,20 @@ family). This doc ranks the remaining candidate features by feasibility
 and verification cost. Levels follow AGENTS.md: code-verified /
 synthetic-tested / live-verified.
 
+## Status update (2026-11-25, later same day)
+
+- **#1 done** — `config verify` shipped (93c4964); rollback = apply a
+  `config get` snapshot (documented in README).
+- **#2 done** — web pixel-art shipped: `web/src/proto/pixelart.ts` (port
+  of pixelart.rs) + a "Pixel art" card on the Music page (0bb3c7f).
+- **#3 done** — `omg kb916 light pixel-art` CLI (45086be).
+- **#4 partially** — web `SpectrumViz` already emits the live-verified
+  interleaved cmd-8 order; full `mixer.rs` preset parity still open.
+- **#8 done (macOS)** — `omg profile watch` polls the frontmost app via
+  System Events, matches `--rules` JSON (app/bundle substring → HE
+  profile index), `--apply --yes` switches + verifies; report-only mode
+  needs no device. Linux/Windows detection documented as future work.
+
 ## Tier 1 — no extra hardware needed, K1 Pro in hand
 
 ### 1. `omg config verify` + `omg config rollback`

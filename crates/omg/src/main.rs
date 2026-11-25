@@ -29,6 +29,7 @@ mod plan;
 mod profile;
 mod runtime;
 mod schema;
+mod watch;
 
 #[derive(Parser)]
 #[command(
@@ -198,6 +199,27 @@ enum ProfileCommands {
         file: String,
         /// Confirm the writes. Without it (and without --dry-run) the
         /// command refuses before any bytes are sent.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Watch the foreground app and auto-switch the HE keyboard profile
+    /// when it changes (bead oh-my-gravastar-of1). macOS only for now.
+    /// `--apply` performs the profile write and requires `--yes`; without
+    /// it the command only reports what it would switch to. khub916 has
+    /// no profile-switch command, so apply targets HE keyboards only.
+    Watch {
+        /// Rules JSON file: {"rules":[{"app"|"bundle": "...", "profile": N}]}.
+        /// Without it, app changes are reported but nothing is matched.
+        #[arg(long, value_name = "FILE")]
+        rules: Option<String>,
+        /// Poll interval in milliseconds (default 1000; osascript costs
+        /// ~100 ms per query on macOS).
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+        /// Actually switch the profile on match (HE keyboards only).
+        #[arg(long)]
+        apply: bool,
+        /// Required with `--apply` (docs/plan.md §2 write contract).
         #[arg(long)]
         yes: bool,
     },
@@ -5325,6 +5347,142 @@ fn cmd_profile(cli: &Cli, command: &ProfileCommands) -> Result<ExitCode> {
     match command {
         ProfileCommands::Export { file, full } => cmd_profile_export(cli, file, *full),
         ProfileCommands::Import { file, yes } => cmd_profile_import(cli, file, *yes),
+        ProfileCommands::Watch {
+            rules,
+            interval_ms,
+            apply,
+            yes,
+        } => cmd_profile_watch(cli, rules.as_deref(), *interval_ms, *apply, *yes),
+    }
+}
+
+/// `omg profile watch` — poll the foreground app, match rules, optionally
+/// switch the HE profile. Emits one event per change (JSONL with --json,
+/// human lines otherwise). Ctrl-C exits cleanly; nothing to restore —
+/// a profile switch is a persistent device setting, not a stream.
+fn cmd_profile_watch(
+    cli: &Cli,
+    rules_path: Option<&str>,
+    interval_ms: u64,
+    apply: bool,
+    yes: bool,
+) -> Result<ExitCode> {
+    if apply && !yes {
+        bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+    }
+    let rules = match rules_path {
+        Some(p) => Some(watch::WatchRules::load(p)?),
+        None => None,
+    };
+
+    // With --apply the HE keyboard is opened once and held for the watch;
+    // profile_count bounds every switch before it is sent.
+    let mut kb_ctx = if apply {
+        match open_kb(cli)? {
+            Some((device, mut kb)) => {
+                let count = kb.profile_count()?;
+                if count == 0 {
+                    bail!("device reports 0 profiles — nothing to switch to");
+                }
+                if cli.json {
+                    print_json(&json!({
+                        "event": "watching",
+                        "mode": "apply",
+                        "device": device.vid_pid(),
+                        "profiles": count,
+                        "interval_ms": interval_ms,
+                    }))?;
+                } else {
+                    println!(
+                        "watching foreground app → HE profile ({} profiles, {} ms poll)",
+                        count, interval_ms
+                    );
+                }
+                Some((kb, count))
+            }
+            None => return kb_absent(cli),
+        }
+    } else {
+        if cli.json {
+            print_json(&json!({
+                "event": "watching",
+                "mode": "report",
+                "interval_ms": interval_ms,
+            }))?;
+        } else {
+            println!("watching foreground app (report only — pass --apply --yes to switch)");
+        }
+        None
+    };
+
+    // Dedup key: what we last reported/applied.
+    let mut last: Option<(String, Option<String>, Option<u8>)> = None;
+    let period = watch::interval(interval_ms.max(50));
+    loop {
+        let app = watch::foreground_app()?;
+        let profile = rules.as_ref().and_then(|r| r.profile_for(&app));
+        let key = (app.name.clone(), app.bundle_id.clone(), profile);
+        if last.as_ref() != Some(&key) {
+            last = Some(key);
+            emit_watch_event(cli, &app, profile, apply, kb_ctx.as_mut());
+        }
+        std::thread::sleep(period);
+    }
+}
+
+/// Print one watch event; with `--apply` also perform + verify the
+/// profile switch on the held HE handle.
+fn emit_watch_event(
+    cli: &Cli,
+    app: &watch::ForegroundApp,
+    profile: Option<u8>,
+    apply: bool,
+    kb_ctx: Option<&mut (he::HeKeyboard, u8)>,
+) {
+    let mut event = json!({
+        "event": "app",
+        "name": app.name,
+        "bundle_id": app.bundle_id,
+        "profile": profile,
+        "applied": false,
+        "verified": false,
+    });
+    if apply {
+        if let Some(p) = profile {
+            if let Some((kb, count)) = kb_ctx {
+                if p < *count {
+                    match kb.set_profile(p).and_then(|()| kb.profile()) {
+                        Ok(actual) => {
+                            event["applied"] = json!(true);
+                            event["verified"] = json!(actual == p);
+                            event["actual"] = json!(actual);
+                        }
+                        Err(e) => {
+                            event["error"] = json!(e.to_string());
+                        }
+                    }
+                } else {
+                    event["error"] = json!(format!("profile {p} out of range (0..{})", *count - 1));
+                }
+            }
+        }
+    }
+    if cli.json {
+        // JSONL: one object per line.
+        println!("{}", serde_json::to_string(&event).unwrap_or_default());
+    } else {
+        let mut line = format!("{} ({})", app.name, app.bundle_id.as_deref().unwrap_or("?"));
+        if let Some(p) = profile {
+            line.push_str(&format!(" → profile {}", p + 1));
+            if event["verified"] == json!(true) {
+                line.push_str(" (verified)");
+            } else if event["applied"] == json!(true) {
+                line.push_str(" (unverified)");
+            } else if apply {
+                line.push_str(" (not applied)");
+            }
+        }
+        println!("{line}");
     }
 }
 
