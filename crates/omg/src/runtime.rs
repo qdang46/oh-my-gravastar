@@ -124,6 +124,7 @@ impl Session {
                 "source": m.args.source,
                 "palette": m.args.palette,
                 "speed": m.args.speed,
+                "color": m.args.color,
                 "brightness": m.args.brightness,
                 "fps": m.fps,
                 "duration_s": m.args.duration,
@@ -158,6 +159,8 @@ struct MusicDoc {
     palette: Option<String>,
     #[serde(default)]
     speed: Option<f32>,
+    #[serde(default)]
+    color: Option<String>,
     #[serde(default)]
     brightness: Option<f32>,
     #[serde(default)]
@@ -370,6 +373,7 @@ fn parse_session(v: &Value) -> Result<Session> {
                 engine,
                 palette,
                 speed: req_f32("speed", d.speed, 1.0, 0.05, 10.0)?,
+                color: d.color,
                 duration: duration_s,
             };
             Ok(Session::Music(MusicSession { args, fps }))
@@ -775,6 +779,7 @@ fn schema_doc() -> Value {
                     field("source", "string", false, json!("system"), "system|mic"),
                     field("palette", "string", false, json!("auto"), "auto|rainbow|heat|ocean|sunset|neon|mono (mixer/modes engines)"),
                     field("speed", "number", false, json!(1.0), "0.25..=3.0 for mixer/modes engines"),
+                    field("color", "string|null", false, Value::Null, "#rrggbb mono colour for --palette mono (default white)"),
                     field("brightness", "number", false, json!(1.0), "0.0..=1.0"),
                     field("sensitivity", "number", false, json!(1.6), "0.1..=10.0 input gain"),
                     field("background", "number", false, json!(0.0), "0.0..=1.0 dim base between beats"),

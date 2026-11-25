@@ -4370,6 +4370,9 @@ enum Kb916Light {
         /// Effect speed 0.25-3.0 for `--engine mixer`/`modes`.
         #[arg(long, default_value_t = 1.0)]
         speed: f32,
+        /// Single colour `#rrggbb` for `--palette mono` (default white).
+        #[arg(long)]
+        color: Option<String>,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

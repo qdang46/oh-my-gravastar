@@ -594,21 +594,25 @@ pub fn cmd_apply(cli: &Cli, file: &str) -> Result<ExitCode> {
 // report — each packet `[8,0,0,1,0,122,1]` + data at offset 7, sent
 // fire-and-forget at the vendor's ~30 ms command cadence. There is no
 // frame header/index: the device consumes the byte stream continuously.
-// 378 B = 126 keys × 3; the planar `[R×126][G×126][B×126]` order of cmd 6
-// is the working assumption (unverified — flagged in the docs).
+// 378 B = 126 keys × 3; byte order is per-LED interleaved RGB
+// (`led*3` = R, +1 = G, +2 = B) — live-verified on the K1 Pro by a
+// single-slot probe (Q/P/→ lit at the expected keys with the expected
+// colours). The earlier planar `[R×126][G×126][B×126]` assumption was
+// wrong and scrambled every streamed frame.
 //
 // Safety: --yes gated by the caller; the profile blob and cmd-138 light
 // data are snapshotted before streaming and written back (verified) on
 // normal exit, Ctrl-C, or error.
 
-/// One cmd-8 frame: 378 bytes planar `[R×126][G×126][B×126]`.
-fn planar_frame(colors: &[pm::Rgb]) -> Vec<u8> {
+/// One cmd-8 frame: 378 bytes interleaved `LED×(R,G,B)`.
+fn interleaved_frame(colors: &[pm::Rgb]) -> Vec<u8> {
     debug_assert_eq!(colors.len(), khub_light::CUSTOM_LIGHT_SLOTS);
     let mut f = vec![0u8; khub_light::GIF_FRAME_BYTES];
     for (i, c) in colors.iter().enumerate() {
-        f[i] = c.r;
-        f[khub_light::CUSTOM_LIGHT_SLOTS + i] = c.g;
-        f[2 * khub_light::CUSTOM_LIGHT_SLOTS + i] = c.b;
+        let base = i * 3;
+        f[base] = c.r;
+        f[base + 1] = c.g;
+        f[base + 2] = c.b;
     }
     f
 }
@@ -664,7 +668,7 @@ impl PatternGen {
                 vec![c; slots]
             }
         };
-        planar_frame(&colors)
+        interleaved_frame(&colors)
     }
 }
 
@@ -1044,6 +1048,7 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
             engine,
             palette,
             speed,
+            color,
             duration,
             yes,
         } => crate::kb916_music::cmd(
@@ -1062,6 +1067,7 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
                 engine: engine.clone(),
                 palette: palette.clone(),
                 speed: *speed,
+                color: color.clone(),
                 duration: *duration,
             },
             yes,
