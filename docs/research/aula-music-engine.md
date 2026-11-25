@@ -4,7 +4,8 @@ Source: `https://app.aulacn.com/commonAssets/Aula-Music-Setup1.exe`
 (referenced by the khub webapp's Rhythm page — `Rhythm-vX7LyrFn.js` —
 as the Windows music plugin, launched via `bypc-MAxis://`).
 
-NSIS installer, extracted with `7z` to `/tmp/aula_music/` (volatile).
+NSIS installer, extracted with `7z` to `.tmp-aula-hub/` (gitignored
+scratch dir in the repo root).
 
 ## Contents
 
@@ -53,17 +54,52 @@ Actor/message framework (`ea_mgr` = manager, `ea_actor` = actor base,
   `ChangeEffect{Mode:169..173,428}` likely maps to these actors through
   `bypc-MAxis://` IPC, not to firmware light modes.
 
+## MusicMAxisPlug.unpacked.exe (webapp-downloaded helper)
+
+The khub webapp downloads a second binary, `MusicMAxisPlug_v1-0-0-5.exe`
+(UPX-packed Qt5, ~13 MB unpacked), which is the piece that actually runs
+the rhythm modes on PC. Full RE notes live in the session artifacts
+(`.tmp-aula-hub/re/`); key confirmed facts:
+
+- **Effect factory** (`AudionTyp` → class): 168 `Dance_Soft`,
+  169 `Dazzling_Rock`, 170 `Clouds_Rise_And_Snow_Fly`,
+  171 `Light_Field_Change`, 172/175 `Gurgling_Stream`,
+  173 `Blooming_Passion`, 174 `Sine`, **428 `Dynamic_Spectrum`** —
+  matching the webapp's rhythm mode ids (168 was missing from the UI
+  table; 180 = `closeAudioMode`).
+- **Frame send** (`0x40F220`): 520-byte frame buffer. For the
+  feature-report device class it writes an 8-byte header
+  (`[0]=channel, [1..4]=08 00 00 01 (cmd 0x08), [5..6]=00 7A, [7]=01`)
+  then `hid_send_feature_report` with the remaining **512 payload
+  bytes = interleaved per-key RGB** at uint16 key offsets (≥8, `-1` =
+  skip) from per-device `RowButton_*` ini tables. Same cmd-8 dialect
+  as our `write_gif_frame`, though this app targets the Audion/MAxis
+  family — byte-exact equivalence with K1 Pro is unverified.
+- **DSP/render** (per `[18]` vtable slot, ~33 fps via `Sleep(30)`):
+  memset frame → per-column spectrum value ×5.0 → per-column
+  attack/decay (new>prev keeps, else `prev − 1.0`/frame) → write RGB
+  for `intensity` keys per column, colors ×0.5. FFT is a radix-2
+  complex FFT over the next-pow2 WASAPI buffer.
+- **Per-device layout**: 8 embedded `Audion_Configs/*.ini` resources
+  with `[Key_Columns]`/`[Key_Rows]`/`RowButton_N` lists and a 23×23
+  uint16 key-offset spatial map per effect — i.e. vendor effects are
+  **column/band shaped**, not free-form per-key like our mixer.
+- **Control**: local `QWebSocketServer` (`LocalServer-%1`, dynamic
+  port), JSON cmds `ChangeDevice`/`ChangeEffect`/`ChangeParam`/
+  `GetSupportedEffects` — driven by the khub webapp Rhythm page;
+  launch via `bypc-MAxis://`.
+
 ## Not yet extracted
 
-- Frame byte layout inside `HIDCom` (planar vs interleaved, header) —
-  needs disassembly of the HIDCom send path (not exported; locate via
-  xrefs to `hid_write`/`hid_send_feature_report` imports).
-- ASEffect DSP internals (FFT size, bands, beat detector, per-effect
-  shaders) — each is a few-KB function cluster; objdump-level RE is
-  possible but slow; Ghidra headless on `xseg.dll` is the next step.
-- `MusicMAxisPlug_v1-0-0-5.exe` (hubx.pro, ~4.7 MB, UPX) — the Windows
-  audio-capture helper the webapp downloads; still downloading at time
-  of writing (`/tmp/MusicMAxisPlug.exe`).
+- ~~Frame byte layout inside `HIDCom`~~ — resolved above for the
+  MAxis helper (8-byte header + 512 B interleaved payload, cmd 0x08).
+  The xseg.dll `HIDCom` send path is presumably the same dialect but
+  was not disassembled.
+- ASEffect DSP internals inside `xseg.dll` itself (the XsEngine
+  variant) — Ghidra headless remains the next step if needed; the
+  MAxis helper already gave us the mode table + frame format.
+- `rhythmColorList` palettes are runtime config from the hub, not
+  embedded — `ColorTyp` is an index into a per-device list.
 
 ## Related
 
