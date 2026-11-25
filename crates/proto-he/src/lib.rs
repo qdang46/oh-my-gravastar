@@ -322,14 +322,45 @@ impl HigherKeyParams {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum HigherKeyConfig {
-    None { row: u8, col: u8 },
-    Dks { row: u8, col: u8, params: DksParams },
-    Mpt { row: u8, col: u8, params: MptParams },
-    Mt { row: u8, col: u8, params: MtParams },
-    Tgl { row: u8, col: u8, params: TglParams },
-    End { row: u8, col: u8, params: EndParams },
-    Socd { row: u8, col: u8, params: SocdParams },
-    Rs { row: u8, col: u8, params: RsParams },
+    None {
+        row: u8,
+        col: u8,
+    },
+    Dks {
+        row: u8,
+        col: u8,
+        params: DksParams,
+    },
+    Mpt {
+        row: u8,
+        col: u8,
+        params: MptParams,
+    },
+    Mt {
+        row: u8,
+        col: u8,
+        params: MtParams,
+    },
+    Tgl {
+        row: u8,
+        col: u8,
+        params: TglParams,
+    },
+    End {
+        row: u8,
+        col: u8,
+        params: EndParams,
+    },
+    Socd {
+        row: u8,
+        col: u8,
+        params: SocdParams,
+    },
+    Rs {
+        row: u8,
+        col: u8,
+        params: RsParams,
+    },
 }
 
 // ── Category 7: Macro ─────────────────────────────────────────────────
@@ -826,12 +857,10 @@ impl HeKeyboard {
     /// Hardware-unverified: inferred from the vendor JS.
     pub fn set_key_codes(&mut self, layer: u8, row: u8, codes: &[u16; 21]) -> Result<()> {
         for &c in codes {
-            ensure!(
-                !keycode_blacklisted(c),
-                "keycode {c:#06x} is blacklisted"
-            );
+            ensure!(!keycode_blacklisted(c), "keycode {c:#06x} is blacklisted");
         }
-        self.req(&key_row_write_packet(layer, row, codes)).map(|_| ())
+        self.req(&key_row_write_packet(layer, row, codes))
+            .map(|_| ())
     }
 
     /// Reads the keycode of a single key (`03 03`).
@@ -845,7 +874,10 @@ impl HeKeyboard {
     /// Keycodes `0xF200`/`0xF203` are rejected (blacklist).
     /// Hardware-unverified: inferred from the vendor JS.
     pub fn set_key_code(&mut self, layer: u8, row: u8, col: u8, code: u16) -> Result<()> {
-        ensure!(!keycode_blacklisted(code), "keycode {code:#06x} is blacklisted");
+        ensure!(
+            !keycode_blacklisted(code),
+            "keycode {code:#06x} is blacklisted"
+        );
         self.req(&key_code_write_packet(layer, row, col, code))
             .map(|_| ())
     }
@@ -1339,11 +1371,8 @@ mod tests {
         assert_eq!(&pkt[9..11], &0x1234u16.to_le_bytes());
 
         // TGL: [6,2,r,c,4] + u16 kc + u16 time.
-        let pkt = &higher_key_packets(
-            0,
-            1,
-            &HigherKeyParams::Tgl(TglParams { kcs: 4, time: 9 }),
-        )[0];
+        let pkt =
+            &higher_key_packets(0, 1, &HigherKeyParams::Tgl(TglParams { kcs: 4, time: 9 }))[0];
         assert_eq!(pkt.len(), 5 + 2 + 2);
         assert_eq!(&pkt[..5], &[6, 2, 0, 1, 4]);
         assert_eq!(&pkt[5..7], &4u16.to_le_bytes());

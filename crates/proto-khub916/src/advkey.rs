@@ -90,10 +90,7 @@ impl AdvKind {
         match self {
             AdvKind::Socd => (0, SOCD_REGION_BYTES),
             AdvKind::Mt => (SOCD_REGION_BYTES, SOCD_REGION_BYTES + MT_REGION_BYTES),
-            AdvKind::Tgl => (
-                SOCD_REGION_BYTES + MT_REGION_BYTES,
-                ADV_BLOB_BYTES,
-            ),
+            AdvKind::Tgl => (SOCD_REGION_BYTES + MT_REGION_BYTES, ADV_BLOB_BYTES),
         }
     }
 
@@ -103,7 +100,6 @@ impl AdvKind {
             AdvKind::Tgl => TGL_SLOT_BYTES,
         }
     }
-
 }
 
 /// Kind-specific low bits of an adv keymap binding value.
@@ -285,7 +281,10 @@ fn plan(
     // length) the tail would keep stale bytes; guard anyway.
     debug_assert_eq!(new_region.len(), rend - rstart);
 
-    Ok(AdvPlan { blob: b, keymap: km })
+    Ok(AdvPlan {
+        blob: b,
+        keymap: km,
+    })
 }
 
 fn kind_base(kind: AdvKind) -> u32 {
@@ -593,8 +592,7 @@ impl crate::Khub916 {
         for (i, v) in values.iter().enumerate() {
             want[i] = *v;
         }
-        want[crate::KEYMAP_ENTRIES - 1] =
-            (want[crate::KEYMAP_ENTRIES - 1] & 0xFFFF_0000) | 0x5AA5;
+        want[crate::KEYMAP_ENTRIES - 1] = (want[crate::KEYMAP_ENTRIES - 1] & 0xFFFF_0000) | 0x5AA5;
         let mut back = self.key_configuration()?;
         if back.len() > crate::KEYMAP_ENTRIES {
             bail!(
@@ -604,9 +602,7 @@ impl crate::Khub916 {
             );
         }
         for attempt in 0..=10 {
-            if (0..crate::KEYMAP_ENTRIES)
-                .all(|i| want[i] == back.get(i).copied().unwrap_or(0))
-            {
+            if (0..crate::KEYMAP_ENTRIES).all(|i| want[i] == back.get(i).copied().unwrap_or(0)) {
                 return Ok(WriteOutcome {
                     command: crate::CMD_KEYMAP_WRITE,
                     verified: true,
@@ -700,8 +696,20 @@ mod tests {
         let bindings = scan_adv_bindings(&plan.keymap);
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[0].kind, AdvKind::Socd);
-        assert_eq!(bindings[0].detail, AdvDetail::Socd { direction: 1, key_b: false });
-        assert_eq!(bindings[1].detail, AdvDetail::Socd { direction: 1, key_b: true });
+        assert_eq!(
+            bindings[0].detail,
+            AdvDetail::Socd {
+                direction: 1,
+                key_b: false
+            }
+        );
+        assert_eq!(
+            bindings[1].detail,
+            AdvDetail::Socd {
+                direction: 1,
+                key_b: true
+            }
+        );
         assert_eq!(binding_payload(&plan.blob, &bindings[0]), Some(vec![4, 5]));
     }
 
@@ -710,7 +718,7 @@ mod tests {
         let blob = zeros(ADV_BLOB_BYTES);
         let mut km = vec![0u32; 64];
         km[3] = 0x0000_001D; // 'z'
-        // tap = 'a' (4), hold = 'b' (5), time 50 (500 ms).
+                             // tap = 'a' (4), hold = 'b' (5), time 50 (500 ms).
         let plan = plan_mt(&blob, &km, 3, 4, 5, 50).unwrap();
         assert_eq!(plan.keymap[3], MT_BASE + 50);
         // MT region starts at blob[200]; entry = [tap, hold] BE.
@@ -800,9 +808,21 @@ mod tests {
         let (k, s, d) = decode_adv_binding(SOCD_BASE + 2).unwrap();
         assert_eq!(k, AdvKind::Socd);
         assert_eq!(s, 0);
-        assert_eq!(d, AdvDetail::Socd { direction: 2, key_b: false });
+        assert_eq!(
+            d,
+            AdvDetail::Socd {
+                direction: 2,
+                key_b: false
+            }
+        );
         let (_, _, d) = decode_adv_binding(SOCD_BASE + 0x100 + 3).unwrap();
-        assert_eq!(d, AdvDetail::Socd { direction: 3, key_b: true });
+        assert_eq!(
+            d,
+            AdvDetail::Socd {
+                direction: 3,
+                key_b: true
+            }
+        );
         let (_, s, d) = decode_adv_binding(MT_BASE + (5 << 16) + 42).unwrap();
         assert_eq!(s, 5);
         assert_eq!(d, AdvDetail::Mt { time: 42 });
@@ -843,7 +863,10 @@ mod tests {
 
         // Bind an all-zero keymap position as TGL, toggling index 0.
         let key = km0.iter().position(|&v| v == 0).expect("empty keymap slot");
-        let toggle = km0.iter().position(|&v| v != 0).expect("nonempty keymap slot");
+        let toggle = km0
+            .iter()
+            .position(|&v| v != 0)
+            .expect("nonempty keymap slot");
         eprintln!("probe: key index {key}, toggle index {toggle}");
         let plan = plan_tgl(&blob0, &km0, key, toggle).expect("plan_tgl");
         let blob_diffs = plan
@@ -852,19 +875,24 @@ mod tests {
             .zip(blob0.iter())
             .filter(|(a, b)| a != b)
             .count();
-        eprintln!("plan: blob diff bytes {blob_diffs}, keymap[{key}] -> {:08X}", plan.keymap[key]);
+        eprintln!(
+            "plan: blob diff bytes {blob_diffs}, keymap[{key}] -> {:08X}",
+            plan.keymap[key]
+        );
         assert!(plan.keymap[key] >> 24 == 0x22, "expected TGL tag");
 
         // Never let a failed verify skip the restore: capture results,
         // inspect, restore, then report.
         let ko = kb.write_key_configuration(&plan.keymap);
-        let ho = ko.as_ref().ok().map(|_| {
-            kb.write_adv_key_config(&plan.blob)
-        });
+        let ho = ko
+            .as_ref()
+            .ok()
+            .map(|_| kb.write_adv_key_config(&plan.blob));
         eprintln!(
             "writes: keymap={:?} history={:?}",
             ko.as_ref().map(|o| (o.command, o.verified)),
-            ho.as_ref().map(|r| r.as_ref().map(|o| (o.command, o.verified)))
+            ho.as_ref()
+                .map(|r| r.as_ref().map(|o| (o.command, o.verified)))
         );
 
         // Inspect every read channel after the write.
@@ -890,12 +918,18 @@ mod tests {
         );
         eprintln!(
             "post blob diff vs plan: {} bytes; vs snapshot: {} bytes",
-            b1.iter().zip(plan.blob.iter()).filter(|(a, b)| a != b).count(),
+            b1.iter()
+                .zip(plan.blob.iter())
+                .filter(|(a, b)| a != b)
+                .count(),
             b1.iter().zip(blob0.iter()).filter(|(a, b)| a != b).count()
         );
         eprintln!(
             "post blob[400..416]={}",
-            b1[400..416].iter().map(|x| format!("{x:02X}")).collect::<String>()
+            b1[400..416]
+                .iter()
+                .map(|x| format!("{x:02X}"))
+                .collect::<String>()
         );
 
         // Restore the exact prior state on both channels.
@@ -906,7 +940,9 @@ mod tests {
             rk.as_ref().map(|o| o.verified),
             rb.as_ref().map(|o| o.verified)
         );
-        let kc2 = kb.key_configuration().expect("post-restore key_configuration");
+        let kc2 = kb
+            .key_configuration()
+            .expect("post-restore key_configuration");
         let b2 = normalize_blob(&kb.adv_key_config().expect("post-restore adv_key_config"));
         eprintln!(
             "restored: key_configuration==kc0? {} blob==blob0? {}",
@@ -948,7 +984,10 @@ mod tests {
             eprintln!("restore write: {:?}", w.as_ref().map(|o| o.verified));
             std::thread::sleep(std::time::Duration::from_secs(3));
             let back = normalize_blob(&kb.adv_key_config().expect("read-back"));
-            eprintln!("restore read-back match (in-session): {}", blob.as_slice() == back);
+            eprintln!(
+                "restore read-back match (in-session): {}",
+                blob.as_slice() == back
+            );
             return;
         }
 
@@ -975,7 +1014,10 @@ mod tests {
                         (i + 1) * 5000,
                         raw.len(),
                         d0,
-                        b[..16].iter().map(|x| format!("{x:02X}")).collect::<String>()
+                        b[..16]
+                            .iter()
+                            .map(|x| format!("{x:02X}"))
+                            .collect::<String>()
                     );
                 }
                 Err(e) => eprintln!("t+{}ms read err: {e:#}", (i + 1) * 5000),

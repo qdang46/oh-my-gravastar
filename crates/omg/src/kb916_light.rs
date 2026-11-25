@@ -139,10 +139,7 @@ fn lerp(a: pm::Rgb, b: pm::Rgb, t: f32) -> pm::Rgb {
 
 /// Build the 126-slot custom colour table for a [`KeysSpec`]. `current`
 /// is the device's existing table, used as the base for sparse `entries`.
-fn build_custom_colors(
-    spec: &KeysSpec,
-    current: &[pm::Rgb],
-) -> Result<Vec<pm::Rgb>> {
+fn build_custom_colors(spec: &KeysSpec, current: &[pm::Rgb]) -> Result<Vec<pm::Rgb>> {
     let mut out: Vec<pm::Rgb> = if let Some(list) = &spec.colors {
         if list.len() != khub_light::CUSTOM_LIGHT_SLOTS {
             bail!(
@@ -171,19 +168,11 @@ fn build_custom_colors(
             Some("gradient") => {
                 let from = match &spec.color {
                     Some(v) => parse_color(v, "keys.color")?,
-                    None => pm::Rgb {
-                        r: 255,
-                        g: 0,
-                        b: 0,
-                    },
+                    None => pm::Rgb { r: 255, g: 0, b: 0 },
                 };
                 let to = match &spec.to {
                     Some(v) => parse_color(v, "keys.to")?,
-                    None => pm::Rgb {
-                        r: 0,
-                        g: 0,
-                        b: 255,
-                    },
+                    None => pm::Rgb { r: 0, g: 0, b: 255 },
                 };
                 (0..khub_light::CUSTOM_LIGHT_SLOTS)
                     .map(|i| {
@@ -193,11 +182,15 @@ fn build_custom_colors(
                     .collect()
             }
             Some("rainbow") => (0..khub_light::CUSTOM_LIGHT_SLOTS)
-                .map(|i| hsv(i as f32 * 360.0 / khub_light::CUSTOM_LIGHT_SLOTS as f32, 1.0, 1.0))
+                .map(|i| {
+                    hsv(
+                        i as f32 * 360.0 / khub_light::CUSTOM_LIGHT_SLOTS as f32,
+                        1.0,
+                        1.0,
+                    )
+                })
                 .collect(),
-            Some(other) => bail!(
-                "unknown keys.preset '{other}' (want solid|gradient|rainbow)"
-            ),
+            Some(other) => bail!("unknown keys.preset '{other}' (want solid|gradient|rainbow)"),
             None => current.to_vec(),
         }
     };
@@ -245,7 +238,10 @@ pub fn cmd_get(cli: &Cli) -> Result<ExitCode> {
     let state = khub_light::decode_light_state(&profile);
     let info = state.and_then(|s| khub_light::light_mode_info(s.mode));
     let data = khub_light::decode_light_data(&light_blob);
-    let non_black = custom.iter().filter(|c| !(c.r == 0 && c.g == 0 && c.b == 0)).count();
+    let non_black = custom
+        .iter()
+        .filter(|c| !(c.r == 0 && c.g == 0 && c.b == 0))
+        .count();
 
     let state_json = state.map(|s| {
         json!({
@@ -327,8 +323,11 @@ pub fn cmd_get(cli: &Cli) -> Result<ExitCode> {
             khub_light::LIGHT_GROUP_STRIDE,
             data.tail_len
         );
-        let distinct: std::collections::BTreeSet<(u8, u8, u8)> =
-            data.groups.iter().map(|g| (g.color.r, g.color.g, g.color.b)).collect();
+        let distinct: std::collections::BTreeSet<(u8, u8, u8)> = data
+            .groups
+            .iter()
+            .map(|g| (g.color.r, g.color.g, g.color.b))
+            .collect();
         if distinct.len() <= 4 {
             for c in &distinct {
                 println!("  group colour #{:02X}{:02X}{:02X}", c.0, c.1, c.2);
@@ -433,8 +432,8 @@ pub fn cmd_apply(cli: &Cli, file: &str) -> Result<ExitCode> {
                 g: c.g,
                 b: c.b,
             };
-            let new_blob = khub_light::with_group_color(&light_blob, mode, trip)
-                .ok_or_else(|| {
+            let new_blob =
+                khub_light::with_group_color(&light_blob, mode, trip).ok_or_else(|| {
                     anyhow!(
                         "mode {mode} has no colour group in the {}-byte light blob \
                          (vendor: modes 0/19/275/277 and ids ≥23 carry no group)",
@@ -555,9 +554,15 @@ pub fn cmd_apply(cli: &Cli, file: &str) -> Result<ExitCode> {
         );
         if new_custom.is_some() {
             if custom_unchanged {
-                println!("custom colours: unchanged ({} slots)", khub_light::CUSTOM_LIGHT_SLOTS);
+                println!(
+                    "custom colours: unchanged ({} slots)",
+                    khub_light::CUSTOM_LIGHT_SLOTS
+                );
             } else {
-                println!("custom colours: {} slots written", khub_light::CUSTOM_LIGHT_SLOTS);
+                println!(
+                    "custom colours: {} slots written",
+                    khub_light::CUSTOM_LIGHT_SLOTS
+                );
             }
         }
         for s in &steps {
@@ -567,7 +572,9 @@ pub fn cmd_apply(cli: &Cli, file: &str) -> Result<ExitCode> {
                 s["skipped"].as_str(),
                 s["error"].as_str(),
             ) {
-                (Some(step), Some(true), _, _) => println!("  {step}: verified (cmd {})", s["command"]),
+                (Some(step), Some(true), _, _) => {
+                    println!("  {step}: verified (cmd {})", s["command"])
+                }
                 (Some(step), _, Some(why), _) => println!("  {step}: skipped ({why})"),
                 (Some(step), _, _, Some(err)) => println!("  {step}: FAILED — {err}"),
                 _ => {}
@@ -663,11 +670,21 @@ impl PatternGen {
 
 /// Frame source: generated pattern or a raw 378-byte-frame byte stream.
 enum FrameSource {
-    Pattern { gen: PatternGen, n: u64 },
+    Pattern {
+        gen: PatternGen,
+        n: u64,
+    },
     /// Whole file loaded up-front; `pos` is the next frame offset.
-    File { data: Vec<u8>, pos: usize, loop_: bool },
+    File {
+        data: Vec<u8>,
+        pos: usize,
+        loop_: bool,
+    },
     /// stdin — read one frame at a time so a producer can stream forever.
-    Stdin { reader: BufReader<std::io::Stdin>, partial: Vec<u8> },
+    Stdin {
+        reader: BufReader<std::io::Stdin>,
+        partial: Vec<u8>,
+    },
 }
 
 impl FrameSource {
@@ -693,28 +710,26 @@ impl FrameSource {
                 *pos = end;
                 Ok(Some(f))
             }
-            FrameSource::Stdin { reader, partial } => {
-                loop {
-                    if partial.len() == khub_light::GIF_FRAME_BYTES {
-                        return Ok(Some(std::mem::take(partial)));
-                    }
-                    let mut buf = [0u8; 4096];
-                    match reader.read(&mut buf) {
-                        Ok(0) => {
-                            if partial.is_empty() {
-                                return Ok(None);
-                            }
-                            bail!(
-                                "stdin stream ended mid-frame ({} of {} bytes)",
-                                partial.len(),
-                                khub_light::GIF_FRAME_BYTES
-                            );
-                        }
-                        Ok(n) => partial.extend_from_slice(&buf[..n]),
-                        Err(e) => return Err(e.into()),
-                    }
+            FrameSource::Stdin { reader, partial } => loop {
+                if partial.len() == khub_light::GIF_FRAME_BYTES {
+                    return Ok(Some(std::mem::take(partial)));
                 }
-            }
+                let mut buf = [0u8; 4096];
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        if partial.is_empty() {
+                            return Ok(None);
+                        }
+                        bail!(
+                            "stdin stream ended mid-frame ({} of {} bytes)",
+                            partial.len(),
+                            khub_light::GIF_FRAME_BYTES
+                        );
+                    }
+                    Ok(n) => partial.extend_from_slice(&buf[..n]),
+                    Err(e) => return Err(e.into()),
+                }
+            },
         }
     }
 }
@@ -793,9 +808,17 @@ pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
                 Some(c) => pm::Rgb::parse(c).map_err(|e| anyhow!("--color: {e:#}"))?,
                 None => match kind {
                     StreamPattern::Solid => pm::Rgb { r: 255, g: 0, b: 0 },
-                    StreamPattern::Rainbow => pm::Rgb { r: 255, g: 255, b: 255 },
+                    StreamPattern::Rainbow => pm::Rgb {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                    },
                     StreamPattern::Gradient => pm::Rgb { r: 255, g: 0, b: 0 },
-                    StreamPattern::Pulse => pm::Rgb { r: 255, g: 255, b: 255 },
+                    StreamPattern::Pulse => pm::Rgb {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                    },
                 },
             };
             let second = match to {
@@ -821,8 +844,8 @@ pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
                     partial: Vec::new(),
                 }
             } else {
-                let data = std::fs::read(f)
-                    .map_err(|e| anyhow!("cannot read frame stream '{f}': {e}"))?;
+                let data =
+                    std::fs::read(f).map_err(|e| anyhow!("cannot read frame stream '{f}': {e}"))?;
                 if data.is_empty() {
                     bail!("frame stream '{f}' is empty (need 378-byte frames)");
                 }
@@ -863,9 +886,7 @@ pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
         .map_err(|e| anyhow!("failed to install Ctrl-C handler: {e}"))?;
 
     if !cli.json {
-        println!(
-            "streaming cmd-8 frames at {fps} fps (Ctrl-C to stop and restore)…"
-        );
+        println!("streaming cmd-8 frames at {fps} fps (Ctrl-C to stop and restore)…");
     }
 
     let period = Duration::from_secs_f64(1.0 / fps);
@@ -947,17 +968,16 @@ pub fn cmd_stream(cli: &Cli, args: StreamArgs<'_>) -> Result<ExitCode> {
             "restored": !restore_failed,
         }))?;
     } else {
-        println!(
-            "streamed {sent} frames in {:.1}s ({stopped_by})",
-            elapsed
-        );
+        println!("streamed {sent} frames in {:.1}s ({stopped_by})", elapsed);
         for s in &restore_steps {
             match (
                 s["step"].as_str(),
                 s["verified"].as_bool(),
                 s["error"].as_str(),
             ) {
-                (Some(step), Some(true), _) => println!("  {step}: verified (cmd {})", s["command"]),
+                (Some(step), Some(true), _) => {
+                    println!("  {step}: verified (cmd {})", s["command"])
+                }
                 (Some(step), _, Some(err)) => println!("  {step}: FAILED — {err}"),
                 _ => {}
             }
@@ -1057,11 +1077,18 @@ mod tests {
 
     #[test]
     fn parse_color_formats() {
-        let want = pm::Rgb { r: 0x12, g: 0x34, b: 0xab };
+        let want = pm::Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0xab,
+        };
         assert_eq!(parse_color(&json!("#1234ab"), "c").unwrap(), want);
         assert_eq!(parse_color(&json!("1234AB"), "c").unwrap(), want);
         assert_eq!(parse_color(&json!("18,52,171"), "c").unwrap(), want);
-        assert_eq!(parse_color(&json!({"r":18,"g":52,"b":171}), "c").unwrap(), want);
+        assert_eq!(
+            parse_color(&json!({"r":18,"g":52,"b":171}), "c").unwrap(),
+            want
+        );
         assert!(parse_color(&json!("#12345"), "c").is_err());
         assert!(parse_color(&json!("#gg0000"), "c").is_err());
         assert!(parse_color(&json!("1,2"), "c").is_err());
@@ -1077,7 +1104,12 @@ mod tests {
         assert_eq!(out, current);
         // Solid with no colour → white fill.
         let out = build_custom_colors(&spec_from(json!({"preset":"solid"})), &current).unwrap();
-        assert!(out.iter().all(|c| *c == pm::Rgb { r: 255, g: 255, b: 255 }));
+        assert!(out.iter().all(|c| *c
+            == pm::Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }));
         // Solid with explicit colour.
         let out = build_custom_colors(
             &spec_from(json!({"preset":"solid","color":"#ff0000"})),

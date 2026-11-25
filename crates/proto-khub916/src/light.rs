@@ -44,7 +44,9 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::{Khub916, Profile, WriteOutcome, CUSTOM_LIGHT_ENTRIES, FEATURE_PAYLOAD_BYTES, HEADER_LEN};
+use crate::{
+    Khub916, Profile, WriteOutcome, CUSTOM_LIGHT_ENTRIES, FEATURE_PAYLOAD_BYTES, HEADER_LEN,
+};
 
 /// RGB triple used by the lighting decode types (serialises as
 /// `{r,g,b}`; the CLI formats `#rrggbb`).
@@ -116,23 +118,113 @@ const fn mode(
 /// the wire still accepts any u16 mode bounded by the profile record table.
 pub const LIGHT_MODES: &[LightModeInfo] = &[
     mode(0, "off", color_support::OFF, color_model::MIXING, true),
-    mode(277, "custom", color_support::CUSTOM, color_model::MONOCHROME, false),
-    mode(1, "always_on", color_support::SINGLE, color_model::MIXING, false),
-    mode(2, "breathing", color_support::SINGLE, color_model::MIXING, true),
-    mode(3, "dream_rainbow", color_support::MULTI, color_model::MIXING, true),
-    mode(4, "one_touch", color_support::SINGLE, color_model::MIXING, true),
-    mode(5, "rain_walk", color_support::SINGLE, color_model::MIXING, true),
-    mode(6, "color_wheel", color_support::SINGLE, color_model::MIXING, true),
-    mode(7, "key_ripple", color_support::SINGLE, color_model::MIXING, true),
+    mode(
+        277,
+        "custom",
+        color_support::CUSTOM,
+        color_model::MONOCHROME,
+        false,
+    ),
+    mode(
+        1,
+        "always_on",
+        color_support::SINGLE,
+        color_model::MIXING,
+        false,
+    ),
+    mode(
+        2,
+        "breathing",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        3,
+        "dream_rainbow",
+        color_support::MULTI,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        4,
+        "one_touch",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        5,
+        "rain_walk",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        6,
+        "color_wheel",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        7,
+        "key_ripple",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
     mode(8, "stars", color_support::SINGLE, color_model::MIXING, true),
-    mode(9, "snow_trace", color_support::SINGLE, color_model::MIXING, true),
-    mode(10, "flowing", color_support::SINGLE, color_model::MIXING, true),
+    mode(
+        9,
+        "snow_trace",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        10,
+        "flowing",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
     mode(11, "wave", color_support::SINGLE, color_model::MIXING, true),
-    mode(12, "shadow", color_support::SINGLE, color_model::MIXING, true),
-    mode(13, "sine_wave", color_support::SINGLE, color_model::MIXING, true),
-    mode(15, "windmill", color_support::MULTI, color_model::MIXING, true),
-    mode(16, "waterfall", color_support::MULTI, color_model::MIXING, true),
-    mode(17, "blooming", color_support::MULTI, color_model::MIXING, true),
+    mode(
+        12,
+        "shadow",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        13,
+        "sine_wave",
+        color_support::SINGLE,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        15,
+        "windmill",
+        color_support::MULTI,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        16,
+        "waterfall",
+        color_support::MULTI,
+        color_model::MIXING,
+        true,
+    ),
+    mode(
+        17,
+        "blooming",
+        color_support::MULTI,
+        color_model::MIXING,
+        true,
+    ),
 ];
 
 /// Table row for a mode id; `None` for ids outside the vendor list.
@@ -196,11 +288,7 @@ pub fn decode_light_state(profile: &Profile) -> Option<LightState> {
     let special = LIGHT_SPECIAL_MODES.contains(&mode);
     Some(LightState {
         mode,
-        speed: if special || mode == 1 {
-            0
-        } else {
-            packed >> 4
-        },
+        speed: if special || mode == 1 { 0 } else { packed >> 4 },
         brightness: if special || bright_at >= e.len() {
             0
         } else {
@@ -519,14 +607,7 @@ mod tests {
         assert_eq!(d.groups.len(), 23);
         assert_eq!(d.tail_len, 0);
         assert_eq!(d.groups[15].offset, 315);
-        assert_eq!(
-            d.groups[15].color,
-            RgbTrip {
-                r: 255,
-                g: 0,
-                b: 0
-            }
-        );
+        assert_eq!(d.groups[15].color, RgbTrip { r: 255, g: 0, b: 0 });
         assert_eq!(d.groups[15].raw.len(), 21);
         // group_color bounds: mode 22 fits, 23+ does not.
         assert!(group_color(&blob, 22).is_some());
@@ -537,11 +618,7 @@ mod tests {
     #[test]
     fn with_group_color_roundtrip() {
         let blob = vec![0u8; 483];
-        let c = RgbTrip {
-            r: 1,
-            g: 2,
-            b: 3,
-        };
+        let c = RgbTrip { r: 1, g: 2, b: 3 };
         let out = with_group_color(&blob, 7, c).unwrap();
         assert_eq!(&out[..3], &[0, 0, 0]); // group 0 untouched
         assert_eq!(group_color(&out, 7), Some(c));
@@ -555,7 +632,10 @@ mod tests {
         // Vendor 916 list: 18 ids.
         assert_eq!(LIGHT_MODES.len(), 18);
         assert_eq!(light_mode_info(277).unwrap().name, "custom");
-        assert_eq!(light_mode_info(277).unwrap().color_support, color_support::CUSTOM);
+        assert_eq!(
+            light_mode_info(277).unwrap().color_support,
+            color_support::CUSTOM
+        );
         assert_eq!(light_mode_info(15).unwrap().name, "windmill");
         assert!(light_mode_info(14).is_none());
         assert!(light_mode_info(18).is_none());
@@ -706,7 +786,9 @@ mod tests {
                 2 => 189,
                 _ => GIF_FRAME_BYTES,
             };
-            assert!(pkt[HEADER_LEN..HEADER_LEN + want].iter().all(|&b| b == 0xAB));
+            assert!(pkt[HEADER_LEN..HEADER_LEN + want]
+                .iter()
+                .all(|&b| b == 0xAB));
             assert!(pkt[HEADER_LEN + want..].iter().all(|&b| b == 0));
         }
         assert!(kb.write_gif_light(&[], Duration::ZERO).is_err());

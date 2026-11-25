@@ -44,7 +44,7 @@ with Ghidra headless (`x86:LE:32:windows`). Findings:
   | 169 | 光彩夺目-摇滚 | `QAudion_Dazzling_Rock` |
   | 170 | 光场变化-人声 | `QAudion_Light_Field_Change` |
   | 171 | 云起雪飞-常规 | `QAudion_Clouds_Rise_And_Snow_Fly` |
-  | 172 | 溪水涛涛-常规 | `QAudion_The_Gurgling_Stream` |
+  | 172 | 溪水涛涛-常规 | `QAudion_The_Gurgling_Stream` ("Stream Flowing - Normal") |
   | 173 | 百花争艳-激情 | `QAudion_Blooming_Passion` |
   | 428 (0x1AC) | 动态光谱-常规 | `QAudio_Dynamic_Spectrum` |
 
@@ -69,11 +69,33 @@ with Ghidra headless (`x86:LE:32:windows`). Findings:
 - **Frame streaming**: a timer-driven pump (`FUN_0040d1f0`-region tick)
   calls a per-effect virtual render→send; mode `0x1AC` (428, dynamic
   spectrum) is special-cased. The draw thread name `QAudionDrawThread`
-  confirms continuous frame production. **The exact frame packet format
-  (command id / layout) was not recovered** — the packet objects are built
-  by the effect classes and dispatched through an internal queue
-  (`FUN_00409970`), so the wire encoding needs either more RE time or a
-  USB capture on Windows.
+  confirms continuous frame production.
+
+  **Update (MusicMAxisPlug RE, see `aula-music-engine.md`)**: the frame
+  path is resolved — a 520-byte buffer gets an 8-byte header
+  (`08 00 00 01` = cmd 0x08 LE dword at bytes 1–4) then
+  `hid_send_feature_report` with **512 payload bytes of interleaved
+  per-key RGB** at uint16 key offsets from per-device `RowButton_*`
+  ini tables. The companion renders ~33 fps (`Sleep(30)`) with
+  per-column spectrum×5.0 energy and linear attack/decay.
+
+- **`rhythmColorList` fully recovered** (`index-cV1Bl4gC.js`): 20
+  entries `{value:"1".."20", label:"<zh>"}` — yellow-green, rainbow,
+  reversed rainbow, spectrum, channel-cycle, solid colours
+  (white/red/orange/yellow/green/blue/cyan/purple) and combos
+  (green-white, blue-cyan-white, red-white-blue), plus animated modes
+  rainbow-wave (sine), rainbow-HSV, colour-wheel, sine-loop. Sent as
+  `ChangeParam{Mode, ColorTyp}` where `ColorTyp` = the `value` string.
+- **Page↔Worker protocol** (`Rhythm-vX7LyrFn.js`): the page talks to a
+  module Worker (`worker-Cq8d7OkP.js`, **not in the mirror**) via
+  `postMessage`. Page→worker: `{type:"renderKeyboardColor", info,
+  keyboard}` (OffscreenCanvas preview), `{Cmd:"ChangeDevice"|
+  "GetSupportedEffects"|"ChangeEffect"|"ChangeParam"}` (forwarded to
+  the MAxis WebSocket), `{type:"close"}`. Worker→page: `OPEN`,
+  `CLOSED`, `GetEffect`, `ChangeEffect` events. The audio FFT itself
+  lives in the worker + companion exe; the page exposes no
+  speed/brightness/gain sliders (those are companion-side
+  `AudioParam` keys).
 
 ## 2. What the khub916 protocol already gives us
 

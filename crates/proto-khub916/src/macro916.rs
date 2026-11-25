@@ -126,48 +126,137 @@ impl MacroEntry {
 /// `(name, usage)` pairs in vendor table order (first match wins on
 /// decode, exactly like `fe.find`).
 pub const MACRO_KEY_TABLE: &[(&str, u32)] = &[
-    ("ESC", 41), ("Backquote", 53), ("Tab", 43), ("CapsLock", 57),
-    ("ShiftLeft", 225), ("ControlLeft", 224), ("Digit1", 30), ("KeyQ", 20),
-    ("KeyA", 4), ("KeyZ", 29), ("MetaLeft", 227), ("F1", 58),
-    ("Digit2", 31), ("KeyW", 26), ("KeyS", 22), ("KeyX", 27),
-    ("AltLeft", 226), ("F2", 59), ("Digit3", 32), ("KeyE", 8),
-    ("KeyD", 7), ("KeyC", 6), ("F3", 60), ("Digit4", 33),
-    ("KeyR", 21), ("KeyF", 9), ("KeyV", 25), ("F4", 61),
-    ("Digit5", 34), ("KeyT", 23), ("KeyG", 10), ("KeyB", 5),
-    ("Space", 44), ("F5", 62), ("Digit6", 35), ("KeyY", 28),
-    ("KeyH", 11), ("KeyN", 17), ("F6", 63), ("Digit7", 36),
-    ("KeyU", 24), ("KeyJ", 13), ("KeyM", 16), ("F7", 64),
-    ("Digit8", 37), ("KeyI", 12), ("KeyK", 14), ("Comma", 54),
-    ("AltRight", 230), ("F8", 65), ("Digit9", 38), ("KeyO", 18),
-    ("KeyL", 15), ("Period", 55), ("Fn", 218103808), ("F9", 66),
-    ("Digit0", 39), ("KeyP", 19), ("Semicolon", 51), ("Slash", 56),
-    ("ContextMenu", 101), ("F10", 67), ("Minus", 45), ("BracketLeft", 47),
-    ("Quote", 52), ("F11", 68), ("Equal", 46), ("BracketRight", 48),
-    ("Enter", 40), ("ShiftRight", 229), ("ControlRight", 228), ("F12", 69),
-    ("Back", 42), ("Backslash", 49), ("Print", 70), ("Insert", 73),
-    ("Delete", 76), ("ArrowLeft", 80), ("ScrollLock", 71), ("Home", 74),
-    ("End", 77), ("ArrowUp", 82), ("ArrowDown", 81), ("Pause", 72),
-    ("PageUp", 75), ("PageDown", 78), ("ArrowRight", 79),
-    ("counter", 33554834), ("NumLock", 83), ("Numpad7", 95),
-    ("Numpad4", 92), ("Numpad1", 89), ("Numpad0", 98),
-    ("NumpadDivide", 84), ("Numpad8", 96), ("Numpad5", 93),
-    ("Numpad2", 90), ("NumpadMultiply", 85), ("Numpad9", 97),
-    ("Numpad6", 94), ("Numpad3", 91), ("NumpadDecimal", 99),
-    ("NumpadSubtract", 86), ("NumpadAdd", 87), ("NumpadEnter", 88),
-    ("MouseLeft", 1), ("MouseMiddle", 4), ("MouseRight", 2),
-    ("MouseBack", 16), ("MouseForward", 8),
+    ("ESC", 41),
+    ("Backquote", 53),
+    ("Tab", 43),
+    ("CapsLock", 57),
+    ("ShiftLeft", 225),
+    ("ControlLeft", 224),
+    ("Digit1", 30),
+    ("KeyQ", 20),
+    ("KeyA", 4),
+    ("KeyZ", 29),
+    ("MetaLeft", 227),
+    ("F1", 58),
+    ("Digit2", 31),
+    ("KeyW", 26),
+    ("KeyS", 22),
+    ("KeyX", 27),
+    ("AltLeft", 226),
+    ("F2", 59),
+    ("Digit3", 32),
+    ("KeyE", 8),
+    ("KeyD", 7),
+    ("KeyC", 6),
+    ("F3", 60),
+    ("Digit4", 33),
+    ("KeyR", 21),
+    ("KeyF", 9),
+    ("KeyV", 25),
+    ("F4", 61),
+    ("Digit5", 34),
+    ("KeyT", 23),
+    ("KeyG", 10),
+    ("KeyB", 5),
+    ("Space", 44),
+    ("F5", 62),
+    ("Digit6", 35),
+    ("KeyY", 28),
+    ("KeyH", 11),
+    ("KeyN", 17),
+    ("F6", 63),
+    ("Digit7", 36),
+    ("KeyU", 24),
+    ("KeyJ", 13),
+    ("KeyM", 16),
+    ("F7", 64),
+    ("Digit8", 37),
+    ("KeyI", 12),
+    ("KeyK", 14),
+    ("Comma", 54),
+    ("AltRight", 230),
+    ("F8", 65),
+    ("Digit9", 38),
+    ("KeyO", 18),
+    ("KeyL", 15),
+    ("Period", 55),
+    ("Fn", 218103808),
+    ("F9", 66),
+    ("Digit0", 39),
+    ("KeyP", 19),
+    ("Semicolon", 51),
+    ("Slash", 56),
+    ("ContextMenu", 101),
+    ("F10", 67),
+    ("Minus", 45),
+    ("BracketLeft", 47),
+    ("Quote", 52),
+    ("F11", 68),
+    ("Equal", 46),
+    ("BracketRight", 48),
+    ("Enter", 40),
+    ("ShiftRight", 229),
+    ("ControlRight", 228),
+    ("F12", 69),
+    ("Back", 42),
+    ("Backslash", 49),
+    ("Print", 70),
+    ("Insert", 73),
+    ("Delete", 76),
+    ("ArrowLeft", 80),
+    ("ScrollLock", 71),
+    ("Home", 74),
+    ("End", 77),
+    ("ArrowUp", 82),
+    ("ArrowDown", 81),
+    ("Pause", 72),
+    ("PageUp", 75),
+    ("PageDown", 78),
+    ("ArrowRight", 79),
+    ("counter", 33554834),
+    ("NumLock", 83),
+    ("Numpad7", 95),
+    ("Numpad4", 92),
+    ("Numpad1", 89),
+    ("Numpad0", 98),
+    ("NumpadDivide", 84),
+    ("Numpad8", 96),
+    ("Numpad5", 93),
+    ("Numpad2", 90),
+    ("NumpadMultiply", 85),
+    ("Numpad9", 97),
+    ("Numpad6", 94),
+    ("Numpad3", 91),
+    ("NumpadDecimal", 99),
+    ("NumpadSubtract", 86),
+    ("NumpadAdd", 87),
+    ("NumpadEnter", 88),
+    ("MouseLeft", 1),
+    ("MouseMiddle", 4),
+    ("MouseRight", 2),
+    ("MouseBack", 16),
+    ("MouseForward", 8),
 ];
 
 /// Names the vendor treats as modifiers for the nibble base
 /// (`ie`/`me`/`N`/`z`/`D` lists in the JS encode paths).
 pub const MODIFIER_KEY_NAMES: &[&str] = &[
-    "ShiftLeft", "ControlLeft", "MetaLeft", "AltLeft", "AltRight",
-    "ShiftRight", "ControlRight",
+    "ShiftLeft",
+    "ControlLeft",
+    "MetaLeft",
+    "AltLeft",
+    "AltRight",
+    "ShiftRight",
+    "ControlRight",
 ];
 
 /// Names the vendor treats as mouse buttons (nibble base 2).
 pub const MOUSE_KEY_NAMES: &[&str] = &[
-    "MouseLeft", "MouseRight", "MouseMiddle", "MouseForward", "MouseBack",
+    "MouseLeft",
+    "MouseRight",
+    "MouseMiddle",
+    "MouseForward",
+    "MouseBack",
 ];
 
 /// Usage value for a vendor key name (`fe.find(name)`); `None` = unknown.
@@ -303,10 +392,7 @@ fn decode_body(body: &[u8]) -> MacroEntry {
     } else {
         &[][..]
     };
-    let steps = steps_raw
-        .chunks_exact(4)
-        .map(decode_step)
-        .collect();
+    let steps = steps_raw.chunks_exact(4).map(decode_step).collect();
     MacroEntry { name, steps }
 }
 
@@ -329,9 +415,7 @@ fn encode_step(step: &MacroStep) -> Result<[u8; 4]> {
     let nibble = match step.kind {
         StepKind::Other(n) => n,
         k => {
-            let base = k
-                .base()
-                .expect("Other handled above");
+            let base = k.base().expect("Other handled above");
             base + step.action * 8
         }
     };
@@ -457,10 +541,10 @@ mod tests {
             MacroEntry {
                 name: "hello".into(),
                 steps: vec![
-                    step(0, 8, 4, StepKind::Key),     // KeyA down, 8ms
-                    step(1, 120, 4, StepKind::Key),  // KeyA up
+                    step(0, 8, 4, StepKind::Key),        // KeyA down, 8ms
+                    step(1, 120, 4, StepKind::Key),      // KeyA up
                     step(0, 0, 225, StepKind::Modifier), // ShiftLeft down
-                    step(1, 0, 1, StepKind::Mouse),  // MouseLeft up
+                    step(1, 0, 1, StepKind::Mouse),      // MouseLeft up
                 ],
             },
             MacroEntry {
@@ -492,7 +576,9 @@ mod tests {
         // r < 4 → empty.
         assert!(parse_macro_region(&[2, 0, 0, 0]).unwrap().is_empty());
         // r odd → empty.
-        assert!(parse_macro_region(&[3, 0, 0, 0, 0, 0, 0, 0]).unwrap().is_empty());
+        assert!(parse_macro_region(&[3, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -500,10 +586,7 @@ mod tests {
         // One macro "A", one step KeyA down 8ms / up 0ms — verify exact bytes.
         let entries = vec![MacroEntry {
             name: "A".into(),
-            steps: vec![
-                step(0, 8, 4, StepKind::Key),
-                step(1, 0, 4, StepKind::Key),
-            ],
+            steps: vec![step(0, 8, 4, StepKind::Key), step(1, 0, 4, StepKind::Key)],
         }];
         let region = build_macro_region(&entries).unwrap();
         // body = [1,'A', s0(4), s1(4)] = 10 bytes; header len field = 10.
@@ -513,10 +596,7 @@ mod tests {
         // step1: nibble 8, dur 0 → [0x80,0x00,0x00,0x04]
         assert_eq!(
             &region[..14],
-            &[
-                0x04, 0x00, 0x0A, 0x00, 0x01, b'A', 0x00, 0x00, 0x08, 0x04, 0x80, 0x00, 0x00,
-                0x04
-            ]
+            &[0x04, 0x00, 0x0A, 0x00, 0x01, b'A', 0x00, 0x00, 0x08, 0x04, 0x80, 0x00, 0x00, 0x04]
         );
         assert_eq!(region.len(), 14);
         let parsed = parse_macro_region(&pad_macro_region(&region).unwrap()).unwrap();
@@ -528,10 +608,22 @@ mod tests {
     #[test]
     fn modifier_and_mouse_nibbles() {
         // ShiftLeft down → nibble 1; up → 9. MouseLeft down → 2; up → 10.
-        assert_eq!(encode_step(&step(0, 0, 225, StepKind::Modifier)).unwrap()[0] >> 4, 1);
-        assert_eq!(encode_step(&step(1, 0, 225, StepKind::Modifier)).unwrap()[0] >> 4, 9);
-        assert_eq!(encode_step(&step(0, 0, 1, StepKind::Mouse)).unwrap()[0] >> 4, 2);
-        assert_eq!(encode_step(&step(1, 0, 1, StepKind::Mouse)).unwrap()[0] >> 4, 10);
+        assert_eq!(
+            encode_step(&step(0, 0, 225, StepKind::Modifier)).unwrap()[0] >> 4,
+            1
+        );
+        assert_eq!(
+            encode_step(&step(1, 0, 225, StepKind::Modifier)).unwrap()[0] >> 4,
+            9
+        );
+        assert_eq!(
+            encode_step(&step(0, 0, 1, StepKind::Mouse)).unwrap()[0] >> 4,
+            2
+        );
+        assert_eq!(
+            encode_step(&step(1, 0, 1, StepKind::Mouse)).unwrap()[0] >> 4,
+            10
+        );
         // Decode maps them back.
         let s = decode_step(&[0x10, 0, 0, 225]);
         assert_eq!((s.action, s.kind), (0, StepKind::Modifier));
@@ -618,7 +710,10 @@ mod tests {
         // First match wins like fe.find: usage 4 → "KeyA" (before MouseMiddle).
         assert_eq!(macro_name_for_usage(4, StepKind::Key), Some("KeyA"));
         // Mouse special cases only under Mouse kind.
-        assert_eq!(macro_name_for_usage(8, StepKind::Mouse), Some("MouseForward"));
+        assert_eq!(
+            macro_name_for_usage(8, StepKind::Mouse),
+            Some("MouseForward")
+        );
         assert_eq!(macro_name_for_usage(8, StepKind::Key), Some("KeyE"));
         assert_eq!(macro_name_for_usage(16, StepKind::Mouse), Some("MouseBack"));
         assert_eq!(default_kind_for_name("ShiftLeft"), StepKind::Modifier);
@@ -629,8 +724,14 @@ mod tests {
     #[test]
     fn multi_entry_offsets() {
         let entries = vec![
-            MacroEntry { name: "a".into(), steps: vec![step(0,1,1,StepKind::Key)] },
-            MacroEntry { name: "bb".into(), steps: vec![] },
+            MacroEntry {
+                name: "a".into(),
+                steps: vec![step(0, 1, 1, StepKind::Key)],
+            },
+            MacroEntry {
+                name: "bb".into(),
+                steps: vec![],
+            },
         ];
         let region = build_macro_region(&entries).unwrap();
         // N=2 → header table 8. body0 len = 1+1+4=6 → off0=8; body1 len=1+2=3 → off1=14.
