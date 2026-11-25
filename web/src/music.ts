@@ -7,8 +7,12 @@
  *
  *   getUserMedia({audio}) → AudioContext → AnalyserNode(fftSize 2048)
  *   → getByteFrequencyData → MusicAnalyzer (log bands + beat)
- *   → SpectrumViz → 378-byte planar frame → session.writeGifFrame
+ *   → SpectrumViz → 378-byte interleaved frame → session.writeGifFrame
  *   at ~30 ms pacing (GIF_FRAME_PERIOD_MS).
+ *
+ * The same page also hosts **pixel art** (proto/pixelart.ts, port of
+ * crates/music/src/pixelart.rs): text/bitmap → per-slot RGB → the same
+ * cmd-8 stream, no microphone involved.
  *
  * Restore contract (same as the CLI): on start we snapshot the profile
  * blob (cmd 132) and the per-mode light-data blob (cmd 138); on stop —
@@ -20,9 +24,20 @@
  */
 
 import { app, emit, setStatus, subscribe } from './state.ts';
+import { K1_PRO_BLOCKS, keyIndexOf } from './k1pro-layout.ts';
+import {
+  PixelArt,
+  RGB_WHITE,
+  type KeyPoint,
+  type Motion,
+  type PaletteName,
+  type Rgb,
+} from './proto/pixelart.ts';
 import {
   DEFAULT_FRAME_PARAMS,
+  GIF_FRAME_BYTES,
   GIF_FRAME_PERIOD_MS,
+  KEY_SLOTS,
   MusicAnalyzer,
   SpectrumViz,
   silentBands,
@@ -50,6 +65,56 @@ interface AudioRig {
   stream: MediaStream;
   source: MediaStreamAudioSourceNode;
   analyser: AnalyserNode;
+}
+
+/**
+ * Per-slot key geometry for the pixel-art engine: slot `n` (keymap
+ * index, `pos = 8 + n*4`) → physical key centre in px from the vendor
+ * layout table. Non-physical slots (`display:false`) get a linear
+ * spread like the Rust engine's unplaceable fallback.
+ */
+function k1proGeometry(): KeyPoint[] {
+  const pts: (KeyPoint | null)[] = new Array(KEY_SLOTS).fill(null);
+  for (const b of K1_PRO_BLOCKS) {
+    const n = keyIndexOf(b.pos);
+    if (n < 0 || n >= KEY_SLOTS) continue;
+    pts[n] = b.display
+      ? { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+      : null;
+  }
+  return pts.map((p, i) => p ?? { x: (i / (KEY_SLOTS - 1)) * 16.5, y: 3 });
+}
+
+/** Float32 RGB triples (0..1) → 378-byte interleaved cmd-8 payload. */
+function packPixelFrame(rgb: Float32Array): Uint8Array {
+  const out = new Uint8Array(GIF_FRAME_BYTES);
+  const n = Math.min(KEY_SLOTS, Math.floor(rgb.length / 3));
+  for (let i = 0; i < n; i++) {
+    out[i * 3] = Math.min(255, Math.max(0, Math.round((rgb[i * 3] ?? 0) * 255)));
+    out[i * 3 + 1] = Math.min(
+      255,
+      Math.max(0, Math.round((rgb[i * 3 + 1] ?? 0) * 255)),
+    );
+    out[i * 3 + 2] = Math.min(
+      255,
+      Math.max(0, Math.round((rgb[i * 3 + 2] ?? 0) * 255)),
+    );
+  }
+  return out;
+}
+
+/** Float RGB (0..1) → `#rrggbb` for the colour picker. */
+function rgbToHex(c: Rgb): string {
+  const h = (v: number) =>
+    Math.round(Math.min(1, Math.max(0, v)) * 255)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${h(c.r)}${h(c.g)}${h(c.b)}`;
+}
+
+function hexToRgb(hex: string): Rgb {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return { r: ((n >> 16) & 0xff) / 255, g: ((n >> 8) & 0xff) / 255, b: (n & 0xff) / 255 };
 }
 
 /** What the stream saved so stop() can put the lighting back. */
@@ -81,6 +146,26 @@ export class MusicPage {
   private framesSent = 0;
   private startedAt = 0;
 
+  // Pixel-art stream (no mic needed — same cmd-8 path as music mode).
+  private pixelRunning = false;
+  private pixelStarting = false;
+  private pixelStopRequested = false;
+  private pixelPumpDone: Promise<void> | null = null;
+  private pixelFinishPromise: Promise<void> | null = null;
+  private pixelWantRestore = true;
+  private pixelViz: PixelArt | null = null;
+  private pixelSaved: SavedLighting | null = null;
+  private pixelFramesSent = 0;
+  private pixelStartedAt = 0;
+  private pixelText = 'OMG';
+  private pixelMotion: Motion = 'scroll_left';
+  private pixelPalette: PaletteName | null = null;
+  private pixelColor: Rgb = { ...RGB_WHITE };
+  private pixelSpeed = 6;
+  private pixelStartBtn: HTMLButtonElement | null = null;
+  private pixelStopBtn: HTMLButtonElement | null = null;
+  private pixelStatus: HTMLElement | null = null;
+
   // DOM
   private runCard: HTMLElement | null = null;
   private startBtn: HTMLButtonElement | null = null;
@@ -105,6 +190,8 @@ export class MusicPage {
     // Navigation away must not leave the keyboard in music mode — stop
     // (and restore) in the background even though this page is detached.
     if (this.running || this.starting || this.pumpDone) void this.stop();
+    if (this.pixelRunning || this.pixelStarting || this.pixelPumpDone)
+      void this.stopPixel();
     if (this.meterRaf) cancelAnimationFrame(this.meterRaf);
     this.el.remove();
   }
@@ -113,11 +200,20 @@ export class MusicPage {
 
   private render(): void {
     // Device gone mid-stream: nothing to restore to — tear down now.
-    if (!app.connected && (this.running || this.starting || this.pumpDone)) {
+    if (
+      !app.connected &&
+      (this.running ||
+        this.starting ||
+        this.pumpDone ||
+        this.pixelRunning ||
+        this.pixelStarting ||
+        this.pixelPumpDone)
+    ) {
       void this.stop({
         restore: false,
         reason: 'The keyboard disconnected — music mode stopped.',
       });
+      void this.stopPixel({ restore: false });
     }
     this.el.replaceChildren();
     if (!app.connected || !app.snapshot) {
@@ -142,6 +238,7 @@ export class MusicPage {
 
     this.runCard = this.renderControls();
     this.el.append(this.runCard);
+    this.el.append(this.renderPixelCard());
     this.renderMeter();
     if (this.logLines.length) {
       const pre = el('pre', 'sec-log');
@@ -219,6 +316,281 @@ export class MusicPage {
     });
     wrap.append(range, valEl);
     return wrap;
+  }
+
+  // ── Pixel art card ──────────────────────────────────────────────────
+
+  private renderPixelCard(): HTMLElement {
+    const c = el('section', 'card');
+    c.append(el('h2', '', 'Pixel art'));
+    const body = el('div', 'card-body');
+    body.append(
+      el(
+        'p',
+        'hint',
+        'Spell text or scroll art across the keys — no microphone needed. ' +
+          'Same live-frame stream as music mode; Stop restores your lighting.',
+      ),
+    );
+
+    const textRow = el('div', 'light-slider');
+    textRow.append(el('label', 'cp-label', 'Text'));
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    textInput.value = this.pixelText;
+    textInput.maxLength = 64;
+    textInput.className = 'cp-input';
+    textInput.addEventListener('input', () => {
+      this.pixelText = textInput.value;
+      this.pixelViz?.setText(textInput.value);
+    });
+    textRow.append(textInput);
+    body.append(textRow);
+
+    const grid = el('div', 'light-sliders');
+    grid.append(this.makeSelect('Motion', this.pixelMotion, {
+      static: 'Static',
+      scroll_left: 'Scroll left',
+      scroll_right: 'Scroll right',
+    } as const, (v) => {
+      this.pixelMotion = v;
+      if (this.pixelViz) this.pixelViz.motion = v;
+    }));
+    grid.append(this.makeSelect('Palette', this.pixelPalette ?? 'none', {
+      none: 'Solid colour',
+      rainbow: 'Rainbow',
+      heat: 'Heat',
+      ocean: 'Ocean',
+      sunset: 'Sunset',
+      neon: 'Neon',
+      mono: 'Mono',
+    } as const, (v) => {
+      this.pixelPalette = v === 'none' ? null : v;
+      if (this.pixelViz) this.pixelViz.palette = this.pixelPalette;
+    }));
+    grid.append(
+      this.makeSlider('Speed', 1, 30, this.pixelSpeed, (v) => {
+        this.pixelSpeed = v;
+        if (this.pixelViz) this.pixelViz.speed = v;
+      }),
+    );
+    body.append(grid);
+
+    const colourRow = el('div', 'light-slider');
+    colourRow.append(el('label', 'cp-label', 'Colour'));
+    const colourInput = document.createElement('input');
+    colourInput.type = 'color';
+    colourInput.value = rgbToHex(this.pixelColor);
+    colourInput.addEventListener('input', () => {
+      this.pixelColor = hexToRgb(colourInput.value);
+      if (this.pixelViz) this.pixelViz.color = this.pixelColor;
+    });
+    colourRow.append(colourInput);
+    body.append(colourRow);
+
+    const row = el('div', 'sec-actions');
+    this.pixelStartBtn = el('button', 'sec-btn', 'Start pixel art');
+    this.pixelStartBtn.type = 'button';
+    this.pixelStopBtn = el('button', 'sec-btn sec-btn-danger', 'Stop');
+    this.pixelStopBtn.type = 'button';
+    this.pixelStartBtn.addEventListener('click', () => void this.startPixel());
+    this.pixelStopBtn.addEventListener('click', () => void this.stopPixel());
+    row.append(this.pixelStartBtn, this.pixelStopBtn);
+    body.append(row);
+
+    this.pixelStatus = el('p', 'hint');
+    body.append(this.pixelStatus);
+    c.append(body);
+    this.syncPixelButtons();
+    return c;
+  }
+
+  private makeSelect<K extends string>(
+    label: string,
+    current: K,
+    options: Record<K, string>,
+    onChange: (v: K) => void,
+  ): HTMLElement {
+    const wrap = el('div', 'light-slider');
+    wrap.append(el('label', 'cp-label', label));
+    const sel = document.createElement('select');
+    sel.className = 'cp-input';
+    for (const value of Object.keys(options) as K[]) {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = options[value];
+      o.selected = value === current;
+      sel.append(o);
+    }
+    sel.addEventListener('change', () => onChange(sel.value as K));
+    wrap.append(sel);
+    return wrap;
+  }
+
+  private syncPixelButtons(): void {
+    if (!this.pixelStartBtn || !this.pixelStopBtn) return;
+    this.pixelStartBtn.hidden = this.pixelRunning;
+    this.pixelStopBtn.hidden = !this.pixelRunning && !this.pixelStarting;
+    this.pixelStartBtn.disabled = app.busy || this.pixelStarting || this.running;
+  }
+
+  private setPixelStatus(msg: string, isError = false): void {
+    if (this.pixelStatus) {
+      this.pixelStatus.textContent = msg;
+      this.pixelStatus.classList.toggle('warn', isError);
+    }
+  }
+
+  // ── Pixel-art start / stop ──────────────────────────────────────────
+
+  private async startPixel(): Promise<void> {
+    if (this.pixelRunning || this.pixelStarting || this.running || app.busy)
+      return;
+    const c = app.connected;
+    if (!c) {
+      setStatus('Connect a keyboard first.', true);
+      return;
+    }
+    this.pixelStarting = true;
+    this.pixelStopRequested = false;
+    this.setPixelStatus('Saving your current lighting…');
+    this.syncPixelButtons();
+    try {
+      const [profile, lightData] = await Promise.all([
+        c.session.profile(),
+        c.session.lightColorData(),
+      ]);
+      this.pixelSaved = { profile: profile.raw, lightData };
+    } catch (e) {
+      this.setPixelStatus(
+        `Could not read the keyboard's lighting settings: ${e instanceof Error ? e.message : String(e)}`,
+        true,
+      );
+      this.pixelStarting = false;
+      this.syncPixelButtons();
+      return;
+    }
+    if (this.pixelStopRequested) {
+      this.pixelSaved = null;
+      this.pixelStarting = false;
+      this.syncPixelButtons();
+      return;
+    }
+
+    const viz = new PixelArt({
+      art: { kind: 'text', text: this.pixelText },
+      cols: 21,
+      rows: 6,
+      motion: this.pixelMotion,
+      speed: this.pixelSpeed,
+      color: this.pixelColor,
+      palette: this.pixelPalette,
+    });
+    viz.setGeometry(k1proGeometry());
+    this.pixelViz = viz;
+    this.pixelRunning = true;
+    this.pixelWantRestore = true;
+    this.pixelFinishPromise = null;
+    this.pixelStartedAt = performance.now();
+    this.pixelFramesSent = 0;
+    app.musicActive = true;
+    emit();
+    setStatus('Pixel art is on — the keyboard shows your text.');
+    this.setPixelStatus('Running… press Stop to restore your lighting.');
+    this.pixelStarting = false;
+    this.log(`Pixel art started ("${this.pixelText}").`);
+    this.syncPixelButtons();
+    this.pixelPumpDone = this.pixelPump();
+  }
+
+  private async pixelPump(): Promise<void> {
+    const c = app.connected;
+    const viz = this.pixelViz;
+    if (!c || !viz) {
+      this.pixelRunning = false;
+      return;
+    }
+    let streamError: string | null = null;
+    let last = performance.now();
+    while (this.pixelRunning) {
+      const tickStart = performance.now();
+      try {
+        const rgb = viz.frame((tickStart - last) / 1000);
+        last = tickStart;
+        await c.session.writeGifFrame(packPixelFrame(rgb));
+        this.pixelFramesSent++;
+      } catch (e) {
+        streamError = e instanceof Error ? e.message : String(e);
+        break;
+      }
+      const elapsed = performance.now() - tickStart;
+      const wait = GIF_FRAME_PERIOD_MS - elapsed;
+      await sleep(wait > 0 ? wait : 0);
+    }
+    this.pixelRunning = false;
+    if (streamError) {
+      this.log(`Pixel-art stream stopped: ${streamError}`);
+      setStatus(`Pixel art stopped — ${streamError}`, true);
+    }
+    await this.ensurePixelFinish();
+  }
+
+  async stopPixel(opts: { restore?: boolean } = {}): Promise<void> {
+    if (opts.restore === false) this.pixelWantRestore = false;
+    this.pixelStopRequested = true;
+    this.pixelRunning = false;
+    await this.pixelPumpDone?.catch(() => {});
+    this.pixelPumpDone = null;
+    await this.ensurePixelFinish();
+  }
+
+  private ensurePixelFinish(): Promise<void> {
+    if (!this.pixelFinishPromise) {
+      this.pixelFinishPromise = this.doPixelFinish(this.pixelWantRestore);
+    }
+    return this.pixelFinishPromise;
+  }
+
+  private async doPixelFinish(restore: boolean): Promise<void> {
+    this.pixelViz = null;
+    app.musicActive = this.running; // music mode may still be streaming
+    emit();
+    this.syncPixelButtons();
+    const c = app.connected;
+    const saved = this.pixelSaved;
+    this.pixelSaved = null;
+    if (!restore || !c || !saved) {
+      if (!this.running) setStatus('Pixel art off.');
+      return;
+    }
+    const results: string[] = [];
+    try {
+      const out = await c.session.writeProfile(saved.profile);
+      results.push(`lighting settings restored${out.verified ? ' (checked)' : ''}`);
+    } catch (e) {
+      results.push(
+        `could not restore lighting settings: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      const out = await c.session.writeLightData(saved.lightData);
+      results.push(`effect colours restored${out.verified ? ' (checked)' : ''}`);
+    } catch (e) {
+      results.push(
+        `could not restore effect colours: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const failed = results.some((r) => r.startsWith('could not'));
+    if (!this.running) {
+      setStatus(
+        failed
+          ? `Pixel art off — ${results.join('; ')}.`
+          : 'Pixel art off — your lighting is back.',
+        failed,
+      );
+    }
+    for (const r of results) this.log(r);
+    if (this.el.isConnected) this.render();
   }
 
   private renderMeter(): void {
@@ -307,7 +679,7 @@ export class MusicPage {
     if (!this.startBtn || !this.stopBtn) return;
     this.startBtn.hidden = this.running;
     this.stopBtn.hidden = !this.running && !this.starting;
-    this.startBtn.disabled = app.busy || this.starting;
+    this.startBtn.disabled = app.busy || this.starting || this.pixelRunning;
   }
 
   private setPageStatus(msg: string, isError = false): void {

@@ -8,9 +8,9 @@
  *
  * Wire format (live-verified, docs/research/music-reactive-feasibility.md
  * TEST-001): one feature report per frame — 7-byte prefix
- * `[8,0,0,1,0,122,1]` then up to 378 bytes of planar RGB
- * `[R×126][G×126][B×126]`, zero-padded to the 519-byte payload, sent
- * fire-and-forget at ~30 ms pacing.
+ * `[8,0,0,1,0,122,1]` then up to 378 bytes of interleaved RGB
+ * `[led0 R,G,B, led1 R,G,B, …]` (126 keys × 3), zero-padded to the
+ * 519-byte payload, sent fire-and-forget at ~30 ms pacing.
  */
 
 import { FEATURE_PAYLOAD_BYTES, HEADER_LEN } from './khub916.ts';
@@ -19,9 +19,9 @@ import { FEATURE_PAYLOAD_BYTES, HEADER_LEN } from './khub916.ts';
 
 /** cmd 8 opcode (GIF light frames). */
 export const CMD_GIF_LIGHT = 8;
-/** RGB bytes per stream frame: 126 keys × 3 channels, planar. */
+/** RGB bytes per stream frame: 126 keys × 3 channels, interleaved (live-verified cmd-8 order). */
 export const GIF_FRAME_BYTES = 378;
-/** Key slots per frame (126 keys × RGB planar). */
+/** Key slots per frame (126 keys × RGB interleaved). */
 export const KEY_SLOTS = 126;
 /** Vendor command-queue pacing between feature reports. */
 export const GIF_FRAME_PERIOD_MS = 30;
@@ -339,7 +339,7 @@ export class SpectrumViz {
     }));
   }
 
-  /** Render one 378-byte planar frame from the latest [`Bands`]. */
+  /** Render one 378-byte interleaved frame from the latest [`Bands`]. */
   frame(bands: Bands, t: number): Uint8Array {
     // Update per-band envelopes.
     for (let i = 0; i < SPECTRUM_BINS; i++) {
@@ -384,9 +384,11 @@ export class SpectrumViz {
         g = Math.max(g, f);
         b = Math.max(b, f);
       }
-      frame[k] = Math.min(255, Math.max(0, Math.round(r * 255)));
-      frame[KEY_SLOTS + k] = Math.min(255, Math.max(0, Math.round(g * 255)));
-      frame[2 * KEY_SLOTS + k] = Math.min(255, Math.max(0, Math.round(b * 255)));
+      // Interleaved LED×(R,G,B) — the live-verified cmd-8 byte order
+      // (planar scrambled every colour on the K1 Pro).
+      frame[k * 3] = Math.min(255, Math.max(0, Math.round(r * 255)));
+      frame[k * 3 + 1] = Math.min(255, Math.max(0, Math.round(g * 255)));
+      frame[k * 3 + 2] = Math.min(255, Math.max(0, Math.round(b * 255)));
     }
     return frame;
   }

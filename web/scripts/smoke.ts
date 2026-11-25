@@ -98,6 +98,7 @@ import {
   gifFramePacket,
   silentBands,
 } from '../src/proto/music.ts';
+import { PixelArt, gridGeometry } from '../src/proto/pixelart.ts';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -1048,6 +1049,86 @@ import {
   // Persistence: a second store over the same storage sees the entries.
   const hist2 = new ProfileHistory(store);
   check('history persists', hist2.list().length === PROFILE_HISTORY_MAX - 1, `got ${hist2.list().length}`);
+}
+
+// ── PixelArt (port of crates/music/src/pixelart.rs) ───────────────────
+{
+  // Static text on a cells-mode canvas lights the right slots.
+  const pa = new PixelArt({
+    art: { kind: 'text', text: 'HI' },
+    cols: 21,
+    rows: 6,
+    map: 'cells',
+    color: { r: 1, g: 1, b: 1 },
+  });
+  pa.setSlots(126);
+  const f1 = pa.frame(0.016);
+  check('pixelart frame length', f1.length === 126 * 3, `got ${f1.length}`);
+  const lit = Array.from({ length: 126 }, (_, i) =>
+    f1[i * 3]! + f1[i * 3 + 1]! + f1[i * 3 + 2]! > 0.05,
+  );
+  check('pixelart static lights slots', lit.some(Boolean));
+  check('pixelart lit slots in canvas range',
+    lit.findIndex(Boolean) >= 0 && lit.findIndex(Boolean) < 126);
+
+  // Keys mode over grid geometry still produces a full-length frame.
+  const pk = new PixelArt({
+    art: { kind: 'text', text: 'HELLO' },
+    cols: 21,
+    rows: 6,
+    map: 'keys',
+  });
+  pk.setGeometry(gridGeometry(126));
+  const fk = pk.frame(0.016);
+  check('pixelart keys frame length', fk.length === 126 * 3);
+  check('pixelart keys lights slots',
+    Array.from({ length: 126 }, (_, i) => fk[i * 3]! + fk[i * 3 + 1]! + fk[i * 3 + 2]!).filter((v) => v > 0.05).length > 10);
+
+  // Scroll-left marquee shows then blanks the board (repeat on).
+  const ps = new PixelArt({
+    art: { kind: 'text', text: 'HI' },
+    cols: 21,
+    rows: 6,
+    map: 'cells',
+    motion: 'scroll_left',
+    speed: 30,
+    repeat: true,
+  });
+  ps.setSlots(126);
+  let sawLit = false;
+  let sawDark = false;
+  for (let i = 0; i < 300; i++) {
+    const f = ps.frame(1 / 30);
+    const any = Array.from({ length: 126 }, (_, k) => f[k * 3]! + f[k * 3 + 1]! + f[k * 3 + 2]!).some((v) => v > 0.05);
+    sawLit ||= any;
+    sawDark ||= !any;
+  }
+  check('pixelart scroll shows text', sawLit);
+  check('pixelart scroll blanks between passes', sawDark);
+
+  // Non-loop scroll parks dark.
+  const pn = new PixelArt({
+    art: { kind: 'text', text: 'HI' },
+    cols: 21,
+    rows: 6,
+    map: 'cells',
+    motion: 'scroll_left',
+    speed: 60,
+    repeat: false,
+  });
+  pn.setSlots(126);
+  let lastLit = -1;
+  for (let i = 0; i < 600; i++) {
+    const f = pn.frame(1 / 30);
+    lastLit = Array.from({ length: 126 }, (_, k) => f[k * 3]! + f[k * 3 + 1]! + f[k * 3 + 2]!).filter((v) => v > 0.05).length;
+  }
+  check('pixelart non-loop ends dark', lastLit === 0, `lit=${lastLit}`);
+
+  // Empty art renders background only.
+  const pe = new PixelArt({ art: { kind: 'text', text: '' } });
+  pe.setSlots(10);
+  const fe = pe.frame(0.016);
+  check('pixelart empty art dark', fe.every((v) => v === 0));
 }
 
 console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} check(s) failed.`);
