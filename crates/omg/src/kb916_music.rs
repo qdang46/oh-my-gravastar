@@ -273,6 +273,7 @@ pub fn cmd(
     engine: &str,
     palette: &str,
     speed: f32,
+    color: Option<&str>,
     duration: Option<f64>,
     yes: &Yes,
 ) -> Result<ExitCode> {
@@ -404,6 +405,26 @@ pub fn cmd(
     if engine != "legacy" && !(0.25..=3.0).contains(&speed) {
         bail!("--speed must be in 0.25..=3.0 for --engine {engine}, got {speed}");
     }
+    // --color: #rrggbb → mono override for Palette::Mono.
+    let mono_rgb = match color {
+        None => omg_music::Rgb {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        },
+        Some(hex) => {
+            let h = hex.trim_start_matches('#');
+            if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                bail!("--color must be #rrggbb, got '{hex}'");
+            }
+            let v = u32::from_str_radix(h, 16).unwrap();
+            omg_music::Rgb {
+                r: ((v >> 16) & 0xFF) as f32 / 255.0,
+                g: ((v >> 8) & 0xFF) as f32 / 255.0,
+                b: (v & 0xFF) as f32 / 255.0,
+            }
+        }
+    };
     if duration.is_some_and(|d| d <= 0.0) {
         bail!("--duration must be positive seconds");
     }
@@ -460,6 +481,7 @@ pub fn cmd(
         let mut mixer = LayerMixer::default();
         mixer.layers = mixer_layers;
         mixer.palette = mixer_palette;
+        mixer.mono = mono_rgb;
         mixer.speed = speed;
         mixer.brightness = brightness;
         mixer.gain = sensitivity;
@@ -472,6 +494,7 @@ pub fn cmd(
         let mut mode = ModeRenderer::default();
         mode.kind = mode_kind;
         mode.palette = mixer_palette;
+        mode.mono = mono_rgb;
         mode.speed = speed;
         mode.brightness = brightness;
         mode.gain = sensitivity;
@@ -564,6 +587,14 @@ pub fn cmd(
                 "  [frame {sent}] mean={mean:.3} lit_bytes={lit} level={:.2} bass={:.2} beat_pulse={:.2} bpm={:.0}",
                 bands.level, bands.bass, bands.beat_pulse, bands.bpm
             );
+            if std::env::var("OMG_DEBUG_SPECTRUM").is_ok() {
+                let bars: Vec<String> = bands
+                    .spectrum
+                    .chunks(2)
+                    .map(|c| format!("{:.2}", c.iter().sum::<f32>() / c.len() as f32))
+                    .collect();
+                eprintln!("    spectrum[12 bars L→R]: {}", bars.join(" "));
+            }
         }
         if let Err(e) = kb.write_gif_frame(&frame) {
             stream_error = Some(format!("{e:#}"));

@@ -307,7 +307,11 @@ impl Analyzer {
         let bin_hz: Vec<f32> = (0..=fft_size / 2)
             .map(|i| i as f32 * sample_rate as f32 / fft_size as f32)
             .collect();
-        let spectrum_ranges = log_ranges(&bin_hz, 30.0, (sample_rate / 2) as f32, SPECTRUM_BINS);
+        // Cap the top at 16 kHz: music energy above that is negligible,
+        // and log-spacing to Nyquist wastes ~1/3 of the bins on silent
+        // bands (the right side of the equalizer stayed dark).
+        let spec_top = (sample_rate as f32 / 2.0).min(16_000.0);
+        let spectrum_ranges = log_ranges(&bin_hz, 30.0, spec_top, SPECTRUM_BINS);
         let bass_range = hz_range(&bin_hz, 20.0, BASS_MAX_HZ);
         let mid_range = hz_range(&bin_hz, BASS_MAX_HZ, MID_MAX_HZ);
         let treble_range = hz_range(

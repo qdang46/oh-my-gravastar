@@ -4336,9 +4336,11 @@ enum Kb916Light {
         /// lingers (default 1.0, range 0.25-4.0).
         #[arg(long, default_value_t = 1.0)]
         decay: f32,
-        /// LED byte order in the 378-byte frame: `planar` = [R×126][G×126]
-        /// [B×126] (K1 Pro assumption), `interleaved` = per-LED RGB.
-        #[arg(long, default_value = "planar")]
+        /// LED byte order in the 378-byte frame: `interleaved` = per-LED
+        /// RGB (live-verified on the K1 Pro: probe lit Q/P/→ at the
+        /// expected keys), `planar` = [R×126][G×126][B×126] (unverified
+        /// legacy assumption).
+        #[arg(long, default_value = "interleaved")]
         pixel_order: String,
         /// Renderer engine: `mixer` (additive layer mixer: spectrum/
         /// wave/pulse/ripple/rain/starry/breathing/lava layers blended
@@ -4357,6 +4359,9 @@ enum Kb916Light {
         /// Effect speed 0.25-3.0 for `--engine mixer`/`modes`.
         #[arg(long, default_value_t = 1.0)]
         speed: f32,
+        /// Single colour `#rrggbb` for `--palette mono` (default white).
+        #[arg(long)]
+        color: Option<String>,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,

@@ -682,17 +682,28 @@ impl LayerMixer {
                 }
             }
             LayerKind::Spectrum => {
+                // Group the board into BARS vertical columns (~1.4 key
+                // units each — wider than the row stagger so a physical
+                // column of keys shares one band). 24 spectrum bins / 12
+                // bars = 2 bins averaged per column; without this each
+                // key fell into its own bin and the field looked like
+                // confetti instead of an equalizer.
+                const BARS: usize = 12;
+                const BINS_PER_BAR: usize = SPECTRUM_BINS / BARS;
                 for (i, k) in self.geom.iter().enumerate() {
-                    let band = ((k.u() * SPECTRUM_BINS as f32) as usize).min(SPECTRUM_BINS - 1);
+                    let bar = ((k.u() * BARS as f32) as usize).min(BARS - 1);
+                    let lo = bar * BINS_PER_BAR;
+                    let hi = (lo + BINS_PER_BAR).min(SPECTRUM_BINS);
+                    let energy = f.bands[lo..hi].iter().sum::<f32>() / (hi - lo) as f32;
                     let height = 5 - k.row();
-                    let fill = (f.bands[band] * 6.0 - height as f32).clamp(0.0, 1.0);
+                    let fill = (energy * 6.0 - height as f32).clamp(0.0, 1.0);
                     if fill <= 0.0 {
                         continue;
                     }
                     let col = if pal == Palette::Heat {
                         pal.color(height as f32 / 6.0, mono)
                     } else {
-                        pal.color(band as f32 / SPECTRUM_BINS as f32 + hue, mono)
+                        pal.color(bar as f32 / BARS as f32 + hue, mono)
                     };
                     out[i] = out[i].add(col.scale(fill));
                 }
