@@ -1072,6 +1072,76 @@ pub fn cmd(cli: &Cli, command: &Kb916Light) -> Result<ExitCode> {
             },
             yes,
         ),
+        Kb916Light::PixelArt {
+            text,
+            motion,
+            color,
+            palette,
+            speed,
+            cols,
+            rows,
+            pixel_order,
+            fps,
+            duration,
+            yes,
+        } => {
+            if !yes.yes {
+                bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+            }
+            let motion = match motion.as_str() {
+                "static" => omg_music::Motion::Static,
+                "scroll_left" => omg_music::Motion::ScrollLeft,
+                "scroll_right" => omg_music::Motion::ScrollRight,
+                other => bail!("unknown --motion '{other}' (want static|scroll_left|scroll_right)"),
+            };
+            let palette = match palette.as_deref() {
+                None => None,
+                Some(p) => match omg_music::Palette::parse(p) {
+                    Some(pal) => Some(pal),
+                    None => {
+                        bail!("unknown --palette '{p}' (want rainbow|heat|ocean|sunset|neon|mono)")
+                    }
+                },
+            };
+            let lit = match color.as_deref() {
+                None => omg_music::Rgb {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                },
+                Some(hex) => {
+                    let h = hex.trim_start_matches('#');
+                    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        bail!("--color must be #rrggbb, got '{hex}'");
+                    }
+                    let v = u32::from_str_radix(h, 16).unwrap();
+                    omg_music::Rgb {
+                        r: ((v >> 16) & 0xFF) as f32 / 255.0,
+                        g: ((v >> 8) & 0xFF) as f32 / 255.0,
+                        b: (v & 0xFF) as f32 / 255.0,
+                    }
+                }
+            };
+            if !matches!(pixel_order.as_str(), "planar" | "interleaved") {
+                bail!("--pixel-order must be planar|interleaved, got '{pixel_order}'");
+            }
+            let mut spec = omg_music::PixelArtSpec::text(text.clone());
+            spec.motion = motion;
+            spec.palette = palette;
+            spec.color = lit;
+            spec.speed = *speed;
+            spec.cols = *cols;
+            spec.rows = *rows;
+            spec.map = omg_music::MapMode::Keys;
+            let session = crate::runtime::PixelArtSession {
+                spec,
+                spec_duration: *duration,
+                pixel_order: pixel_order.clone(),
+                fps: *fps,
+            };
+            let (code, _) = crate::runtime::run_pixelart_session(cli, &session, *duration, None)?;
+            Ok(code)
+        }
     }
 }
 

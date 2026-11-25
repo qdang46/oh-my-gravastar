@@ -91,13 +91,13 @@ struct MusicSession {
     fps: f64,
 }
 
-struct PixelArtSession {
-    spec: PixelArtSpec,
+pub(crate) struct PixelArtSession {
+    pub spec: PixelArtSpec,
     /// Session-level `duration_s` (kept out of `spec` — PixelArtSpec has
     /// no duration field).
-    spec_duration: Option<f64>,
-    pixel_order: String,
-    fps: f64,
+    pub spec_duration: Option<f64>,
+    pub pixel_order: String,
+    pub fps: f64,
 }
 
 impl Session {
@@ -657,7 +657,7 @@ fn cmd_start(cli: &Cli, file: &str, duration_flag: Option<f64>, yes: &Yes) -> Re
     let stop_file = stop_path();
     let outcome = match &session {
         Session::Music(m) => run_music_session(cli, m, duration, &stop_file, yes),
-        Session::PixelArt(p) => run_pixelart_session(cli, p, duration, &stop_file),
+        Session::PixelArt(p) => run_pixelart_session(cli, p, duration, Some(&stop_file)),
     };
     write_last(&session, &outcome);
     clear_marker();
@@ -844,11 +844,11 @@ fn schema_doc() -> Value {
 
 // ── pixel-art runner ───────────────────────────────────────────────────
 
-fn run_pixelart_session(
+pub(crate) fn run_pixelart_session(
     cli: &Cli,
     p: &PixelArtSession,
     duration: Option<f64>,
-    stop_file: &Path,
+    stop_file: Option<&Path>,
 ) -> Result<(ExitCode, Value)> {
     // Runtime sessions are capped at the verified cmd-8 ceiling.
     if !(1.0..=30.0).contains(&p.fps) || !p.fps.is_finite() {
@@ -889,7 +889,7 @@ fn run_pixelart_session(
         );
     }
 
-    let outcome = stream.pump(p.fps, duration, Some(stop_file), |_, dt| {
+    let outcome = stream.pump(p.fps, duration, stop_file, |_, dt| {
         let colors = art.frame(dt);
         let bytes = pack_frame(&colors, slots, planar);
         let mut f = [0u8; omg_music::render::FRAME_BYTES];

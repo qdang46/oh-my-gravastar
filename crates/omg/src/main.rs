@@ -4379,6 +4379,45 @@ enum Kb916Light {
         #[command(flatten)]
         yes: Yes,
     },
+    /// LED pixel-art: render text (built-in 5x7 font) or scroll it
+    /// across the physical key grid as cmd-8 frames — the same engine
+    /// `omg runtime start` kind `pixel-art` drives. Requires `--yes`;
+    /// snapshots and restores the pre-run lighting on exit/Ctrl-C.
+    PixelArt {
+        /// Text to display (A-Z 0-9 punctuation; longer strings scroll).
+        #[arg(long)]
+        text: String,
+        /// Motion: static|scroll_left|scroll_right (default static).
+        #[arg(long, default_value = "static")]
+        motion: String,
+        /// Lit colour `#rrggbb` (default white).
+        #[arg(long)]
+        color: Option<String>,
+        /// Palette colour cycling: rainbow|heat|ocean|sunset|neon|mono
+        /// (default: solid --color).
+        #[arg(long)]
+        palette: Option<String>,
+        /// Scroll speed in cells/sec (default 6.0).
+        #[arg(long, default_value_t = 6.0)]
+        speed: f32,
+        /// Canvas columns visible across the strip (default 21).
+        #[arg(long, default_value_t = 21)]
+        cols: usize,
+        /// Canvas rows (default 6 — K1 Pro physical row count).
+        #[arg(long, default_value_t = 6)]
+        rows: usize,
+        /// LED byte order: interleaved (live-verified) | planar.
+        #[arg(long, default_value = "interleaved")]
+        pixel_order: String,
+        /// Frames per second (default 10; vendor cadence ~5 pkt/s).
+        #[arg(long, default_value_t = 10.0)]
+        fps: f64,
+        /// Stop after this many seconds (default: until Ctrl-C).
+        #[arg(long)]
+        duration: Option<f64>,
+        #[command(flatten)]
+        yes: Yes,
+    },
 }
 
 #[derive(Subcommand)]
