@@ -24,6 +24,8 @@ export const vi: Strings = {
   'app.tagline': 'Cài đặt bàn phím GravaStar',
   'shell.connect': 'Kết nối',
   'shell.connectKeyboard': 'Kết nối bàn phím',
+  'shell.noWebHid':
+    'Trình duyệt này không hỗ trợ bàn phím — hãy dùng Chrome hoặc Edge trên máy tính.',
   'shell.disconnect': 'Ngắt kết nối',
   'shell.refresh': 'Làm mới',
   'shell.collapse': 'Thu gọn thanh bên',

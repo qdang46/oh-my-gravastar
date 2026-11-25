@@ -25,6 +25,8 @@ export const en = {
   'app.tagline': 'GravaStar keyboard setup',
   'shell.connect': 'Connect',
   'shell.connectKeyboard': 'Connect keyboard',
+  'shell.noWebHid':
+    'This browser cannot talk to keyboards — use Chrome or Edge on a computer.',
   'shell.disconnect': 'Disconnect',
   'shell.refresh': 'Refresh',
   'shell.collapse': 'Collapse sidebar',

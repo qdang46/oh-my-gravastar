@@ -301,6 +301,15 @@ export function mountShell(root: HTMLElement): void {
     refreshBtn.hidden = !connected;
     connectBtn.disabled = app.busy;
     refreshBtn.disabled = app.busy;
+    // No WebHID (Safari, Firefox, most mobile browsers): the picker can
+    // never open, so keep the button visible but explain why it's dead.
+    const webHid = typeof navigator !== 'undefined' && 'hid' in navigator;
+    if (!webHid) {
+      connectBtn.disabled = true;
+      connectBtn.title = t('shell.noWebHid');
+    } else {
+      connectBtn.title = '';
+    }
 
     const snap = app.snapshot;
     // Always name the actual device (product + model), never just
