@@ -1,6 +1,6 @@
 # oh-my-gravastar
 
-![Demo: music-reactive keyboard lighting (MVP)](docs/demo-music-lighting.webp)
+![Demo: music-reactive keyboard lighting (MVP)](docs/demo-music-lighting.webm)
 
 *Demo: per-key RGB lighting driven by live music (`omg kb916 light music`) — keys flash on the beat and go dark between hits.*
 
