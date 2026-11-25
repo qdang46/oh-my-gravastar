@@ -995,6 +995,13 @@ export class MacroPage {
     const ok = await confirmDialog({
       title: 'Save macros to the keyboard?',
       bodyText: `${desc}.\n\nThis overwrites the whole macro list stored on the keyboard with the list shown on this page — including any macros you have not opened. Keys and lighting are not touched.`,
+      impact: {
+        affected: ['Whole macro list'],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
       hint: 'You can save a full backup of the keyboard first on the Backup & restore page.',
       confirmLabel: 'Save to keyboard',
     });
@@ -1048,6 +1055,13 @@ export class MacroPage {
         `This removes "${e.name}" (${e.steps.length} step(s)) from the keyboard — ` +
         'the whole macro list is rewritten without it. Keys already assigned to ' +
         'this macro will stop working. Your other macros are not affected.',
+      impact: {
+        affected: [`Macro "${e.name}"`, 'Whole macro list (rewritten)'],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
       hint: 'You can save a full backup of the keyboard first on the Backup & restore page.',
       confirmLabel: 'Delete macro',
       danger: true,
@@ -1125,6 +1139,13 @@ export class MacroPage {
     const ok = await confirmDialog({
       title: 'Save this key change?',
       bodyText: `${desc}.\n\nThis writes the new key assignment to the keyboard — nothing else changes. The keyboard checks the change was saved.`,
+      impact: {
+        affected: ['One key assignment'],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
       confirmLabel: 'Save to keyboard',
     });
     if (!ok) return;

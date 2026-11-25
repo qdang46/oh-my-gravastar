@@ -479,6 +479,13 @@ class AssistantView {
         'Every change is written to the keyboard and verified by read-back. ' +
         'A backup of the current settings is saved first so you can restore it.',
       details,
+      impact: {
+        persistent: true,
+        // executePlan takes a SnapshotStore backup before the first write.
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
       confirmLabel: 'Apply changes',
       cancelLabel: 'Cancel',
     });

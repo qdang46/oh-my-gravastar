@@ -874,6 +874,15 @@ export class BehaviorEditor {
       hint:
         'The key binding is checked on the keyboard; the settings blob is ' +
         'verified only when this firmware allows it.',
+      impact: {
+        affected: [`Advanced function on key ${ctx.index}`],
+        persistent: true,
+        backupCaptured: true,
+        // Adv settings blobs are not a restorable profile-history
+        // section — only the keymap slot itself rolls back.
+        rollback: 'partial',
+        restartRisk: false,
+      },
       confirmLabel: 'Save to keyboard now',
     });
     if (!ok || this.busy) return;
@@ -1005,6 +1014,13 @@ export class BehaviorEditor {
       bodyText:
         'This writes 0 to that one key position NOW and checks the write. ' +
         'The saved settings stay stored on the keyboard (the device has no delete).',
+      impact: {
+        affected: [`Advanced function on key ${ctx.index}`],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'partial',
+        restartRisk: false,
+      },
       confirmLabel: 'Remove function',
       danger: true,
     });

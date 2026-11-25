@@ -18,9 +18,12 @@
  */
 
 import { app, connect, disconnect, emit } from './state.ts';
+import { t } from './i18n/index.ts';
+import { statusKindFor, statusTag } from './ui/status.ts';
+import { SnapshotStore } from './safety/snapshots.ts';
+import { ProfileHistory } from './profile-history.ts';
 import { fnDoctorReport } from './fn-doctor.ts';
 import type { FnDoctorReport } from './fn-doctor-core.ts';
-import { formatVidPid } from './hid.ts';
 import { decodeLightState, lightModeInfo } from './proto/light.ts';
 import {
   CAPABILITY_KEYS,
@@ -30,7 +33,7 @@ import {
   type CapabilityState,
 } from './core/capabilities.ts';
 import type { DeviceLike } from './core/device-model.ts';
-import { isFeatureAvailable, type FeatureId } from './core/feature-registry.ts';
+import { isFeatureAvailable, describeFeature, type FeatureId } from './core/feature-registry.ts';
 import { AuditLog } from './safety/audit-log.ts';
 import { profileSwitcherSummary } from './profile-switcher.ts';
 
@@ -135,18 +138,29 @@ export function renderDashboard(root: HTMLElement): void {
 
   const snap = app.snapshot;
   if (!app.connected || !snap) {
-    const { card: c, body } = card('Dashboard');
-    body.append(
-      el('p', 'coming-soon', 'No keyboard connected.'),
-      el(
-        'p',
-        'hint',
-        'Plug in your GravaStar keyboard with a USB cable, then press ' +
-          'Connect at the top right. This page shows device health, your ' +
-          'current profile and quick shortcuts once connected.',
-      ),
-    );
-    const connectBtn = el('button', 'primary', 'Connect keyboard');
+    // First-run / disconnected state (spec §4): plain language only —
+    // no HID, VID/PID, protocol or JSON jargon. Explains the direct
+    // browser connection, the requirements, what happens on Connect,
+    // and that every change asks for approval first.
+    const { card: c, body } = card(t('onboard.title'));
+    body.append(el('p', 'hint', t('onboard.intro')));
+
+    const req = el('div', 'onboard-req');
+    req.append(el('h3', 'onboard-req-title', t('onboard.reqTitle')));
+    const reqList = el('ul', 'onboard-steps');
+    for (const key of ['onboard.req1', 'onboard.req2', 'onboard.req3'] as const) {
+      reqList.append(el('li', '', t(key)));
+    }
+    req.append(reqList);
+    body.append(req);
+
+    const steps = el('ol', 'onboard-steps');
+    for (const key of ['onboard.stepConnect', 'onboard.stepIdentify', 'onboard.stepSafe'] as const) {
+      steps.append(el('li', '', t(key)));
+    }
+    body.append(steps);
+
+    const connectBtn = el('button', 'primary', app.busy ? t('onboard.busy') : t('onboard.cta'));
     connectBtn.type = 'button';
     connectBtn.disabled = app.busy;
     connectBtn.addEventListener('click', () => void connect());
@@ -178,46 +192,41 @@ export function renderDashboard(root: HTMLElement): void {
   );
 
   // ── Device overview ────────────────────────────────────────────────
-  const infoCard = card('Device');
+  const infoCard = card(t('dash.device'));
   const dl = el('dl', 'kv');
-  kv(dl, 'Model', app.deviceLabel || snap.info.catalogName || 'Unknown model');
-  kv(dl, 'Firmware', snap.info.versionHex);
-  kv(dl, 'Battery', `${snap.power.percent}%`);
-  kv(dl, 'Protocol', PROTOCOL_LABEL[protocolOf(like)] ?? protocolOf(like));
+  kv(dl, t('dash.model'), app.deviceLabel || snap.info.catalogName || 'Unknown model');
+  kv(dl, t('dash.firmware'), snap.info.versionHex);
+  kv(dl, t('dash.battery'), `${snap.power.percent}%`);
+  kv(dl, t('dash.protocol'), PROTOCOL_LABEL[protocolOf(like)] ?? protocolOf(like));
   kv(
     dl,
-    'Connection',
-    `${formatVidPid(dev)} · ${dev.productName ?? dev.manufacturerName ?? 'HID device'}`,
-  );
-  kv(
-    dl,
-    'Link state',
+    t('dash.linkState'),
     app.reconnectedSilently || app.connected.session.writesBlocked
-      ? 'Reconnected — changes blocked'
-      : 'Connected',
+      ? t('dash.linkReconnected')
+      : t('dash.linkConnected'),
   );
   infoCard.body.append(dl);
   root.append(infoCard.card);
 
   // ── Current profile ────────────────────────────────────────────────
-  const profCard = card('Current profile');
+  const profCard = card(t('dash.profile'));
   const pdl = el('dl', 'kv');
   const light = decodeLightState(snap.profile.raw);
   const lightName = light ? (lightModeInfo(light.mode)?.name ?? `effect ${light.mode}`) : null;
-  kv(pdl, 'Lighting', lightName ?? '—');
+  kv(pdl, t('dash.lighting'), lightName ?? '—');
   if (light) {
-    kv(pdl, 'Speed', String(light.speed));
-    kv(pdl, 'Brightness', String(light.brightness));
+    kv(pdl, t('dash.speed'), String(light.speed));
+    kv(pdl, t('dash.brightness'), String(light.brightness));
   }
-  kv(pdl, 'Sleep timer', snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—');
-  kv(pdl, 'Key layer', `Layer ${app.layer + 1} of 4`);
+  kv(pdl, t('dash.sleepTimer'), snap.profile.sleepSeconds !== null ? `${snap.profile.sleepSeconds} s` : '—');
+  kv(pdl, t('dash.keyLayer'), `Layer ${app.layer + 1} of 4`);
   // Named game/app profiles (bead 0hl): which saved profile was last
   // applied — manual switching only, a browser page cannot detect the
   // foreground app (see the Backup & restore → Game & app profiles card).
   const sw = profileSwitcherSummary();
   kv(
     pdl,
-    'Saved profile',
+    t('dash.savedProfile'),
     sw.activeName
       ? `${sw.activeName}${sw.switchCount ? ` · ${sw.switchCount} switch(es) logged` : ''}`
       : '—',
@@ -242,18 +251,43 @@ export function renderDashboard(root: HTMLElement): void {
   );
   root.append(profCard.card);
 
+  // ── Capability summary (spec §4 step 6 / §8): what this device can
+  //    do, in plain language with reasons — not a raw capability table.
+  const CAP_FEATURES: { id: FeatureId; title: string; blurb: string }[] = [
+    { id: 'lighting-studio', title: t('dash.action.lighting'), blurb: t('dash.action.lightingBlurb') },
+    { id: 'keymap-editor', title: t('dash.action.keys'), blurb: t('dash.action.keysBlurb') },
+    { id: 'macro-studio', title: t('dash.action.macro'), blurb: t('dash.action.macroBlurb') },
+    { id: 'music-reactive', title: t('dash.action.music'), blurb: t('dash.action.musicBlurb') },
+    { id: 'actuation', title: t('nav.performance'), blurb: 'Hall-effect actuation & rapid trigger' },
+  ];
+  const capCard = card(t('dash.capabilities'));
+  capCard.body.append(el('p', 'hint', t('dash.capabilitiesHint')));
+  const capList = el('ul', 'cap-list');
+  for (const f of CAP_FEATURES) {
+    const li = el('li', 'cap-item');
+    const name = el('span', 'cap-name', f.title);
+    li.append(name, el('span', 'cap-blurb', describeFeature(caps, f.id)));
+    capList.append(li);
+  }
+  capCard.body.append(capList);
+  root.append(capCard.card);
+
   // ── Quick actions ──────────────────────────────────────────────────
   // Only features the connected device supports get a shortcut
-  // (UIUX-SPEC §3: capability-driven UI).
+  // (UIUX-SPEC §3: capability-driven UI). "Ask AI" is a contextual
+  // entry point (spec §3), not a nav destination; "Back up settings"
+  // nudges the pre-write backup habit (spec §4 step 8).
   const actions: { path: string; title: string; blurb: string; feature?: FeatureId }[] = [
-    { path: '/lighting', title: 'Lighting', blurb: 'Effects, colours, scenes', feature: 'lighting-studio' },
-    { path: '/keys', title: 'Keys', blurb: 'Key assignments & layers', feature: 'keymap-editor' },
-    { path: '/macro', title: 'Macro', blurb: 'Macros & timing', feature: 'macro-studio' },
-    { path: '/advanced', title: 'Advanced', blurb: 'SOCD / timers / toggles', feature: 'adv-keys' },
-    { path: '/music', title: 'Music', blurb: 'Mic-reactive lighting', feature: 'music-reactive' },
-    { path: '/device', title: 'Device', blurb: 'Details, backup & restore' },
+    { path: '/lighting', title: t('dash.action.lighting'), blurb: t('dash.action.lightingBlurb'), feature: 'lighting-studio' },
+    { path: '/keys', title: t('dash.action.keys'), blurb: t('dash.action.keysBlurb'), feature: 'keymap-editor' },
+    { path: '/macro', title: t('dash.action.macro'), blurb: t('dash.action.macroBlurb'), feature: 'macro-studio' },
+    { path: '/advanced', title: t('dash.action.advanced'), blurb: t('dash.action.advancedBlurb'), feature: 'adv-keys' },
+    { path: '/music', title: t('dash.action.music'), blurb: t('dash.action.musicBlurb'), feature: 'music-reactive' },
+    { path: '/assistant', title: t('dash.action.assistant'), blurb: t('dash.action.assistantBlurb') },
+    { path: '/config', title: t('dash.action.backup'), blurb: t('dash.action.backupBlurb') },
+    { path: '/device', title: t('dash.action.device'), blurb: t('dash.action.deviceBlurb') },
   ];
-  const qaCard = card('Quick actions');
+  const qaCard = card(t('dash.quickActions'));
   const grid = el('div', 'dash-actions');
   for (const a of actions) {
     if (a.feature && !isFeatureAvailable(caps, a.feature)) continue;
@@ -263,26 +297,41 @@ export function renderDashboard(root: HTMLElement): void {
     grid.append(link);
   }
   qaCard.body.append(grid);
-  const disconnectBtn = el('button', 'danger', 'Disconnect');
+  // Backup nudge (spec §4 step 8): shown until the browser holds at
+  // least one restore point — either a pre-write SnapshotStore backup
+  // (section restore) or a ProfileHistory entry (named/auto-captured
+  // full-state snapshot). Both stores are localStorage-backed.
+  let hasBackup = false;
+  try {
+    hasBackup =
+      new SnapshotStore().list().length > 0 || new ProfileHistory().list().length > 0;
+  } catch {
+    hasBackup = false;
+  }
+  if (!hasBackup) {
+    const nudge = el('p', 'hint backup-nudge', t('dash.backupNudge'));
+    const nudgeLink = el('a', '', t('dash.backupNudgeLink'));
+    nudgeLink.href = '#/config';
+    nudge.append(document.createTextNode(' '), nudgeLink);
+    qaCard.body.append(nudge);
+  }
+  const disconnectBtn = el('button', 'danger', t('shell.disconnect'));
   disconnectBtn.type = 'button';
   disconnectBtn.addEventListener('click', () => void disconnect());
   qaCard.body.append(disconnectBtn);
   root.append(qaCard.card);
 
   // ── Health strip ───────────────────────────────────────────────────
-  const healthCard = card('Device health');
+  const healthCard = card(t('dash.health'));
   const hdl = el('dl', 'kv');
   const avail = summary.counts.supported + summary.counts.experimental + summary.counts.unverified;
-  kv(hdl, 'Features available', `${avail} of ${CAPABILITY_KEYS.length}`);
-  kv(hdl, 'Not supported', String(summary.counts['unsupported-hardware'] + summary.counts['unsupported-firmware']));
-  kv(hdl, 'Unverified', String(summary.counts.unverified + summary.counts.experimental));
+  kv(hdl, t('dash.featuresAvailable'), `${avail} of ${CAPABILITY_KEYS.length}`);
+  kv(hdl, t('dash.notSupported'), String(summary.counts['unsupported-hardware'] + summary.counts['unsupported-firmware']));
+  kv(hdl, t('dash.unverified'), String(summary.counts.unverified + summary.counts.experimental));
   healthCard.body.append(hdl);
   const warnings: string[] = [];
   if (app.reconnectedSilently || app.connected.session.writesBlocked) {
-    warnings.push(
-      'This session started read-only — press "Enable editing" in the banner ' +
-        'to allow changes.',
-    );
+    warnings.push(t('dash.readOnlyWarning'));
   }
   warnings.push(...summary.caveats.map((c) => `Unverified: ${c}.`));
   if (
@@ -291,11 +340,11 @@ export function renderDashboard(root: HTMLElement): void {
     !fnDocReport.intact
   ) {
     warnings.push(
-      `Fn layer check: ${fnDocReport.summary} — see Diagnostics for the full report.`,
+      `${t('dash.fnWarning')}: ${fnDocReport.summary} — see Diagnostics for the full report.`,
     );
   }
   if (warnings.length === 0) {
-    healthCard.body.append(el('p', 'hint ok', 'No warnings — everything reported is verified or expected.'));
+    healthCard.body.append(el('p', 'hint ok', t('dash.noWarnings')));
   } else {
     const ul = el('ul', 'dash-warnings');
     for (const w of warnings) ul.append(el('li', '', w));
@@ -305,7 +354,7 @@ export function renderDashboard(root: HTMLElement): void {
 
   // ── Recent changes (audit-log tail; empty is normal — the executor
   //    only writes here once transactions are wired to a sink) ────────
-  const recentCard = card('Recent changes');
+  const recentCard = card(t('dash.recentChanges'));
   let entries: ReturnType<AuditLog['tail']> = [];
   try {
     entries = new AuditLog().tail(8);
@@ -313,7 +362,7 @@ export function renderDashboard(root: HTMLElement): void {
     entries = [];
   }
   if (entries.length === 0) {
-    recentCard.body.append(el('p', 'hint', 'No changes recorded yet this session.'));
+    recentCard.body.append(el('p', 'hint', t('dash.noChanges')));
   } else {
     const ul = el('ul', 'dash-audit');
     for (const e of entries) {
@@ -324,13 +373,18 @@ export function renderDashboard(root: HTMLElement): void {
           return e.ts;
         }
       })();
-      ul.append(
-        el(
-          'li',
-          '',
-          `${when} — ${e.op} (${e.result})${e.detail ? `: ${e.detail}` : ''}`,
-        ),
+      // Status vocabulary (ui/status.ts): the raw audit result is
+      // normalised onto verified / applied-unverified / partial /
+      // unsupported / unverified / failed — never colour-only.
+      const tag = statusTag(statusKindFor(e.result));
+      const chip = el('span', tag.className, t(tag.labelKey));
+      const li = el('li', 'dash-audit-item');
+      li.append(
+        document.createTextNode(`${when} — ${e.op} `),
+        chip,
+        document.createTextNode(`${e.detail ? `: ${e.detail}` : ''}`),
       );
+      ul.append(li);
     }
     recentCard.body.append(ul);
   }

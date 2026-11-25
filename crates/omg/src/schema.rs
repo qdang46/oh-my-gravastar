@@ -1,4 +1,6 @@
-//! `omg schema` — machine-readable command contract for agents.
+//! `omg cli-schema` — machine-readable *command* contract for agents.
+//! (Renamed from `omg schema` when the desired-state config schema took
+//! over that command name — see `crate::config::schema`.)
 //!
 //! Argument lists are introspected from the same `clap` definitions that
 //! execute (`Cli::command()`), so a renamed/added flag cannot drift from
@@ -364,7 +366,7 @@ pub(crate) fn command_schema(path: &[String]) -> Option<Value> {
     Some(doc)
 }
 
-/// `omg schema` with no path: index of every command.
+/// `omg cli-schema` with no path: index of every command.
 pub(crate) fn schema_index() -> Value {
     let commands: Vec<Value> = command_paths()
         .iter()

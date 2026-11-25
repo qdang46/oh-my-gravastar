@@ -519,6 +519,15 @@ export class AdvPage {
         'Note: on some firmware the saved settings may not stick — the page will ' +
         'tell you honestly if that happens.',
       hint: 'Only this key\u2019s advanced function changes; the rest of the keymap is untouched.',
+      impact: {
+        affected: ['Advanced key function'],
+        persistent: true,
+        // Auto-captured profile baseline exists, but advanced-key
+        // settings blobs are not a restorable profile section.
+        backupCaptured: true,
+        rollback: 'partial',
+        restartRisk: false,
+      },
       confirmLabel: 'Save to keyboard',
     });
     if (!ok) return;
@@ -661,6 +670,13 @@ export class AdvPage {
         `The key currently runs ${oldLabel}. Its saved settings stay stored on ` +
         'the keyboard (the device has no delete), but the key goes back to normal — ' +
         'this writes 0 to that one key position and checks the write.',
+      impact: {
+        affected: [`Advanced function on key ${b.index}`],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'partial',
+        restartRisk: false,
+      },
       confirmLabel: 'Remove function',
       danger: true,
     });

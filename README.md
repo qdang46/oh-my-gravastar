@@ -90,6 +90,9 @@ Platform direction: **Full Custom + Agent-first + Safety-first** — see
 [docs/IMPLEMENTATION-ROADMAP.md](docs/IMPLEMENTATION-ROADMAP.md) (in progress)
 for the phased plan. Active work is tracked in beads (`br list`).
 
+- 🚧 Agent config platform: schema-driven desired-state CLI
+  (`omg schema/guide/config …`, read-only slice first) + Web W0 UX
+  foundation — specs in [docs/specs/](docs/specs/)
 - 🚧 Capability registry + safety/transaction engine + spec docs (Phase 0)
 - 🚧 Web UI: styled modals, profile history/diff, music-reactive page
 - ⬜ Keymap/Macro/Lighting Studio upgrades (Phase 1)
@@ -126,6 +129,24 @@ omg --version
 path, `VID:PID` (hex, `0x` prefix optional), or a unique case-insensitive
 substring of the product/manufacturer string. With exactly one matching
 device it is auto-selected.
+
+### Agent configuration surface (in progress)
+
+The target Agent workflow is schema-driven desired state, not per-feature
+commands — see [docs/specs/](docs/specs/). The read-only slice:
+
+```sh
+omg schema --device current --json   # device-specific JSON Schema (draft 2020-12)
+omg guide --json                     # workflow + safety/approval rules
+omg config get --device current --json          # current state as config doc
+omg config validate desired.json --device current --json
+omg config diff desired.json --device current --json
+```
+
+`config apply`/`verify`/`rollback` are **not implemented yet** — this
+slice never writes to a device. The legacy command-plan format
+(`omg plan`, [docs/plan-json.md](docs/plan-json.md)) remains the
+compatibility path for multi-step CLI automation.
 
 HE keyboard (needs an HE v2 board such as a Mercury V75):
 

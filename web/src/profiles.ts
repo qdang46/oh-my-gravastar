@@ -430,6 +430,13 @@ async function undoLastWrite(): Promise<void> {
         'This writes the saved values back to the keyboard; a backup of the ' +
         'current state is taken first.',
       details: secs ? [`Sections: ${secs}`] : undefined,
+      impact: {
+        affected: secs ? [secs] : ['Whole saved profile'],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
       confirmLabel: 'Undo — restore previous state',
       cancelLabel: 'Cancel',
       danger: true,
@@ -614,7 +621,29 @@ function renderRestorePanel(host: HTMLElement, entry: ProfileHistoryEntry): void
       emit();
       return;
     }
-    void runRestore(entry);
+    // §7: the armed second click opens the shared write-confirmation
+    // surface with the §4 impact statement before any byte is sent.
+    const names = avail
+      .filter((d) => restoreSel.has(d.id))
+      .map((d) => d.title)
+      .join(', ');
+    void confirmDialog({
+      title: `Restore ${restoreSel.size} section(s) from "${entry.name}"?`,
+      bodyText:
+        'The saved values are written back to the keyboard and each part is ' +
+        'checked on the device. A backup of the current state is saved first.',
+      impact: {
+        affected: names ? [names] : ['Selected profile sections'],
+        persistent: true,
+        backupCaptured: true,
+        rollback: 'full',
+        restartRisk: false,
+      },
+      confirmLabel: 'Restore to keyboard',
+      danger: true,
+    }).then((ok) => {
+      if (ok) void runRestore(entry);
+    });
   });
   const cancel = el('button', 'sec-btn', 'Cancel');
   cancel.type = 'button';

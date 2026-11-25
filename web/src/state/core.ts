@@ -47,6 +47,13 @@ export const app = {
   /** True while a connect/refresh is in flight. */
   busy: false,
   /**
+   * Which stage of a connect attempt `busy` covers — feeds the
+   * connection state machine (`core/conn-state.ts`): 'picker' while the
+   * browser's WebHID picker is open, 'connecting' while the session is
+   * being opened and the snapshot read. 'idle' otherwise.
+   */
+  connectStage: 'idle' as 'idle' | 'picker' | 'connecting',
+  /**
    * True while the Music page is streaming cmd-8 frames. Other pages
    * show a "music mode active" banner; the stream always restores the
    * previous lighting on stop (see music.ts).

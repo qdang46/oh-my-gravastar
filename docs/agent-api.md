@@ -1,4 +1,18 @@
-# Agent API — public contract for the agent engine
+# Agent API — Web agent contract (`web/src/agent/*`)
+
+> **Scope note:** this document is the **Web application's** agent
+> contract only — the TypeScript op vocabulary in
+> `web/src/agent/action-schema.ts` (`schema_version: 1`). It is
+> intentionally **not** shared with the Rust CLI.
+>
+> The Rust CLI's Agent-facing contract is a separate, schema-driven
+> desired-state configuration surface (`omg schema` / `omg guide` /
+> `omg config …`) specified in
+> [specs/rust-cli-config-migration-spec.md](specs/rust-cli-config-migration-spec.md)
+> and [specs/ADR-full-desired-state-config.md](specs/ADR-full-desired-state-config.md).
+> The two contracts have different op vocabularies and must not be
+> conflated; they agree only on externally observable device semantics
+> and safety policy.
 
 Normative reference for `web/src/agent/*` (beads `ak2`, `agent-validator`,
 `oe4` agent-docs). This is the contract an external caller — NL assistant,

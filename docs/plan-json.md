@@ -1,4 +1,16 @@
-# Plan JSON — `omg plan`
+# Plan JSON — `omg plan` (legacy command-plan format)
+
+> **Status: compatibility format.** This document describes the
+> *command-oriented* plan (`{version:1, steps:[{op,args}]}`) where `op`
+> is a leaf CLI command path. It remains supported for multi-step CLI
+> automation, but it is **not** the Agent configuration contract.
+>
+> The target Agent surface is the schema-driven desired-state document
+> (`omg schema` / `omg guide` / `omg config get|validate|diff|apply`)
+> specified in [specs/rust-cli-config-migration-spec.md](specs/rust-cli-config-migration-spec.md)
+> and [specs/ADR-full-desired-state-config.md](specs/ADR-full-desired-state-config.md).
+> `config apply` is not implemented yet — the read-only slice
+> (`schema`, `guide`, `config get|validate|diff`) is landing first.
 
 Machine-readable multi-step device plans. This is the interchange format
 for agents (and later the web agent engine): describe desired changes as
@@ -49,12 +61,14 @@ Safety contract (docs/plan.md §2, docs/SAFETY-SPEC.md):
 ```
 
 - `version` must be `1` (`schema` is accepted as an alias).
-- `op` is a **leaf command path** from `omg schema`, space-separated,
+- `op` is a **leaf command path** from `omg cli-schema` (the legacy
+  Clap-derived command listing; `omg schema` now emits the device
+  configuration schema — see the header note), space-separated,
   restricted to the device-driving families `kb`, `kb916`, `mouse`,
   `profile`. Introspection commands (`schema`, `device`, `devices`,
   `probe`) and `plan` itself cannot be planned.
 - `args` keys are clap **argument ids** (the `name` field of
-  `omg schema <cmd>`); the `--long` spelling (`interval-ms`) is also
+  `omg cli-schema <cmd>`); the `--long` spelling (`interval-ms`) is also
   accepted. Values are strings, numbers, booleans, or arrays (arrays
   repeat the token for `Vec` args like `codes`/`actions`/`colors`).
   Unknown args and clap-level errors (enums, ranges, required args,

@@ -1,5 +1,13 @@
 # Web UI clone plan — GravaStar 1khub configurator
 
+> **Status: historical.** This plan describes the original read-only
+> scaffold phase; the app now performs verified WebHID writes. The
+> current UI direction is
+> [specs/web-uiux-improvement-spec.md](specs/web-uiux-improvement-spec.md)
+> (W0 landed on `agent-config-platform`: goal-based nav, connection
+> state machine, shared confirm surface, EN/VI i18n). Kept for the
+> vendor-JS analysis and style research below.
+
 Scope: `web/` (Vite + vanilla TS + WebHID PWA, read-only khub916 wired scaffold)
 cloned to *feel* like the vendor configurator at
 <https://support.gravastar.com/1khub/> with a better visual style.
