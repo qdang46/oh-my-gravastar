@@ -4,7 +4,8 @@ Source: `https://app.aulacn.com/commonAssets/Aula-Music-Setup1.exe`
 (referenced by the khub webapp's Rhythm page — `Rhythm-vX7LyrFn.js` —
 as the Windows music plugin, launched via `bypc-MAxis://`).
 
-NSIS installer, extracted with `7z` to `/tmp/aula_music/` (volatile).
+NSIS installer, extracted with `7z` to `.tmp-aula-hub/` (gitignored
+scratch dir in the repo root).
 
 ## Contents
 
@@ -53,17 +54,91 @@ Actor/message framework (`ea_mgr` = manager, `ea_actor` = actor base,
   `ChangeEffect{Mode:169..173,428}` likely maps to these actors through
   `bypc-MAxis://` IPC, not to firmware light modes.
 
+## MusicMAxisPlug.unpacked.exe (webapp-downloaded helper)
+
+The khub webapp downloads a second binary, `MusicMAxisPlug_v1-0-0-5.exe`
+(UPX-packed Qt5, ~13 MB unpacked), which is the piece that actually runs
+the rhythm modes on PC. Full RE notes live in the session artifacts
+(`.tmp-aula-hub/re/`); key confirmed facts:
+
+- **Effect factory** (`AudionTyp` → class): 168 `Dance_Soft`,
+  169 `Dazzling_Rock`, 170 `Clouds_Rise_And_Snow_Fly`,
+  171 `Light_Field_Change`, 172/175 `Gurgling_Stream`,
+  173 `Blooming_Passion`, 174 `Sine`, **428 `Dynamic_Spectrum`** —
+  matching the webapp's rhythm mode ids (168 was missing from the UI
+  table; 180 = `closeAudioMode`).
+- **Frame send** (`0x40F220`): 520-byte frame buffer. For the
+  feature-report device class it writes an 8-byte header
+  (`[0]=channel, [1..4]=08 00 00 01 (cmd 0x08), [5..6]=00 7A, [7]=01`)
+  then `hid_send_feature_report` with the remaining **512 payload
+  bytes = interleaved per-key RGB** at uint16 key offsets (≥8, `-1` =
+  skip) from per-device `RowButton_*` ini tables. Same cmd-8 dialect
+  as our `write_gif_frame`, though this app targets the Audion/MAxis
+  family — byte-exact equivalence with K1 Pro is unverified.
+- **DSP/render** (per `[18]` vtable slot, ~33 fps via `Sleep(30)`):
+  memset frame → per-column spectrum value ×5.0 → per-column
+  attack/decay (new>prev keeps, else `prev − 1.0`/frame) → write RGB
+  for `intensity` keys per column, colors ×0.5. FFT is a radix-2
+  complex FFT over the next-pow2 WASAPI buffer.
+- **Per-device layout**: 8 embedded `Audion_Configs/*.ini` resources
+  with `[Key_Columns]`/`[Key_Rows]`/`RowButton_N` lists and a 23×23
+  uint16 key-offset spatial map per effect — i.e. vendor effects are
+  **column/band shaped**, not free-form per-key like our mixer.
+- **Control**: local `QWebSocketServer` (`LocalServer-%1`, dynamic
+  port), JSON cmds `ChangeDevice`/`ChangeEffect`/`ChangeParam`/
+  `GetSupportedEffects` — driven by the khub webapp Rhythm page;
+  launch via `bypc-MAxis://`.
+
+## Effect shader decode (vtable slot [18], all 8 modes)
+
+Full per-function notes: `.tmp-aula-hub/re/notes_{169_173,170_171,172_428_174}.md`
+(disassembly dumps `v18_*.asm`, `dance18.asm`, helper dumps
+`sine_sub*.asm`). Vendor runs ~33 fps (`Sleep(30)`); several modes are
+**not spectrum-driven in-render** — they chase an external phase arg
+(the companion's DSP clock), which our `ModeRenderer` reproduces as
+`drive = t·speed·(1 + 2.5·level)`.
+
+| mode | shader | audio link |
+|---|---|---|
+| 168 dance-soft | per-column band → lit-key count; attack instant, decay −1 key/frame; first N keys of column list lit; **colour = palette index `j*2` per key** (vertical rainbow gradient, `0x421BB0` predicate selects fixed entry 0 for non-colourful configs) | spectrum ×10 mod col-len |
+| 169 dazzling-rock | chase head `pos` slews ±1/frame toward `t mod P`; first `int(pos)` columns fully lit, frontier white; single column blinks ×0.3/white; `0xAB 0xBA` header | none (phase-driven) |
+| 170 clouds-rise | same column-fill math as 168 but per-column palette index | spectrum ×10 mod divisor |
+| 171 light-field | uniform field `ch·0.25·phase`, `phase = t mod 4` sawtooth; `0xAB 0xBA` header + `buf[0x207]=0xFF` | none |
+| 172 gurgling-stream | whole board one colour, palette advances 1/frame; last key per column ×1.3 (mod-256 wrap) | none |
+| 173 blooming-passion | rock chase (P=5) + column table reshuffles every ~31 frames; frontier boost `rgb·frac + 90` | none |
+| 174 sine | bouncing beam over 6×23 key matrix; palette advances per key along beam; sub-modes pick sweep variant; self-`Sleep(30)` | none |
+| 428 dynamic-spectrum | pre-baked 6×22 pattern: `palette[rowPage·256 + shade]` raw bytes, no memset; brightness-count feedback nudges `cfg+0x40C` tempo | indirect only |
+
+Spatial data: 9 embedded `Audion_Configs/*.ini` (extracted to
+`.tmp-aula-hub/re/audion_configs.txt`) — `[Key_Columns]`/`[Key_Rows]`
+give 6×N key-offset grids (byte offsets into the 512 B payload, 3 B/key);
+`[Dazzling_rock]`/`[Blooming_passion]` sections carry custom band maps
+(`|` = band groups, `,` = keys). Only those two modes have custom maps;
+the rest use the base column layout.
+
+Our port (`ModeRenderer` in `crates/music/src/mixer.rs`,
+`--engine modes --effect <name>`): same shader structure over the
+K1 Pro keymap geometry — 6 x-bucketed columns (top→bottom order),
+6×22 cell grid for the pattern mode, dt-scaled timing. Vendor-only
+details dropped or approximated: per-column divisor bytes — the ini
+carries no divisor field, so `colobj+4` is derived at runtime and
+column length is the best available proxy (verified: clouds-rise
+reads `colobj+4` low byte as the fmod divisor); the `q & 0xff` fmod quirk, `Sleep()` pacing,
+`0xAB 0xBA`/`0xFF` header bytes (our cmd-8 frame already carries its
+own header), palette `ColorTyp` runtime tables (mapped to our
+`Palette`), and the 428 feedback loop.
+
 ## Not yet extracted
 
-- Frame byte layout inside `HIDCom` (planar vs interleaved, header) —
-  needs disassembly of the HIDCom send path (not exported; locate via
-  xrefs to `hid_write`/`hid_send_feature_report` imports).
-- ASEffect DSP internals (FFT size, bands, beat detector, per-effect
-  shaders) — each is a few-KB function cluster; objdump-level RE is
-  possible but slow; Ghidra headless on `xseg.dll` is the next step.
-- `MusicMAxisPlug_v1-0-0-5.exe` (hubx.pro, ~4.7 MB, UPX) — the Windows
-  audio-capture helper the webapp downloads; still downloading at time
-  of writing (`/tmp/MusicMAxisPlug.exe`).
+- ~~Frame byte layout inside `HIDCom`~~ — resolved above for the
+  MAxis helper (8-byte header + 512 B interleaved payload, cmd 0x08).
+  The xseg.dll `HIDCom` send path is presumably the same dialect but
+  was not disassembled.
+- ASEffect DSP internals inside `xseg.dll` itself (the XsEngine
+  variant) — Ghidra headless remains the next step if needed; the
+  MAxis helper already gave us the mode table + frame format.
+- `rhythmColorList` palettes are runtime config from the hub, not
+  embedded — `ColorTyp` is an index into a per-device list.
 
 ## Related
 
@@ -73,23 +148,39 @@ Actor/message framework (`ea_mgr` = manager, `ea_actor` = actor base,
   6 modes (`169-173` named + `428` "dynamic spectrum"), color list,
   `bypc-MAxis://` plugin handshake.
 
-## F75 layer-mixer port (2026-11-25)
+## Layer-mixer engine (2026-11-25, reworked)
 
-The macOS reference (`raghavt20/aula-f75-macos`, MIT) was ported into
-`crates/music/src/f75.rs` as `VendorEngine` and exposed via
-`omg kb916 light music --engine f75` (`--effect` = comma-separated
-vendor layer list, `--palette`, `--speed`). Layers: solid, breathing,
-lave, starry, spectrum, ripple, pulse, rain — mixer sums per-layer
-renders scaled by vendor `defaultLevel`, beat rule = vendor bass
-threshold OR'd with our flux beat. Frames are interleaved LED×RGB
-(`led = col*6+row` on the F75 map); `--pixel-order planar` converts
-back for the K1 Pro slot order.
+`crates/music/src/mixer.rs` is the default renderer behind
+`omg kb916 light music --engine mixer` (`legacy` keeps the older
+BeatViz/SpectrumViz/PulseViz path). It is a generic 126-slot additive
+layer mixer:
 
-Offline contrast sim (`cargo run -p omg-music --example f75_sim`,
-kick every 0.5 s): pulse-only floor 0.08 / peak 0.32, ripple-only
-0.03 / 0.04, spectrum-only flat 0.12 (bands held constant), default
-pulse+ripple floor 0.11 / peak 0.35 — versus the legacy BeatViz
-which bottomed at ~0.25 mean between beats. The pulse layer's
-`env > 0.02` hard gate means true silence still renders all-black
-(unit-tested). Live hardware verification pending — needs music
-playing through system loopback.
+- **Geometry** — per-slot `KeyPoint`s built from the device keymap
+  (`kb916_music::key_cells`, x in key units / row in row units), with a
+  21×6 `grid_geometry` fallback when the keymap can't be read.
+- **Layers** — `solid`, `breathing`, `wave`, `starry`, `spectrum`,
+  `ripple`, `pulse`, `rain`; the mixer sums each layer's per-slot RGB
+  scaled by its level (`name=0.5` in `--effect` overrides the default).
+- **Presets** — `PRESETS` names curated layer+palette scenes
+  (`spectrum`, `equalizer`, `party`, `lava`, `rainstorm`, `starry`,
+  `pulse`, `breathing`, `wave`, `spectrum-stars`); `--effect <name>`
+  accepts a preset or a comma-separated layer list, `--palette auto`
+  keeps the preset palette.
+- **Feature feed** — `make_feat` applies AGC + `--sensitivity` once;
+  beat = bass-onset rule OR'd with the dsp flux beat flag; palette hue
+  drifts per-second (frame-rate independent).
+- **Packing** — `pack_frame` emits planar or interleaved RGB per
+  `--pixel-order`.
+
+`--source system` now works on Windows too: WASAPI render-endpoint
+loopback (`wasapi` crate, dedicated `omg-music-loopback` thread,
+event-driven shared-mode capture, f32 stereo → mono) alongside the
+macOS ScreenCaptureKit backend.
+
+Offline contrast sim (kick every 0.5 s): pulse-only floor 0.08 /
+peak 0.32, ripple-only 0.03 / 0.04, spectrum-only flat 0.12, mixed
+floor 0.11 / peak 0.35 — versus the legacy BeatViz which bottomed at
+~0.25 mean between beats. The pulse layer's `env > 0.02` hard gate
+means true silence still renders all-black (unit-tested). Live
+hardware verification pending — needs music playing through system
+loopback.

@@ -1,3 +1,6 @@
 /target
 Cargo.lock.bak
 .DS_Store
+
+# local RE scratch (AULA teardown extracts)
+.tmp-aula-hub/

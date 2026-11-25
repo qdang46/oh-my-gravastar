@@ -69,8 +69,8 @@ use omg_hid::Link;
 use serde::Serialize;
 
 pub mod advkey;
-pub mod macro916;
 pub mod light;
+pub mod macro916;
 pub mod wireless;
 
 // ── Wire constants (docs/protocol-khub916.md §2/§6) ─────────────────────
@@ -936,7 +936,9 @@ impl Khub916 {
         let arg = (layer & 3) | ((system & 1) << 2);
         let mut values = self.key_values(arg)?;
         if values.is_empty() {
-            bail!("khub916 keymap read for arg 0x{arg:02X} returned no entries — refusing to write");
+            bail!(
+                "khub916 keymap read for arg 0x{arg:02X} returned no entries — refusing to write"
+            );
         }
         // The device reports one fixed slot count per model for every arg,
         // so compare against the other layers before trusting this one.
@@ -1263,9 +1265,7 @@ pub fn catalog_screen(model: &str) -> Option<ScreenTopology> {
 /// (screen spec §4: `((r>>3)&31)<<11 | ((g>>2)&63)<<5 | ((b>>3)&31)`,
 /// high byte first; alpha is dropped).
 pub fn rgb565_be(r: u8, g: u8, b: u8) -> [u8; 2] {
-    let v = (((r >> 3) & 31) as u16) << 11
-        | (((g >> 2) & 63) as u16) << 5
-        | ((b >> 3) & 31) as u16;
+    let v = (((r >> 3) & 31) as u16) << 11 | (((g >> 2) & 63) as u16) << 5 | ((b >> 3) & 31) as u16;
     [(v >> 8) as u8, (v & 0xFF) as u8]
 }
 
@@ -1273,9 +1273,15 @@ impl Khub916 {
     /// Build a screen packet: 7-byte prefix + payload at offset 7,
     /// zero-padded to 519. Works for all screen commands — cmd 12 simply
     /// uses its frame/chunk indices as prefix bytes 2/3.
-    fn screen_packet(prefix: [u8; HEADER_LEN], payload: &[u8]) -> Result<[u8; FEATURE_PAYLOAD_BYTES]> {
+    fn screen_packet(
+        prefix: [u8; HEADER_LEN],
+        payload: &[u8],
+    ) -> Result<[u8; FEATURE_PAYLOAD_BYTES]> {
         if payload.len() > FEATURE_PAYLOAD_BYTES - HEADER_LEN {
-            bail!("khub916 screen packet too large: {} payload bytes", payload.len());
+            bail!(
+                "khub916 screen packet too large: {} payload bytes",
+                payload.len()
+            );
         }
         let mut pkt = [0u8; FEATURE_PAYLOAD_BYTES];
         pkt[..HEADER_LEN].copy_from_slice(&prefix);
@@ -1314,10 +1320,7 @@ impl Khub916 {
             frame_interval_ms as u8,
             (frame_interval_ms >> 8) as u8,
         ];
-        let pkt = Self::screen_packet(
-            [CMD_SCREEN_BEGIN_END, 0, 0, 0x01, 0, 0x05, 0x00],
-            &payload,
-        )?;
+        let pkt = Self::screen_packet([CMD_SCREEN_BEGIN_END, 0, 0, 0x01, 0, 0x05, 0x00], &payload)?;
         self.screen_write(&pkt)
     }
 
@@ -1334,10 +1337,7 @@ impl Khub916 {
             frame_interval_ms as u8,
             (frame_interval_ms >> 8) as u8,
         ];
-        let pkt = Self::screen_packet(
-            [CMD_SCREEN_BEGIN_END, 0, 0, 0x01, 0, 0x05, 0x00],
-            &payload,
-        )?;
+        let pkt = Self::screen_packet([CMD_SCREEN_BEGIN_END, 0, 0, 0x01, 0, 0x05, 0x00], &payload)?;
         self.screen_write(&pkt)
     }
 
@@ -1365,9 +1365,7 @@ impl Khub916 {
         }
         let chunks = frame.len().div_ceil(SCREEN_CHUNK_BYTES);
         if chunks > SCREEN_MAX_CHUNKS_PER_FRAME {
-            bail!(
-                "khub916 screen: frame needs {chunks} chunks, max {SCREEN_MAX_CHUNKS_PER_FRAME}"
-            );
+            bail!("khub916 screen: frame needs {chunks} chunks, max {SCREEN_MAX_CHUNKS_PER_FRAME}");
         }
         for chunk_index in 0..chunks {
             let start = chunk_index * SCREEN_CHUNK_BYTES;
@@ -1437,7 +1435,9 @@ impl Khub916 {
     /// separate screen interface is unknown (screen spec §8).
     pub fn set_screen_clock(&mut self, clock: &ScreenClock) -> Result<()> {
         let payload = [
-            0x00, 0x00, 0x00, // bytes 7-9 reserved
+            0x00,
+            0x00,
+            0x00, // bytes 7-9 reserved
             clock.year as u8,
             (clock.year >> 8) as u8,
             clock.month,
@@ -1829,8 +1829,14 @@ mod tests {
         let sh = shared.borrow();
         // begin + 3 chunks + end = 5 writes.
         assert_eq!(sh.feature_writes.len(), 5);
-        assert_eq!(&sh.feature_writes[0].1[..12], &[13, 0, 0, 1, 0, 5, 0, 0x40, 2, 0, 40, 0]);
-        assert_eq!(&sh.feature_writes[4].1[..12], &[13, 0, 0, 1, 0, 5, 0, 0x00, 2, 0, 40, 0]);
+        assert_eq!(
+            &sh.feature_writes[0].1[..12],
+            &[13, 0, 0, 1, 0, 5, 0, 0x40, 2, 0, 40, 0]
+        );
+        assert_eq!(
+            &sh.feature_writes[4].1[..12],
+            &[13, 0, 0, 1, 0, 5, 0, 0x00, 2, 0, 40, 0]
+        );
         // frame 1 chunk 0 carries frame_index=1.
         assert_eq!(&sh.feature_writes[3].1[..7], &[12, 0, 1, 0, 0, 0, 2]);
     }
@@ -1841,7 +1847,13 @@ mod tests {
         let mut kb = Khub916::new(Box::new(link), 6);
         assert!(kb.screen_frame(256, &[1], ScreenPacing::unpaced()).is_err());
         assert!(kb.screen_frame(0, &[], ScreenPacing::unpaced()).is_err());
-        assert!(kb.screen_frame(0, &[0u8; SCREEN_MAX_CHUNKS_PER_FRAME * SCREEN_CHUNK_BYTES + 1], ScreenPacing::unpaced()).is_err());
+        assert!(kb
+            .screen_frame(
+                0,
+                &[0u8; SCREEN_MAX_CHUNKS_PER_FRAME * SCREEN_CHUNK_BYTES + 1],
+                ScreenPacing::unpaced()
+            )
+            .is_err());
         assert!(kb.screen_begin(SCREEN_MAX_FRAMES + 1, 33).is_err());
         assert!(kb.screen_push(&[], 33, ScreenPacing::unpaced()).is_err());
     }
@@ -1858,10 +1870,7 @@ mod tests {
         let (_, pkt) = &sh.feature_writes[0];
         assert_eq!(&pkt[..7], &[11, 0, 0, 1, 0, 14, 0]);
         // bytes 7-9 zero, then year LE, month, day, h, m, s, week.
-        assert_eq!(
-            &pkt[7..18],
-            &[0, 0, 0, 0xEA, 0x07, 11, 24, 13, 45, 7, 2]
-        );
+        assert_eq!(&pkt[7..18], &[0, 0, 0, 0xEA, 0x07, 11, 24, 13, 45, 7, 2]);
         assert!(ScreenClock::new(2026, 13, 1, 0, 0, 0, 0).is_err());
         assert!(ScreenClock::new(2026, 1, 1, 24, 0, 0, 0).is_err());
         assert!(ScreenClock::new(2026, 1, 1, 0, 0, 0, 7).is_err());
@@ -1992,8 +2001,8 @@ mod tests {
         let mut edited = base.clone();
         edited[4] = 0x0800_0000;
         let link = MockLink::new(vec![
-            Ok(keymap_read_response(0, &base)), // base read
-            Ok(keymap_read_response(1, &base)), // reference probe
+            Ok(keymap_read_response(0, &base)),   // base read
+            Ok(keymap_read_response(1, &base)),   // reference probe
             Ok(keymap_read_response(0, &edited)), // read-back
         ]);
         let shared = link.shared();
@@ -2028,7 +2037,7 @@ mod tests {
         let full: Vec<u32> = (0..126).map(|i| 0x2000 + i).collect();
         let link = MockLink::new(vec![
             Ok(keymap_read_response(0, &short)), // truncated base
-            Ok(keymap_read_response(1, &full)), // reference probe
+            Ok(keymap_read_response(1, &full)),  // reference probe
         ]);
         let shared = link.shared();
         let mut kb = Khub916::new(Box::new(link), 6);
@@ -2084,18 +2093,19 @@ mod tests {
         let mut edited = base.clone();
         edited[0] = 0x29;
         let link = MockLink::new(vec![
-            Ok(keymap_read_response(0, &base)),  // base read
-            Ok(keymap_read_response(1, &[])),    // probe: Fn layer unused
+            Ok(keymap_read_response(0, &base)),   // base read
+            Ok(keymap_read_response(1, &[])),     // probe: Fn layer unused
             Ok(keymap_read_response(0, &edited)), // read-back
         ]);
         let mut kb = Khub916::new(Box::new(link), 6);
-        assert!(kb
-            .write_keymap_rmw(0, 0, |values| {
+        assert!(
+            kb.write_keymap_rmw(0, 0, |values| {
                 values[0] = 0x29;
                 Ok(())
             })
             .unwrap()
-            .verified);
+            .verified
+        );
     }
 
     #[test]
