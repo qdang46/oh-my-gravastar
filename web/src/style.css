@@ -1686,6 +1686,15 @@ input[type='color'] {
     -webkit-tap-highlight-color: transparent;
   }
 
+  /* 44 px touch targets (WCAG/Apple HIG) for the primary controls. */
+  .topbar-actions button,
+  .btn,
+  .sec-btn,
+  .macro-btn,
+  .apply-btn {
+    height: 44px;
+  }
+
   .kv {
     grid-template-columns: 1fr;
     gap: 0;
