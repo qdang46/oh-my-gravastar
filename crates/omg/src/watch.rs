@@ -61,8 +61,8 @@ impl WatchRules {
     pub fn load(path: &str) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read rules file '{path}'"))?;
-        let rules: Self =
-            serde_json::from_str(&text).with_context(|| format!("'{path}' is not valid rules JSON"))?;
+        let rules: Self = serde_json::from_str(&text)
+            .with_context(|| format!("'{path}' is not valid rules JSON"))?;
         for (i, r) in rules.rules.iter().enumerate() {
             if r.app.is_none() && r.bundle.is_none() {
                 bail!("rules[{i}] needs at least one of 'app' or 'bundle'");
@@ -158,8 +158,14 @@ mod tests {
     #[test]
     fn app_substring_matches_case_insensitive() {
         let r = rules(r#"{"rules":[{"app":"safari","profile":2}]}"#);
-        assert_eq!(r.profile_for(&app("Safari", Some("com.apple.Safari"))), Some(2));
-        assert_eq!(r.profile_for(&app("Safari Technology Preview", None)), Some(2));
+        assert_eq!(
+            r.profile_for(&app("Safari", Some("com.apple.Safari"))),
+            Some(2)
+        );
+        assert_eq!(
+            r.profile_for(&app("Safari Technology Preview", None)),
+            Some(2)
+        );
         assert_eq!(r.profile_for(&app("Terminal", None)), None);
     }
 
@@ -176,9 +182,7 @@ mod tests {
 
     #[test]
     fn app_and_bundle_both_must_match() {
-        let r = rules(
-            r#"{"rules":[{"app":"code","bundle":"com.microsoft.VSCode","profile":0}]}"#,
-        );
+        let r = rules(r#"{"rules":[{"app":"code","bundle":"com.microsoft.VSCode","profile":0}]}"#);
         assert_eq!(
             r.profile_for(&app("Visual Studio Code", Some("com.microsoft.VSCode"))),
             Some(0)
@@ -192,9 +196,7 @@ mod tests {
 
     #[test]
     fn first_match_wins() {
-        let r = rules(
-            r#"{"rules":[{"app":"safari","profile":0},{"app":"safari","profile":1}]}"#,
-        );
+        let r = rules(r#"{"rules":[{"app":"safari","profile":0},{"app":"safari","profile":1}]}"#);
         assert_eq!(r.profile_for(&app("Safari", None)), Some(0));
     }
 
