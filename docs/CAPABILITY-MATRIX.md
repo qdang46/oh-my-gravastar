@@ -57,6 +57,7 @@ Legend: ✅ live-verified · 🟡 code-tested · 🔵 code-verified only · ⚪ 
 | Sleep timer / power saving | ✅ `set sleep`, `profile get` | 🟡 | 🔵 | 🟡 profile fields | — | 🟡 |
 | Profile export (schema v1) | ✅ `omg profile export` | 🟡 | 🔵 | ✅ export | ✅ export (read-only) | ✅ export |
 | Profile import / restore | ❌ export-only (no whole-profile mapping) | ❌ | ❌ | 🟡 `profile import` he-v2 | ❌ no write path | 🟡 import |
+| Desired-state config apply (`omg config`) | 🟡 keymap patch/replace, macros, sleep_seconds | — (screen iface has own protocol id) | ❌ capability-gated | ⚪ schema-valid, apply-rejected (no lowering yet) | ❌ read-only | 🟡 settings/lighting replace |
 | Factory reset / firmware update | ⛔ blacklisted | ⛔ | ⛔ (cmd 6 not implemented, `wireless.rs:68`) | ⛔ `02 01/08/0A/10 02/02 0F 01/02 09`, cat `0x0C/0E/0F` | ⛔ no write path | ⛔ `05/06/09/31/B0–B7`, non-`WRITABLE` ranges |
 
 ## 3. Capability-registry proposal (consumed by UI + agent)

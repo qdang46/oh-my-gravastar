@@ -29,6 +29,15 @@ Before any plan is built, every op argument passes schema validation:
   macro ≤ region capacity.
 - **Enums**: lighting mode ∈ `LIGHT_MODES` ids; layer ∈ device layer count
   from capability registry (khub916 = 4).
+- **Desired-state config** (`omg config`, `docs/device-config-schema.md`):
+  layer-1 structural validation is Draft 2020-12 against the single
+  shared artifact `schemas/device-config.schema.json` — consumed by the
+  Rust CLI (`crates/omg/src/config.rs`, `jsonschema` crate, embedded via
+  `include_str!`) and the Web app (`web/src/device-config.ts`, AJV
+  2020-12, same file imported — never copied). All ranges above apply
+  inside that artifact; anything the schema cannot express statically
+  (device-reported slot counts, unknown-tag base reads, firmware gates)
+  remains a layer-2/3 check in the apply engine.
 
 ## 2. Layer 2 — Capability & compatibility
 
@@ -62,6 +71,18 @@ Policy is a pure function `classify(op) -> L0..L4` in
 `web/src/safety/policy.ts` (bead `sid`), keyed on op type — not on caller.
 The CLI enforces the same classes via `--yes` (L2/L3) and omission (L4);
 `--dry-run` covers L1.
+
+`omg config apply` inherits this unchanged: `--dry-run`/no flag is L1
+(validate + plan only, no bytes sent), `--yes` is L2 per effective write.
+A desired-state document can never express an L3 op — disruptive fields
+(e.g. HE `polling_hz`, which restarts the keyboard) are either absent from
+the schema or reported `not_applied` until their lowering implements the
+L3 confirmation path explicitly. L4 has no representation in the config
+envelope at all. Each `--yes` apply snapshots every section before its
+first write (`<id>.snapshots.json`), journals per-section results
+(`<id>.journal.json`), stops at the first hard failure, and restores via
+`omg config rollback <id> --yes` — the same backup→write→verify→journal
+shape as §4, scoped per section rather than per plan step.
 
 ## 4. Layer 4 — Transaction executor
 

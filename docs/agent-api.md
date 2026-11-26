@@ -501,6 +501,13 @@ will be overwritten.
 - **No L3 ops in schema v1.** `kb polling set` and calibration stay CLI/
   UI-only until the schema grows an op kind with the stronger-confirmation
   flow.
+- **Desired-state config is not an agent op.** The `device-config`
+  envelope (`schemas/device-config.schema.json`, `omg config`, and the
+  web Custom config page) is a separate validated format with its own
+  structural schema — it is intentionally not part of this op
+  vocabulary, so no agent plan can smuggle a whole-document write past
+  per-op policy classification. `web/src/config-apply.ts` lowers it to
+  the same `PlannedOp`/`runTransaction` path the agent executor uses.
 - **No cross-device execution.** Ops carry `device_selector` per op and
   the plan echoes the unique set as `device_selectors`, so multi-device
   *intent* is representable and maps 1:1 onto the `device` field of

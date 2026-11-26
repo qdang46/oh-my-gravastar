@@ -3,11 +3,15 @@
 Offline-capable web frontend for GravaStar keyboards, speaking the **khub916
 wired** protocol (Web HubX Pro `916` engine) over **WebHID**.
 
-This is a **phase-3 scaffold MVP**: it connects to a keyboard, reads device
-info / battery / profile / keymap / custom light colours / raw light & macro
-regions, and renders them. **It is read-only** — only query commands
-(130/131/132/133/134/135/138) are implemented; no write opcodes exist in the
-code.
+This is an offline PWA for GravaStar devices (khub916 wired writes live;
+HE/Compx/SparkPlayJoy surfaces vary by feature). Reads cover device info /
+battery / profile / keymap / custom light colours / raw light & macro
+regions; writes go through the safety layer (`web/src/safety/`) — a
+confirm dialog + pre-write snapshot stand in for the CLI's `--yes`. The
+**Custom config (JSON)** page validates desired-state documents against
+the shared `schemas/device-config.schema.json` artifact (AJV, Draft
+2020-12 — the same file `omg config` uses); applying desired-state docs
+from the web is not yet wired and the page says so explicitly.
 
 ## Requirements
 

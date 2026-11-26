@@ -34,3 +34,19 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  schema:
+    name: device-config JSON Schema (Draft 2020-12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned schema-test deps
+        run: pip install -r schemas/requirements.txt
+
+      - name: Structural schema tests
+        run: python schemas/test_schema.py

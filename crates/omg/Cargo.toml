@@ -23,3 +23,4 @@ omg-proto-sparkplayjoy = { path = "../proto-sparkplayjoy" }
 omg-music = { path = "../music" }
 serde.workspace = true
 serde_json.workspace = true
+jsonschema = "0.30"

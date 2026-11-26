@@ -198,3 +198,29 @@ plan touched, in reverse order. Coverage:
 Every restore is itself a verified write through the normal command
 path; results land in the journal under `rollback.results` with
 `success|unverified|failed|skipped`.
+
+## Relationship to `omg config` (desired-state)
+
+`plan` and `config` are complementary, not interchangeable:
+
+- **`config`** (`omg config apply`, `docs/device-config-schema.md`) is a
+  *desired-state* document: it describes the target configuration of one
+  device and lets the engine diff it against live state. Use it for
+  "make this device look like X".
+- **`plan`** is an *ordered action* document: an explicit sequence of
+  operations with per-step verify/journal/rollback, spanning multiple
+  devices and mixing reads with writes. Use it for workflows
+  ("probe, then set these three things, then verify").
+
+`config` is deliberately **not** a plan family today: a plan step resolves
+its device up front (`required_kind` → one `DeviceKind`), while a config
+document selects its device from its own `device` block across three
+protocol families. `config apply` therefore keeps its own journal +
+snapshot store (`<id>.journal.json` / `<id>.snapshots.json` in the same
+directory) and its own restore path (`omg config rollback <id> --yes`).
+Wiring `config apply` in as a plan step is a future change that must also
+teach `step_sections`/`khub916_needs` that plan-level rollback cannot see
+inside the envelope — until then a plan must not claim coverage for it.
+Conversely, action-verbs (factory reset, firmware update, pairing,
+screen push, live streaming, calibration) are never config fields —
+they stay plan/CLI operations only.

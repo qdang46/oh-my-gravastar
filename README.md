@@ -169,7 +169,17 @@ omg kb916 light music --effect pulse --yes       # beat flash | bass | ambient |
 omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
 omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
 omg kb916 doctor fn                  # read-only Fn-layer check: dead slots, opaque tags, Fn-key binding
+
+omg config schema                    # print the desired-state JSON Schema (Draft 2020-12)
+omg config validate dev.json         # offline structural validation (all errors + JSON paths)
+omg config apply dev.json            # device match + per-section plan, no writes
+omg config apply dev.json --yes      # apply supported sections, verify by read-back
 ```
+
+`omg config` implements the desired-state envelope in
+`docs/device-config-schema.md` (`schemas/device-config.schema.json`).
+Apply coverage is intentionally partial — unsupported sections are
+reported `not_applied` with a reason, never silently skipped.
 
 Writes require `--yes` and are verified by read-back (live-verified on a
 K1 Pro):

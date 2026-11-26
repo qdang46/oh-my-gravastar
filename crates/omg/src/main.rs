@@ -18,6 +18,7 @@ use omg_proto_mouse as pm;
 use omg_proto_sparkplayjoy as spj;
 use serde_json::json;
 
+mod config;
 mod device;
 mod kb916_adv;
 mod plan;
@@ -110,6 +111,13 @@ enum Commands {
     Device {
         #[command(subcommand)]
         command: DeviceCommands,
+    },
+    /// Desired-state device configuration (docs/device-config-schema.md):
+    /// print the JSON Schema artifact, validate offline, or plan/apply
+    /// a config document against a connected device.
+    Config {
+        #[command(subcommand)]
+        command: config::ConfigCommands,
     },
     /// Multi-step device plans as JSON (docs/plan-json.md): create a plan
     /// from a document, inspect/validate it, apply steps sequentially
@@ -406,6 +414,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Profile { command } => cmd_profile(cli, command),
         Commands::Schema { path } => cmd_schema(cli, path),
         Commands::Device { command } => cmd_device(cli, command),
+        Commands::Config { command } => config::run(cli, command),
         Commands::Plan { command } => plan::cmd_plan(cli, command),
     }
 }
@@ -895,7 +904,7 @@ fn mouse_err(e: anyhow::Error) -> anyhow::Error {
 /// Select a Compx mouse device and open it. Identifies the mouse so sensor
 /// limits are known for validation and clamping. `Ok(None)` = no mouse
 /// matched (exit code 2).
-fn open_mouse(cli: &Cli) -> Result<Option<(DeviceInfo, pm::CompxMouse)>> {
+pub(crate) fn open_mouse(cli: &Cli) -> Result<Option<(DeviceInfo, pm::CompxMouse)>> {
     let devices = find_devices()?;
     let mice: Vec<DeviceInfo> = devices
         .into_iter()
@@ -1403,7 +1412,7 @@ fn check_light_level(v: u8, what: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_button(kind: &str, param: Option<&str>) -> Result<(u8, u16)> {
+pub(crate) fn parse_button(kind: &str, param: Option<&str>) -> Result<(u8, u16)> {
     let k = match kind {
         "disabled" => pm::BUTTON_DISABLED,
         "mouse" => pm::BUTTON_MOUSE,
@@ -4170,11 +4179,10 @@ enum Kb916Screen {
     },
     /// Push an image/GIF to the screen — refused: the GIF→RGB565 frame
     /// pipeline is client-side and not implemented, and screen writes are
-    /// fire-and-forget feature reports with no read-back verify.
-    Push {
-        /// Image or GIF file (unsupported today — see the error message).
-        file: String,
-    },
+    /// fire-and-forget feature reports with no read-back verify. Takes no
+    /// arguments; a file path isn't accepted since the command always
+    /// refuses regardless of input (see the error message).
+    Push,
     /// Sync the screen RTC (cmd 11, wired keyboard interface) — refused:
     /// fire-and-forget write with no read-back, hardware-unverified.
     Clock,
@@ -5177,7 +5185,7 @@ fn cmd_kb916_screen(cli: &Cli, command: &Kb916Screen) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Kb916Screen::Push { .. } => kb916_unsupported(
+        Kb916Screen::Push => kb916_unsupported(
             cli,
             "khub916 screen image push",
             "the GIF→RGB565 frame pipeline is client-side and not implemented, and screen writes (cmd 12/13) are fire-and-forget feature reports with no read-back verify — the CLI refuses blind writes (docs/protocol-khub916-screen.md §2/§4)",
@@ -5668,7 +5676,7 @@ fn select_device<'a>(
 
 /// A selector matches the HID path (exact or suffix), `VID:PID`, or a
 /// case-insensitive substring of the product/manufacturer strings.
-fn device_matches(d: &DeviceInfo, sel: &str) -> bool {
+pub(crate) fn device_matches(d: &DeviceInfo, sel: &str) -> bool {
     if d.path == sel || d.path.ends_with(sel) {
         return true;
     }
