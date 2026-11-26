@@ -18,6 +18,7 @@ import {
 } from '../src/config-apply.ts';
 import { macroKeyValue } from '../src/proto/macro916.ts';
 import semanticFixtures from '../../schemas/fixtures/semantic-cases.json' with { type: 'json' };
+import planFixtures from '../../schemas/fixtures/plan-cases.json' with { type: 'json' };
 
 const KHUB = { protocol: 'khub916', vid: 0x1e7d, pid: 0xf501 };
 
@@ -382,6 +383,30 @@ function mockSession(over: Partial<ConfigSession> = {}): MockSession {
     } else {
       const missing = c.expect_errors.filter((w) => !joined.includes(w));
       check(`semantic fixture: ${c.name}`, missing.length === 0, `missing ${missing}`);
+    }
+  }
+}
+
+// ── shared plan fixtures (schemas/fixtures/plan-cases.json) ──
+// khub916 capability gate pinned identically to Rust plan_sections.
+
+{
+  const fixture = planFixtures as unknown as {
+    cases: {
+      name: string;
+      doc: Record<string, unknown>;
+      expect: Record<string, 'planned' | 'not_applied'>;
+    }[];
+  };
+  for (const c of fixture.cases) {
+    const plans = planConfigSections(c.doc);
+    const byName = new Map(plans.map((p) => [p.name, p.status]));
+    for (const [section, want] of Object.entries(c.expect)) {
+      check(
+        `plan fixture ${c.name}: ${section}=${want}`,
+        byName.get(section) === want,
+        `got ${byName.get(section)}`,
+      );
     }
   }
 }

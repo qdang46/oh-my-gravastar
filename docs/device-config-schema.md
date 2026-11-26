@@ -752,7 +752,11 @@ there's a specific document shape to apply it to:
   `configSemanticErrors` (`web/src/config-apply.ts`) — and both consume
   `schemas/fixtures/semantic-cases.json` (duplicate patch indices,
   (arg, slot) conflicts, duplicate macro indices, sparkplayjoy
-  rejection) so the checks cannot drift apart. The Web
+  rejection) so the checks cannot drift apart. The capability gate is
+  pinned the same way for the khub916 subset via
+  `schemas/fixtures/plan-cases.json` (consumed by `plan_sections` tests
+  and `planConfigSections` smoke); compx expectations legitimately
+  differ — the web app has no Compx write path. The Web
   guided apply (`web/src/config-apply.ts` + the Custom config page)
   lowers the same khub916 subset through the safety transaction layer
   (confirm = approval, SnapshotStore restore point, journal,

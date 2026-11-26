@@ -132,12 +132,13 @@ fn matching_devices(doc: &Value) -> Result<Vec<DeviceInfo>> {
 
 // ── Per-section plan ───────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SectionStatus {
     ApplyPlanned,
     NotApplied,
 }
 
+#[derive(Debug)]
 struct SectionPlan {
     name: &'static str,
     status: SectionStatus,
@@ -1722,6 +1723,42 @@ mod tests {
                     let want = want.as_str().unwrap();
                     assert!(joined.contains(want), "{name}: missing '{want}' in: {joined}");
                 }
+            }
+        }
+    }
+
+    /// Shared capability-gate fixtures — khub916 cases pinned identically
+    /// for `planConfigSections` in the web smoke test.
+    #[test]
+    fn shared_plan_fixtures() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/fixtures/plan-cases.json"
+        ))
+        .expect("plan fixtures readable");
+        let cases: Value = serde_json::from_str(&text).unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let plans = plan_sections(&case["doc"]);
+            let got: BTreeMap<&str, &str> = plans
+                .iter()
+                .map(|p| {
+                    (
+                        p.name,
+                        match p.status {
+                            SectionStatus::ApplyPlanned => "planned",
+                            SectionStatus::NotApplied => "not_applied",
+                        },
+                    )
+                })
+                .collect();
+            for (section, want) in case["expect"].as_object().unwrap() {
+                let want = want.as_str().unwrap();
+                assert_eq!(
+                    got.get(section.as_str()).copied(),
+                    Some(want),
+                    "{name}: section {section} expected {want}, plans: {plans:?}"
+                );
             }
         }
     }
