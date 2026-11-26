@@ -477,10 +477,7 @@ fn apply_khub_keymap(kb: &mut omg_proto_khub916::Khub916, km: &Value) -> Result<
     if !outcome.verified {
         bail!("{arg_desc}: replace write not verified by read-back");
     }
-    Ok(vec![format!(
-        "{arg_desc}: replaced {} slots",
-        wants.len()
-    )])
+    Ok(vec![format!("{arg_desc}: replaced {} slots", wants.len())])
 }
 
 /// Apply the `macros` section: patch entries by index (`next` appends),
@@ -490,10 +487,7 @@ fn apply_khub_keymap(kb: &mut omg_proto_khub916::Khub916, km: &Value) -> Result<
 /// including a full bind preflight — so a bad bind can never leave a
 /// rewritten region behind a failed section. Rollback snapshots are
 /// captured separately before this runs (`snap_khub916`).
-fn apply_khub_macros(
-    kb: &mut omg_proto_khub916::Khub916,
-    macros: &[Value],
-) -> Result<Vec<String>> {
+fn apply_khub_macros(kb: &mut omg_proto_khub916::Khub916, macros: &[Value]) -> Result<Vec<String>> {
     let raw = kb.macro_region()?;
     let mut entries = macro916::parse_macro_region(&raw)?;
 
@@ -955,7 +949,9 @@ fn verify_rollback_device(snap_dev: &Value, got: &DeviceInfo) -> Result<()> {
         ("pid", wp, got.pid as u64),
         (
             "usage_page",
-            snap_dev["usage_page"].as_u64().unwrap_or(got.usage_page as u64),
+            snap_dev["usage_page"]
+                .as_u64()
+                .unwrap_or(got.usage_page as u64),
             got.usage_page as u64,
         ),
     ] {
@@ -1082,7 +1078,10 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                         );
                     }
                     println!("plan_hash: {hash}");
-                    println!("to apply: omg config apply {} --yes --approve {hash}", file.display());
+                    println!(
+                        "to apply: omg config apply {} --yes --approve {hash}",
+                        file.display()
+                    );
                 }
                 return Ok(ExitCode::SUCCESS);
             }
@@ -1110,9 +1109,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
             // apply; the journal is rewritten after every section so a
             // crash mid-apply still leaves an accurate record.
             let protocol = doc["device"]["protocol"].as_str().unwrap_or("");
-            let has_planned = plan
-                .iter()
-                .any(|p| p.status == SectionStatus::ApplyPlanned);
+            let has_planned = plan.iter().any(|p| p.status == SectionStatus::ApplyPlanned);
 
             // Open the session and capture read-only snapshots first.
             // No write happens until `persist_snapshot` succeeds.
@@ -1162,11 +1159,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                     .expect("session opened when sections are plannable");
                 // Durable rollback record FIRST — abort before any write
                 // if it cannot be persisted.
-                apply_id = persist_snapshot(
-                    d,
-                    protocol,
-                    Value::Object(snap_sections.clone()),
-                )?;
+                apply_id = persist_snapshot(d, protocol, Value::Object(snap_sections.clone()))?;
                 if let Err(e) = write_apply_journal(
                     &apply_id,
                     file,
@@ -1367,9 +1360,14 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                     )
                 })
                 .count();
-            if let Err(e) =
-                write_apply_journal(&apply_id, file, &device_json, status, &json!(results), &hash)
-            {
+            if let Err(e) = write_apply_journal(
+                &apply_id,
+                file,
+                &device_json,
+                status,
+                &json!(results),
+                &hash,
+            ) {
                 eprintln!("warning: could not write final apply journal: {e:#}");
             }
 
@@ -1671,7 +1669,10 @@ mod tests {
 
     #[test]
     fn hex_roundtrip_and_validation() {
-        assert_eq!(unhex(&hex(&[0x00, 0x5a, 0xa5, 0xff])).unwrap(), vec![0, 0x5a, 0xa5, 0xff]);
+        assert_eq!(
+            unhex(&hex(&[0x00, 0x5a, 0xa5, 0xff])).unwrap(),
+            vec![0, 0x5a, 0xa5, 0xff]
+        );
         assert!(unhex("abc").is_err());
         assert!(unhex("zz").is_err());
         assert!(store_path("bad id!", "snapshots.json").is_err());
@@ -1683,7 +1684,11 @@ mod tests {
         let l = omg_proto_mouse::Light {
             on: true,
             mode: 3,
-            color: omg_proto_mouse::Rgb { r: 0x12, g: 0x34, b: 0x56 },
+            color: omg_proto_mouse::Rgb {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            },
             speed: 5,
             brightness: 7,
         };
@@ -1755,7 +1760,10 @@ mod tests {
             ],
         });
         let errs = semantic_errors(&doc).unwrap();
-        assert!(errs.iter().any(|e| e.contains("duplicate index 0")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("duplicate index 0")),
+            "{errs:?}"
+        );
         // "next" appends cannot collide with each other.
         let doc2 = json!({
             "schema_version": 1,
@@ -1782,7 +1790,10 @@ mod tests {
             "applied"
         );
         // Unverified write must not report success.
-        assert_eq!(overall_status(&[row("applied_unverified")]), "applied_unverified");
+        assert_eq!(
+            overall_status(&[row("applied_unverified")]),
+            "applied_unverified"
+        );
         assert_eq!(
             overall_status(&[row("applied_verified"), row("applied_unverified")]),
             "applied_unverified"
@@ -1819,7 +1830,10 @@ mod tests {
             } else {
                 for want in case["expect_errors"].as_array().unwrap() {
                     let want = want.as_str().unwrap();
-                    assert!(joined.contains(want), "{name}: missing '{want}' in: {joined}");
+                    assert!(
+                        joined.contains(want),
+                        "{name}: missing '{want}' in: {joined}"
+                    );
                 }
             }
         }
@@ -1889,7 +1903,10 @@ mod tests {
             "device": {"protocol":"khub916","vid":0x1e7d,"pid":0xf501},
             "settings": {"sleep_seconds": 60},
         });
-        assert_ne!(h1, plan_hash(&doc2, &dev(0x1e7d, 0xf501, 0), &plan_sections(&doc2)));
+        assert_ne!(
+            h1,
+            plan_hash(&doc2, &dev(0x1e7d, 0xf501, 0), &plan_sections(&doc2))
+        );
         assert_ne!(h1, plan_hash(&doc, &dev(0x1e7d, 0xf502, 0), &plan));
         assert_ne!(h1, plan_hash(&doc, &dev(0x1e7d, 0xf501, 1), &plan));
     }
@@ -1912,8 +1929,7 @@ mod tests {
         ));
         let path = dir.join("x.snapshots.json");
         save_store_json(&path, &json!({"sections":{"keymap":"aa"}})).unwrap();
-        let back: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let back: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(back["sections"]["keymap"], "aa");
         let _ = std::fs::remove_dir_all(&dir);
     }

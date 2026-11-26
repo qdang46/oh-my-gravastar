@@ -1,4 +1,14 @@
-# Plan JSON — `omg plan`
+# Plan JSON — `omg plan` (legacy command-plan format)
+
+> **Status: compatibility format.** This document describes the
+> *command-oriented* plan (`{version:1, steps:[{op,args}]}`) where `op`
+> is a leaf CLI command path. It remains supported for multi-step CLI
+> automation, but it is **not** the Agent configuration contract.
+>
+> The Agent configuration contract is the schema-driven desired-state
+> document (`omg config schema|validate|apply|rollback`) specified in
+> [device-config-schema.md](device-config-schema.md) with the shared
+> artifact at `schemas/device-config.schema.json`.
 
 Machine-readable multi-step device plans. This is the interchange format
 for agents (and later the web agent engine): describe desired changes as
@@ -49,12 +59,13 @@ Safety contract (docs/plan.md §2, docs/SAFETY-SPEC.md):
 ```
 
 - `version` must be `1` (`schema` is accepted as an alias).
-- `op` is a **leaf command path** from `omg schema`, space-separated,
+- `op` is a **leaf command path** from `omg cli-schema` (the
+  Clap-derived command listing), space-separated,
   restricted to the device-driving families `kb`, `kb916`, `mouse`,
-  `profile`. Introspection commands (`schema`, `device`, `devices`,
+  `profile`. Introspection commands (`cli-schema`, `device`, `devices`,
   `probe`) and `plan` itself cannot be planned.
 - `args` keys are clap **argument ids** (the `name` field of
-  `omg schema <cmd>`); the `--long` spelling (`interval-ms`) is also
+  `omg cli-schema <cmd>`); the `--long` spelling (`interval-ms`) is also
   accepted. Values are strings, numbers, booleans, or arrays (arrays
   repeat the token for `Vec` args like `codes`/`actions`/`colors`).
   Unknown args and clap-level errors (enums, ranges, required args,

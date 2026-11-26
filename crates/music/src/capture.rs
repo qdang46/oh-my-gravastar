@@ -2,10 +2,10 @@
 //!
 //! - [`MicSource`]: default input device via `cpal` (cross-platform).
 //!   Picks the first supported config with `SampleFormat::F32`.
-//! - [`SystemSource`] (macOS only): system audio loopback via
-//!   ScreenCaptureKit (`SCStream` with `captures_audio`). Requires the
-//!   "Screen Recording" TCC permission — first run triggers the macOS
-//!   prompt. Requests mono 48 kHz to keep PCM parsing trivial.
+//! - [`SystemSource`]: system-audio loopback — WASAPI render-endpoint
+//!   loopback on Windows (via `wasapi`), ScreenCaptureKit display audio
+//!   on macOS. No microphone involved: hears exactly what the speakers
+//!   play, like the official music mode.
 //!
 //! Both feed an `Arc<Mutex<Vec<f32>>>`; [`AudioSource::drain`] takes
 //! everything accumulated since the last call. The mutex is only ever
@@ -192,7 +192,12 @@ pub mod system {
                 .with_channel_count(1);
             let mut stream = SCStream::new(&filter, &config)?;
             let queue = Arc::new(Mutex::new(Vec::new()));
-            stream.add_output_handler(AudioHandler { queue: queue.clone() }, SCStreamOutputType::Audio)?;
+            stream.add_output_handler(
+                AudioHandler {
+                    queue: queue.clone(),
+                },
+                SCStreamOutputType::Audio,
+            )?;
             stream.start_capture()?;
             Ok(Self {
                 queue,
@@ -224,18 +229,151 @@ pub mod system {
 #[cfg(target_os = "macos")]
 pub use system::SystemSource;
 
-/// Construct the requested source. `system` is only available on macOS.
+// ── System audio (Windows WASAPI loopback) ─────────────────────────────
+
+#[cfg(target_os = "windows")]
+pub mod system {
+    use super::{push_capped, AudioSource, SampleQueue};
+    use anyhow::{Context, Result};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+    use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
+
+    const SAMPLE_RATE: usize = 48_000;
+    const CHANNELS: usize = 2;
+    /// How long the capture thread sleeps between buffer reads when no
+    /// event arrives (also the stop-flag poll interval).
+    const WAIT_MS: u32 = 200;
+
+    /// Loopback capture of the default render endpoint. A dedicated
+    /// thread owns the WASAPI stream (COM must live on one thread) and
+    /// pushes mono f32 into the shared queue.
+    pub struct SystemSource {
+        sample_rate: u32,
+        queue: SampleQueue,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl SystemSource {
+        pub fn start() -> Result<Self> {
+            let queue = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let q = queue.clone();
+            let s = stop.clone();
+            let thread = std::thread::Builder::new()
+                .name("omg-music-loopback".into())
+                .spawn(move || capture_loop(q, s))
+                .context("failed to spawn WASAPI loopback thread")?;
+            Ok(Self {
+                sample_rate: SAMPLE_RATE as u32,
+                queue,
+                stop,
+                thread: Some(thread),
+            })
+        }
+    }
+
+    impl AudioSource for SystemSource {
+        fn sample_rate(&self) -> u32 {
+            self.sample_rate
+        }
+        fn drain(&mut self) -> Vec<f32> {
+            std::mem::take(&mut *self.queue.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+        fn describe(&self) -> String {
+            format!("system (WASAPI loopback, {} Hz mono)", self.sample_rate)
+        }
+    }
+
+    impl Drop for SystemSource {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    fn capture_loop(queue: SampleQueue, stop: Arc<AtomicBool>) {
+        // COM must be initialised on the thread that uses it; an
+        // already-initialised apartment returns RPC_E_CHANGED_MODE,
+        // which is fine — the objects work either way.
+        let _ = initialize_mta();
+        if let Err(e) = run(&queue, &stop) {
+            eprintln!("omg-music: system audio capture ended: {e}");
+        }
+    }
+
+    fn run(queue: &SampleQueue, stop: &AtomicBool) -> Result<()> {
+        let enumerator = DeviceEnumerator::new()?;
+        // Loopback = capture direction on the default *render* device.
+        let device = enumerator.get_default_device(Direction::Render)?;
+        let mut client = device.get_iaudioclient()?;
+        // Ask for interleaved float32 stereo @ 48 kHz; autoconvert lets
+        // WASAPI resample/mix whatever the endpoint actually runs.
+        let format = WaveFormat::new(32, 32, SampleType::Float, SAMPLE_RATE, CHANNELS, None);
+        let (_default, min_period) = client.get_device_period()?;
+        let mode = StreamMode::EventsShared {
+            autoconvert: true,
+            buffer_duration_hns: min_period,
+        };
+        client.initialize_client(&format, Direction::Capture, mode, None)?;
+        let event = client.set_get_eventhandle()?;
+        let capture = client.get_audiocaptureclient()?;
+        client.start_stream()?;
+
+        let mut pending: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+        while !stop.load(Ordering::Relaxed) {
+            // Drain every queued packet (~10 ms frames each).
+            while matches!(capture.get_next_packet_size()?, Some(n) if n > 0) {
+                capture.read_from_device_to_deque(&mut pending)?;
+            }
+            // Convert everything queued so far: interleaved f32 stereo
+            // → mono by averaging channels.
+            if pending.len() >= CHANNELS * 4 {
+                let bytes: Vec<u8> = pending.drain(..).collect();
+                let mut mono = Vec::with_capacity(bytes.len() / (CHANNELS * 4));
+                for frame in bytes.chunks_exact(CHANNELS * 4) {
+                    let mut acc = 0.0f32;
+                    for ch in 0..CHANNELS {
+                        let o = ch * 4;
+                        acc += f32::from_le_bytes([
+                            frame[o],
+                            frame[o + 1],
+                            frame[o + 2],
+                            frame[o + 3],
+                        ]);
+                    }
+                    mono.push(acc / CHANNELS as f32);
+                }
+                push_capped(queue, &mono);
+            }
+            // Event-driven wait; a timeout just means "check stop flag".
+            let _ = event.wait_for_event(WAIT_MS);
+        }
+        client.stop_stream()?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub use system::SystemSource;
+
+/// Construct the requested source. `system` is available on Windows
+/// (WASAPI loopback) and macOS (ScreenCaptureKit); elsewhere it bails.
 pub fn open_source(kind: SourceKind) -> Result<Box<dyn AudioSource>> {
     match kind {
         SourceKind::Mic => Ok(Box::new(MicSource::start()?)),
         SourceKind::System => {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 Ok(Box::new(SystemSource::start()?))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             {
-                anyhow::bail!("system audio capture is only implemented on macOS (ScreenCaptureKit)")
+                anyhow::bail!("system audio capture is only implemented on Windows and macOS")
             }
         }
     }

@@ -301,17 +301,24 @@ impl Analyzer {
         anyhow::ensure!(sample_rate >= 8_000, "sample_rate too low: {sample_rate}");
         let window: Vec<f32> = (0..fft_size)
             .map(|i| {
-                0.5 - 0.5
-                    * (2.0 * std::f32::consts::PI * i as f32 / (fft_size - 1) as f32).cos()
+                0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (fft_size - 1) as f32).cos()
             })
             .collect();
         let bin_hz: Vec<f32> = (0..=fft_size / 2)
             .map(|i| i as f32 * sample_rate as f32 / fft_size as f32)
             .collect();
-        let spectrum_ranges = log_ranges(&bin_hz, 30.0, (sample_rate / 2) as f32, SPECTRUM_BINS);
+        // Cap the top at 16 kHz: music energy above that is negligible,
+        // and log-spacing to Nyquist wastes ~1/3 of the bins on silent
+        // bands (the right side of the equalizer stayed dark).
+        let spec_top = (sample_rate as f32 / 2.0).min(16_000.0);
+        let spectrum_ranges = log_ranges(&bin_hz, 30.0, spec_top, SPECTRUM_BINS);
         let bass_range = hz_range(&bin_hz, 20.0, BASS_MAX_HZ);
         let mid_range = hz_range(&bin_hz, BASS_MAX_HZ, MID_MAX_HZ);
-        let treble_range = hz_range(&bin_hz, MID_MAX_HZ, TREBLE_MAX_HZ.min(sample_rate as f32 / 2.0));
+        let treble_range = hz_range(
+            &bin_hz,
+            MID_MAX_HZ,
+            TREBLE_MAX_HZ.min(sample_rate as f32 / 2.0),
+        );
         let mut planner = FftPlanner::<f32>::new();
         Ok(Self {
             fft_size,
@@ -363,8 +370,7 @@ impl Analyzer {
         self.buf.extend_from_slice(samples);
         let mut out = Vec::new();
         while self.buf.len() >= self.fft_size {
-            let win: Vec<f32> = self
-                .buf[..self.fft_size]
+            let win: Vec<f32> = self.buf[..self.fft_size]
                 .iter()
                 .zip(&self.window)
                 .map(|(s, w)| s * w)
@@ -480,56 +486,53 @@ impl Analyzer {
         self.tempo.update_phase(self.time_s);
 
         // Emit at most one classified event per refractory interval.
-        let events = if onset_detected
-            && self.since_event_s <= 0.0
-            && self.level_smooth > EVENT_MIN_LEVEL
-        {
-            self.since_event_s = EVENT_MIN_INTERVAL_S;
-            let (kind, strength) = if flux_onset {
-                let hist = &self.flux_history[..self.flux_history.len().saturating_sub(1)];
-                let n = hist.len().max(1) as f32;
-                let mean = hist.iter().sum::<f32>() / n;
-                let var = hist.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n;
-                let thresh = (mean + ONSET_SIGMA * var.sqrt()).max(ONSET_MIN_FLUX);
-                let (bi, _) = flux
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .unwrap();
-                let runner_up = flux
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != bi)
-                    .map(|(_, v)| *v)
-                    .fold(0.0f32, f32::max);
-                let dominance = flux[bi] / (flux[bi] + runner_up + 1e-6);
-                let strength =
-                    (((total_flux - thresh) / thresh).min(2.0) / 2.0).max(0.35);
-                let kind = if dominance < 0.6 {
-                    BeatKind::Generic
+        let events =
+            if onset_detected && self.since_event_s <= 0.0 && self.level_smooth > EVENT_MIN_LEVEL {
+                self.since_event_s = EVENT_MIN_INTERVAL_S;
+                let (kind, strength) = if flux_onset {
+                    let hist = &self.flux_history[..self.flux_history.len().saturating_sub(1)];
+                    let n = hist.len().max(1) as f32;
+                    let mean = hist.iter().sum::<f32>() / n;
+                    let var = hist.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n;
+                    let thresh = (mean + ONSET_SIGMA * var.sqrt()).max(ONSET_MIN_FLUX);
+                    let (bi, _) = flux
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                        .unwrap();
+                    let runner_up = flux
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != bi)
+                        .map(|(_, v)| *v)
+                        .fold(0.0f32, f32::max);
+                    let dominance = flux[bi] / (flux[bi] + runner_up + 1e-6);
+                    let strength = (((total_flux - thresh) / thresh).min(2.0) / 2.0).max(0.35);
+                    let kind = if dominance < 0.6 {
+                        BeatKind::Generic
+                    } else {
+                        match bi {
+                            0 => BeatKind::Kick,
+                            1 => BeatKind::Snare,
+                            _ => BeatKind::HiHat,
+                        }
+                    };
+                    (kind, strength)
                 } else {
-                    match bi {
-                        0 => BeatKind::Kick,
-                        1 => BeatKind::Snare,
-                        _ => BeatKind::HiHat,
-                    }
+                    // Energy-onset only: the band that fired decides the kind.
+                    let kind = if bass_hit {
+                        BeatKind::Kick
+                    } else if mid_hit {
+                        BeatKind::Snare
+                    } else {
+                        BeatKind::HiHat
+                    };
+                    (kind, 0.8)
                 };
-                (kind, strength)
+                vec![BeatEvent { kind, strength }]
             } else {
-                // Energy-onset only: the band that fired decides the kind.
-                let kind = if bass_hit {
-                    BeatKind::Kick
-                } else if mid_hit {
-                    BeatKind::Snare
-                } else {
-                    BeatKind::HiHat
-                };
-                (kind, 0.8)
+                Vec::new()
             };
-            vec![BeatEvent { kind, strength }]
-        } else {
-            Vec::new()
-        };
 
         let agc = (AGC_TARGET / self.level_peak.max(AGC_FLOOR)).clamp(AGC_MIN, AGC_MAX);
         Bands {

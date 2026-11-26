@@ -96,3 +96,11 @@ Rules:
    live-verified for HE/mouse/sparkplayjoy/wireless.
 3. The registry is the single source for UI gating AND agent planning;
    agents must not offer ops whose capability is false.
+
+> **Per-property metadata:** this matrix stays at feature granularity.
+> The authoritative per-property
+> read/write/verification/persistence/reversibility metadata lives in
+> the shared desired-state schema (`schemas/device-config.schema.json`,
+> surfaced by `omg config schema`; per-property coverage notes in
+> `docs/specs/schema-coverage-and-reset-decision.md` §4.1). When the
+> two disagree, the schema wins — update this file to match.

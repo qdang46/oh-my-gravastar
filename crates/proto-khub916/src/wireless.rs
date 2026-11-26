@@ -38,8 +38,8 @@ use omg_hid::Link;
 use serde::Serialize;
 
 use crate::{
-    catalog_lookup, decode_key_value, screen_size_dims, DeviceInfo, KeyValue, LightColor, PowerInfo,
-    Profile, Uuid, WriteOutcome, CUSTOM_LIGHT_ENTRIES, KEYMAP_ENTRIES,
+    catalog_lookup, decode_key_value, screen_size_dims, DeviceInfo, KeyValue, LightColor,
+    PowerInfo, Profile, Uuid, WriteOutcome, CUSTOM_LIGHT_ENTRIES, KEYMAP_ENTRIES,
 };
 
 // ── Wire constants (docs/protocol-khub916.md §3/§7) ─────────────────────
@@ -141,7 +141,13 @@ fn output_packet(report_id: u8, body: &[u8]) -> Result<[u8; WIRELESS_REPORT_BYTE
 
 /// Chunked-write packet body (18 bytes before the checksum):
 /// `[cmd, total, index, marker, 14 data bytes]`.
-fn chunk_body(cmd: u8, total: usize, index: usize, marker: u8, data: &[u8; CHUNK_DATA_BYTES]) -> [u8; 18] {
+fn chunk_body(
+    cmd: u8,
+    total: usize,
+    index: usize,
+    marker: u8,
+    data: &[u8; CHUNK_DATA_BYTES],
+) -> [u8; 18] {
     debug_assert!(total <= MAX_CHUNKS && index < total);
     let mut body = [0u8; 18];
     body[0] = cmd;
@@ -269,7 +275,10 @@ impl Khub916Wireless {
     fn wait_data_packet(&mut self, timeout: Duration) -> Result<Vec<u8>> {
         match self.read_data(timeout)? {
             Some(r) => Ok(r),
-            None => bail!("916_wireLess input report timeout after {}ms", timeout.as_millis()),
+            None => bail!(
+                "916_wireLess input report timeout after {}ms",
+                timeout.as_millis()
+            ),
         }
     }
 
@@ -307,9 +316,7 @@ impl Khub916Wireless {
                 Err(e) => {
                     last = e;
                     if attempt < MAX_ATTEMPTS {
-                        std::thread::sleep(Duration::from_millis(
-                            (attempt as u64).min(100),
-                        ));
+                        std::thread::sleep(Duration::from_millis((attempt as u64).min(100)));
                     }
                 }
             }
@@ -428,7 +435,10 @@ impl Khub916Wireless {
             let pkt = output_packet(s.report_id, &[WL_CMD_DEVICE_INFO, 1, 0, 0, 0, 0, 0])?;
             let report = s.query_once(&pkt)?;
             if report.len() < WIRELESS_REPORT_BYTES {
-                bail!("916_wireLess device info: short report {} bytes", report.len());
+                bail!(
+                    "916_wireLess device info: short report {} bytes",
+                    report.len()
+                );
             }
             let uuid = Uuid(report[4..10].try_into().expect("6 bytes"));
             let version = u16::from_be_bytes([report[10], report[11]]);
@@ -482,9 +492,15 @@ impl Khub916Wireless {
     /// Custom light colours (cmd 66): reassembled payload = 378 bytes of
     /// R/G/B planes, decoded exactly like the wired cmd 134 reply.
     pub fn custom_light_colors(&mut self) -> Result<Vec<LightColor>> {
-        let payload = self.transact_profile([WL_CMD_CUSTOM_LIGHT_READ, 0, 0, 0, 0, 0, 0], Some(CUSTOM_LIGHT_ENTRIES * 3))?;
+        let payload = self.transact_profile(
+            [WL_CMD_CUSTOM_LIGHT_READ, 0, 0, 0, 0, 0, 0],
+            Some(CUSTOM_LIGHT_ENTRIES * 3),
+        )?;
         if payload.len() < CUSTOM_LIGHT_ENTRIES * 3 {
-            bail!("916_wireLess custom light: short payload {} bytes", payload.len());
+            bail!(
+                "916_wireLess custom light: short payload {} bytes",
+                payload.len()
+            );
         }
         Ok((0..CUSTOM_LIGHT_ENTRIES)
             .map(|i| LightColor {
@@ -559,7 +575,11 @@ impl Khub916Wireless {
             let data = chunk14(&payload[start..end]);
             let is_last = index == total - 1;
             // Non-last chunks always carry marker 14 (the JS literal).
-            let marker = if is_last { last_marker } else { CHUNK_DATA_BYTES as u8 };
+            let marker = if is_last {
+                last_marker
+            } else {
+                CHUNK_DATA_BYTES as u8
+            };
             let mut body = chunk_body(cmd, total, index, marker, &data);
             if is_last {
                 last_patch(&mut body);
@@ -720,7 +740,11 @@ impl Khub916Wireless {
     /// layout only). Last-chunk marker `2`. Verify: cmd 67 read-back equal.
     pub fn write_macro_region(&mut self, data: &[u8]) -> Result<WriteOutcome> {
         if data.is_empty() || data.len() > KEYMAP_ENTRIES * 4 {
-            bail!("916_wireLess macro write needs 1..={} bytes, got {}", KEYMAP_ENTRIES * 4, data.len());
+            bail!(
+                "916_wireLess macro write needs 1..={} bytes, got {}",
+                KEYMAP_ENTRIES * 4,
+                data.len()
+            );
         }
         self.with_retries(|s| {
             s.write_chunked(WL_CMD_MACRO_WRITE, data, 2, |_| {})?;
@@ -740,7 +764,11 @@ impl Khub916Wireless {
     /// Verify: cmd 68 read-back equal.
     pub fn write_profile(&mut self, profile: &[u8]) -> Result<WriteOutcome> {
         if profile.is_empty() || profile.len() > KEYMAP_ENTRIES * 4 {
-            bail!("916_wireLess profile write needs 1..={} bytes, got {}", KEYMAP_ENTRIES * 4, profile.len());
+            bail!(
+                "916_wireLess profile write needs 1..={} bytes, got {}",
+                KEYMAP_ENTRIES * 4,
+                profile.len()
+            );
         }
         self.with_retries(|s| {
             s.write_chunked(WL_CMD_PROFILE_WRITE, profile, 2, |_| {})?;
@@ -762,7 +790,11 @@ impl Khub916Wireless {
     /// Verify: cmd 73 read-back prefix equals `data`.
     pub fn write_light_color_data(&mut self, data: &[u8]) -> Result<WriteOutcome> {
         if data.is_empty() || data.len() > KEYMAP_ENTRIES * 4 {
-            bail!("916_wireLess light data write needs 1..={} bytes, got {}", KEYMAP_ENTRIES * 4, data.len());
+            bail!(
+                "916_wireLess light data write needs 1..={} bytes, got {}",
+                KEYMAP_ENTRIES * 4,
+                data.len()
+            );
         }
         let mut payload = vec![0u8; KEYMAP_ENTRIES * 4];
         payload[..data.len()].copy_from_slice(data);
@@ -787,7 +819,11 @@ impl Khub916Wireless {
     /// Verify: cmd 82 read-back equal.
     pub fn write_adv_key_history(&mut self, data: &[u8]) -> Result<WriteOutcome> {
         if data.is_empty() || data.len() > KEYMAP_ENTRIES * 4 {
-            bail!("916_wireLess adv-key write needs 1..={} bytes, got {}", KEYMAP_ENTRIES * 4, data.len());
+            bail!(
+                "916_wireLess adv-key write needs 1..={} bytes, got {}",
+                KEYMAP_ENTRIES * 4,
+                data.len()
+            );
         }
         self.with_retries(|s| {
             s.write_chunked(WL_CMD_ADV_KEY_WRITE, data, 0, |_| {})?;
@@ -1167,7 +1203,7 @@ mod tests {
         assert_eq!(last[2], (1 << 7) | 36);
         assert_eq!(last[3], 1 << 4); // last marker: layer<<4 | 0
         assert_eq!(&last[4..6], &[0x5A, 0xA5]); // end marker overwrote data[0..2]
-        // byte2 for index ≥128 would mask &0x7F — not exercised (37 chunks).
+                                                // byte2 for index ≥128 would mask &0x7F — not exercised (37 chunks).
     }
 
     #[test]

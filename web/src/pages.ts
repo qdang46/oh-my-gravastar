@@ -47,51 +47,72 @@ export type PageId =
  * slim sidebar subset; secondary pages are reached from the Device page.
  */
 export const PAGES: readonly { id: PageId; path: string; title: string }[] = [
-  { id: 'dashboard', path: '/dashboard', title: 'Dashboard' },
+  // W0 IA (spec §3): the primary nav is Home / Lighting / Keys / Macros /
+  // Device (+ conditional Performance). Home keeps the `dashboard` page
+  // id for minimal churn; its canonical path is now `/home`.
+  { id: 'dashboard', path: '/home', title: 'Home' },
   { id: 'lighting', path: '/lighting', title: 'Lighting' },
   { id: 'keys', path: '/keys', title: 'Keys' },
-  { id: 'macro', path: '/macro', title: 'Macro' },
+  { id: 'macro', path: '/macro', title: 'Macros' },
+  { id: 'device', path: '/device', title: 'Device' },
+  // Performance Studio (bead xp0): HE-only actuation/RT/DKS-MPT page —
+  // renders honest unsupported states on khub916 devices. In the W0 IA
+  // it is a CONDITIONAL nav destination: `performanceNavVisible()` in
+  // pages.ts gates the sidebar item on Hall-effect capabilities.
+  { id: 'performance', path: '/performance', title: 'Performance' },
+  // Contextual/secondary destinations — reachable by route and from
+  // Home/Device links, but NOT permanent sidebar items (spec §3).
   { id: 'advanced', path: '/advanced', title: 'Advanced' },
   { id: 'music', path: '/music', title: 'Music' },
-  // Performance Studio (bead xp0): HE-only actuation/RT/DKS-MPT page —
-  // renders honest unsupported states on khub916 devices.
-  { id: 'performance', path: '/performance', title: 'Performance' },
-  // AI Assistant (bead 7js): NL → plan → preview → apply over the agent
-  // engine — read-only until a device is connected and writes enabled.
   { id: 'assistant', path: '/assistant', title: 'Assistant' },
-  { id: 'device', path: '/device', title: 'Device' },
   { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
   // Secondary pages (bead jwb): vendor basicFunctions / configurationManagement
-  // / rhythm / setting — implemented in pages-secondary.ts.
+  // / rhythm / setting — implemented in pages-secondary.ts, surfaced
+  // under Device.
   ...SECONDARY_PAGES,
 ] as const;
 
-/** Sidebar shows at most these five — plain labels, no jargon. */
+/**
+ * Primary navigation — at most five user-goal destinations (spec §3/§11).
+ * Performance is intentionally absent: it is appended by the shell only
+ * when `performanceNavVisible()` says the connected device has
+ * Hall-effect capabilities.
+ */
 export const NAV_PAGES: readonly { id: PageId; path: string; title: string }[] = [
-  { id: 'dashboard', path: '/dashboard', title: 'Dashboard' },
+  { id: 'dashboard', path: '/home', title: 'Home' },
   { id: 'lighting', path: '/lighting', title: 'Lighting' },
   { id: 'keys', path: '/keys', title: 'Keys' },
-  { id: 'macro', path: '/macro', title: 'Macro' },
-  { id: 'advanced', path: '/advanced', title: 'Advanced' },
-  { id: 'music', path: '/music', title: 'Music' },
-  { id: 'performance', path: '/performance', title: 'Performance' },
-  { id: 'assistant', path: '/assistant', title: 'Assistant' },
+  { id: 'macro', path: '/macro', title: 'Macros' },
   { id: 'device', path: '/device', title: 'Device' },
-  { id: 'diagnostics', path: '/diagnostics', title: 'Diagnostics' },
 ];
 
+/** The conditional sixth destination — Hall-effect devices only. */
+export const PERFORMANCE_NAV = {
+  id: 'performance',
+  path: '/performance',
+  title: 'Performance',
+} as const;
+
 /**
- * Capability-gated nav badge (bead sl3): a short label shown on a
- * sidebar item when the connected device can't use that page.
- *
- * Only Performance is gated — it configures Hall-effect (HE) keyboards
- * and every section asks the capability registry (`isFeatureAvailable`,
- * same check perf.ts makes per feature). When nothing is connected the
- * page offers its own HE device picker, so no badge is shown; a
- * mechanical khub916 / Compx / SparkPlayJoy device gets the badge.
+ * Route aliases — old hash routes keep resolving (spec §3: "Existing
+ * hash routes must continue to resolve during migration"). `/dashboard`
+ * was the pre-W0 landing path; it now redirects to `/home`.
  */
-export function navBadgeFor(id: PageId): string | null {
-  if (id !== 'performance' || !app.connected || !app.snapshot) return null;
+export const ROUTE_ALIASES: Readonly<Record<string, string>> = {
+  '/dashboard': '/home',
+};
+
+/**
+ * Performance nav visibility (W0 IA, spec §3): the destination appears
+ * ONLY while a connected device reports Hall-effect capabilities —
+ * `actuation` in the feature registry is the headline HE feature and
+ * every Performance Studio section shares the same verdict. With no
+ * device connected the item is hidden (the page itself still offers an
+ * HE picker when reached by route); mechanical khub916 / Compx /
+ * SparkPlayJoy devices never see it.
+ */
+export function performanceNavVisible(): boolean {
+  if (!app.connected || !app.snapshot) return false;
   const like: DeviceLike = {
     vendorId: app.connected.device.vendorId,
     productId: app.connected.device.productId,
@@ -102,24 +123,36 @@ export function navBadgeFor(id: PageId): string | null {
     screenSize: app.snapshot.info.screenSize ?? 0,
   };
   const caps = getCapabilities(like);
-  // 'actuation' is the headline HE feature — every Performance Studio
-  // section shares the same per-protocol supported/unsupported verdict.
-  return isFeatureAvailable(caps, 'actuation') ? null : 'HE keyboard only';
+  return isFeatureAvailable(caps, 'actuation');
 }
 
 /** Which sidebar item should look active for a given route. */
 export function navIdFor(page: PageId): PageId {
-  // Rarely-used pages live under Device in the mental model.
-  return page === 'basic' || page === 'config' || page === 'rhythm' || page === 'setting'
-    ? 'device'
-    : page;
+  // Diagnostics, profiles/history and the rarely-used secondary pages
+  // live under Device in the mental model (spec §3).
+  if (
+    page === 'basic' ||
+    page === 'config' ||
+    page === 'rhythm' ||
+    page === 'setting' ||
+    page === 'diagnostics'
+  ) {
+    return 'device';
+  }
+  // Feature pages that lost their nav slot highlight their parent goal.
+  if (page === 'advanced') return 'keys';
+  if (page === 'music') return 'lighting';
+  if (page === 'assistant') return 'dashboard';
+  return page;
 }
 
 export function pageFromHash(hash: string): PageId {
   const p = hash.replace(/^#\/?/, '');
+  // Resolve aliases first so `#/dashboard` lands on Home.
+  const path = ROUTE_ALIASES[`/${p}`] ?? `/${p}`;
   // The Dashboard is the landing page: empty, `#/home` and unknown
   // hashes all land there.
-  return (PAGES.find((pg) => pg.path === `/${p}`)?.id ?? 'dashboard') as PageId;
+  return (PAGES.find((pg) => pg.path === path)?.id ?? 'dashboard') as PageId;
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────────
@@ -196,15 +229,19 @@ function renderDevice(root: HTMLElement): void {
   infoCard.body.append(dl);
   root.append(infoCard.card);
 
-  // Rarely-used pages live here instead of the sidebar.
+  // Rarely-used pages live here instead of the sidebar (W0 IA —
+  // diagnostics, profiles/history and settings are Device concerns).
   const more = card('More options');
   const moreLinks = el('div', 'home-links');
   for (const [path, label] of [
-    ['/setting', 'Sleep timer'],
     ['/config', 'Backup & restore'],
     ['/customconfig', 'Custom config (JSON)'],
     ['/basic', 'Keyboard layout info'],
+    ['/diagnostics', 'Diagnostics'],
+    ['/advanced', 'Advanced keys'],
     ['/music', 'Music lighting'],
+    ['/assistant', 'AI assistant'],
+    ['/setting', 'Sleep timer'],
   ] as const) {
     const a = el('a', '', label);
     a.href = `#${path}`;
@@ -389,10 +426,11 @@ function updateNav(): void {
 
 function route(): void {
   const page = pageFromHash(location.hash);
-  // Canonical URL: the Dashboard is the home screen, so empty, `#/home`
-  // and unknown hashes all land on `#/dashboard`.
-  if (!PAGES.some((pg) => location.hash === `#${pg.path}`)) {
-    history.replaceState(null, '', '#/dashboard');
+  // Canonical URL: every route (including aliases like `#/dashboard`)
+  // resolves to its page's canonical path — Home is `#/home`.
+  const canonical = `#${PAGES.find((pg) => pg.id === page)?.path ?? '/home'}`;
+  if (location.hash !== canonical) {
+    history.replaceState(null, '', canonical);
   }
   currentPage = page;
   // The macro/advanced views are stateful — tear them down when

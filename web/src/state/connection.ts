@@ -46,7 +46,11 @@ export async function connect(): Promise<void> {
   emit();
   try {
     setStatus('Pick your keyboard in the browser window…');
+    app.connectStage = 'picker';
+    emit();
     const device = await requestKhubDevice();
+    app.connectStage = 'connecting';
+    emit();
     if (!device) {
       setStatus('Keyboard picker closed — press Connect to try again.');
       return;
@@ -69,6 +73,7 @@ export async function connect(): Promise<void> {
     setStatus(`Could not connect: ${e instanceof Error ? e.message : String(e)}`, true);
   } finally {
     app.busy = false;
+    app.connectStage = 'idle';
     emit();
   }
 }
@@ -79,6 +84,7 @@ export async function disconnect(): Promise<void> {
   app.snapshot = null;
   app.deviceLabel = '';
   app.reconnectedSilently = false;
+  app.connectStage = 'idle';
   await c?.device.close().catch(() => {});
   setStatus('Disconnected.');
 }
@@ -131,6 +137,7 @@ export async function handleHidConnect(device: HIDDevice): Promise<void> {
   const mine = deviceIdentity(device);
   if (!granted.some((d) => sameDevice(mine, d))) return;
   app.busy = true;
+  app.connectStage = 'connecting';
   setStatus('Keyboard detected — connecting read-only…');
   emit();
   try {
@@ -142,6 +149,7 @@ export async function handleHidConnect(device: HIDDevice): Promise<void> {
     app.reconnectedSilently = false;
   } finally {
     app.busy = false;
+    app.connectStage = 'idle';
     emit();
   }
 }
@@ -242,6 +250,7 @@ export async function autoConnect(): Promise<void> {
   );
   if (candidates.length === 0) return;
   app.busy = true;
+  app.connectStage = 'connecting';
   setStatus('Reconnecting keyboard…');
   emit();
   try {
@@ -256,6 +265,7 @@ export async function autoConnect(): Promise<void> {
     setStatus('Could not find the keyboard — press Connect to pick it.');
   } finally {
     app.busy = false;
+    app.connectStage = 'idle';
     emit();
   }
 }

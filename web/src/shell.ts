@@ -9,7 +9,7 @@
  *   main.page                  routed page content
  *
  * The vendor header's language dropdown (en/zh) and onboard-config entry
- * are omitted — this build is English-only and has no config profiles yet.
+ * are omitted — W0 adds its own EN/VI switcher and first-run onboarding.
  */
 
 import {
@@ -19,11 +19,20 @@ import {
   connect,
   disconnect,
   enableEditing,
+  emit,
   refresh,
   subscribe,
 } from './state.ts';
 import { installHidDeviceEvents } from './device-events.ts';
-import { NAV_PAGES, initPages, navBadgeFor, type PageId } from './pages.ts';
+import {
+  NAV_PAGES,
+  PERFORMANCE_NAV,
+  initPages,
+  performanceNavVisible,
+  type PageId,
+} from './pages.ts';
+import { getLanguage, onLanguageChange, setLanguage, t, LANGUAGES } from './i18n/index.ts';
+import { phaseFromApp, phaseMeta } from './core/conn-state.ts';
 
 // ── Inline SVG icons (stroke, 24 px viewBox — vendor uses an icon font) ──
 
@@ -44,6 +53,18 @@ const ICONS: Record<PageId, string> = {
   setting: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>',
   customconfig: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>',
 };
+
+/** i18n key for a nav destination's label. */
+function navTitleKey(id: PageId): string {
+  switch (id) {
+    case 'dashboard':
+      return 'nav.home';
+    case 'macro':
+      return 'nav.macros';
+    default:
+      return `nav.${id}`;
+  }
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -70,32 +91,45 @@ export function mountShell(root: HTMLElement): void {
 
   // ── Sidebar (vendor `aside.sidebar`) ──────────────────────────────
   const sidebar = el('aside', 'sidebar');
-  const deviceName = el('div', 'menu-device-name', 'No device');
+  const deviceName = el('div', 'menu-device-name');
   sidebar.append(deviceName);
 
+  // Primary nav = the five user-goal destinations (NAV_PAGES). The
+  // Performance item is appended separately and stays hidden unless
+  // `performanceNavVisible()` reports Hall-effect capabilities.
   const nav = el('nav', 'sidebar-nav');
+  const navItems = new Map<PageId, HTMLAnchorElement>();
   for (const p of NAV_PAGES) {
     const a = el('a', 'nav-item');
     a.href = `#${p.path}`;
     a.dataset.page = p.id;
     const icon = el('span', 'nav-icon');
     icon.innerHTML = ICONS[p.id];
-    const label = el('span', 'nav-text', p.title);
-    const tip = el('span', 'nav-tooltip', p.title);
-    // Capability badge (bead sl3): e.g. "HE keyboard only" on pages the
-    // connected device can't use — filled in by the state sync below.
-    const badge = el('span', 'nav-badge', '');
-    badge.hidden = true;
-    a.append(icon, label, tip, badge);
+    const label = el('span', 'nav-text');
+    const tip = el('span', 'nav-tooltip');
+    a.append(icon, label, tip);
     nav.append(a);
+    navItems.set(p.id, a);
   }
+  // Conditional Performance destination (spec §3) — hidden until an HE
+  // device is connected; the route itself always resolves.
+  const perfA = el('a', 'nav-item');
+  perfA.href = `#${PERFORMANCE_NAV.path}`;
+  perfA.dataset.page = PERFORMANCE_NAV.id;
+  const perfIcon = el('span', 'nav-icon');
+  perfIcon.innerHTML = ICONS[PERFORMANCE_NAV.id];
+  const perfLabel = el('span', 'nav-text');
+  const perfTip = el('span', 'nav-tooltip');
+  perfA.append(perfIcon, perfLabel, perfTip);
+  perfA.hidden = true;
+  nav.append(perfA);
+  navItems.set(PERFORMANCE_NAV.id, perfA);
   sidebar.append(nav);
 
   const footer = el('div', 'sidebar-footer');
   const collapseBtn = el('button', 'collapse-btn', '✕');
   collapseBtn.type = 'button';
-  collapseBtn.title = 'Collapse sidebar';
-  footer.append(el('h2', 'sidebar-title', 'Menu'), collapseBtn);
+  footer.append(el('h2', 'sidebar-title'), collapseBtn);
   sidebar.append(footer);
 
   // ── Main column: topbar + status + page ───────────────────────────
@@ -108,45 +142,50 @@ export function mountShell(root: HTMLElement): void {
     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg>';
   brand.append(
     mark,
-    el('span', 'brand-name', 'oh-my-gravastar'),
-    el('span', 'brand-sub', 'GravaStar keyboard setup'),
+    el('span', 'brand-name', t('app.name')),
+    el('span', 'brand-sub', t('app.tagline')),
   );
   const actions = el('div', 'topbar-actions');
+  // Connection phase chip — the state machine's user-facing label
+  // (core/conn-state.ts); hidden while disconnected to keep the bar calm.
+  const phaseChip = el('span', 'conn-phase');
+  phaseChip.hidden = true;
   const deviceChip = el('span', 'device-chip', '');
-  const connectBtn = el('button', 'primary', 'Connect');
+  // Language switcher (W0 i18n) — persisted in localStorage.
+  const langLabel = el('label', 'lang-switch');
+  langLabel.append(el('span', 'lang-switch-label', t('shell.langLabel')));
+  const langSelect = el('select', 'lang-select');
+  langSelect.setAttribute('aria-label', t('shell.langLabel'));
+  for (const lang of LANGUAGES) {
+    const opt = el('option', '', lang === 'en' ? 'English' : 'Tiếng Việt');
+    opt.value = lang;
+    langSelect.append(opt);
+  }
+  langSelect.value = getLanguage();
+  langLabel.append(langSelect);
+  const connectBtn = el('button', 'primary');
   connectBtn.type = 'button';
   // `danger` styling keeps Disconnect visually prominent whenever a
   // device is connected (R6: easy disconnect after auto-reconnect).
-  const disconnectBtn = el('button', 'danger', 'Disconnect');
+  const disconnectBtn = el('button', 'danger');
   disconnectBtn.type = 'button';
   disconnectBtn.hidden = true;
-  const refreshBtn = el('button', '', 'Refresh');
+  const refreshBtn = el('button', '');
   refreshBtn.type = 'button';
   refreshBtn.hidden = true;
-  actions.append(deviceChip, connectBtn, disconnectBtn, refreshBtn);
+  actions.append(phaseChip, deviceChip, langLabel, connectBtn, disconnectBtn, refreshBtn);
   topbar.append(brand, actions);
 
   const statusEl = el('p', 'status', app.status);
   // Shown while the Music page streams cmd-8 frames (app.musicActive) —
   // other pages' lighting writes are effectively overridden until Stop.
-  const musicBanner = el(
-    'div',
-    'music-banner',
-    'Music mode is active — the keyboard lights follow your microphone. ' +
-      'Press Stop on the Music page to restore your lighting.',
-  );
-  musicBanner.hidden = true;
+  const musicBanner = el('div', 'music-banner');
   // Read-only gate banner (conn-lifecycle): after a silent auto/hot-plug
   // reconnect the session is live for viewing but writes stay blocked
   // until this explicit "Enable editing" click (safety contract R6).
   const editBanner = el('div', 'edit-banner');
-  const editBannerText = el(
-    'span',
-    'edit-banner-text',
-    'Connected — read only. The keyboard is live for viewing; ' +
-      'changes stay off until you approve this session.',
-  );
-  const editBtn = el('button', 'edit-banner-btn', 'Enable editing');
+  const editBannerText = el('span', 'edit-banner-text');
+  const editBtn = el('button', 'edit-banner-btn');
   editBtn.type = 'button';
   editBanner.append(editBannerText, editBtn);
   editBanner.hidden = true;
@@ -162,7 +201,8 @@ export function mountShell(root: HTMLElement): void {
   const setCollapsed = (collapsed: boolean): void => {
     sidebar.classList.toggle('sidebar-collapsed', collapsed);
     collapseBtn.textContent = collapsed ? '☰' : '✕';
-    collapseBtn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    collapseBtn.title = t(collapsed ? 'shell.expand' : 'shell.collapse');
+    collapseBtn.setAttribute('aria-label', collapseBtn.title);
   };
   collapseBtn.addEventListener('click', () => {
     setCollapsed(!sidebar.classList.contains('sidebar-collapsed'));
@@ -173,10 +213,42 @@ export function mountShell(root: HTMLElement): void {
   window.addEventListener('resize', onResize);
   onResize();
 
+  // Static chrome strings — refreshed on mount and on language change.
+  const chromeText = (): void => {
+    deviceName.textContent = t('shell.noDevice');
+    footer.querySelector('.sidebar-title')!.textContent = t('shell.menu');
+    connectBtn.textContent = t('shell.connect');
+    disconnectBtn.textContent = t('shell.disconnect');
+    refreshBtn.textContent = t('shell.refresh');
+    musicBanner.textContent = t('shell.musicBanner');
+    editBannerText.textContent = t('shell.editBanner.text');
+    editBtn.textContent = t('shell.editBanner.button');
+    langLabel.querySelector('.lang-switch-label')!.textContent = t('shell.langLabel');
+    langSelect.setAttribute('aria-label', t('shell.langLabel'));
+    for (const [id, a] of navItems) {
+      const title = t(navTitleKey(id));
+      a.querySelector('.nav-text')!.textContent = title;
+      a.querySelector('.nav-tooltip')!.textContent = title;
+      a.setAttribute('aria-label', title);
+    }
+  };
+  chromeText();
+
   connectBtn.addEventListener('click', () => void connect());
   disconnectBtn.addEventListener('click', () => void disconnect());
   refreshBtn.addEventListener('click', () => void refresh());
   editBtn.addEventListener('click', enableEditing);
+  langSelect.addEventListener('change', () => {
+    setLanguage(langSelect.value === 'vi' ? 'vi' : 'en');
+  });
+  // Language switch re-renders chrome immediately and re-emits state so
+  // the visible page re-renders its own translated strings.
+  onLanguageChange(() => {
+    langSelect.value = getLanguage();
+    chromeText();
+    // Re-emit so the routed page re-renders with the new language.
+    emit();
+  });
 
   // Sidebar tooltip positioning when collapsed (vendor behaviour).
   nav.addEventListener('mouseover', (e) => {
@@ -204,16 +276,21 @@ export function mountShell(root: HTMLElement): void {
   subscribe(() => {
     statusEl.textContent = app.status;
     statusEl.classList.toggle('error', app.statusError);
-    // Capability-gated nav badges (bead sl3) — recomputed on every
-    // state emit so connect/disconnect updates them immediately.
-    nav.querySelectorAll<HTMLElement>('.nav-item').forEach((a) => {
-      const badge = a.querySelector<HTMLElement>('.nav-badge');
-      if (!badge) return;
-      const text = navBadgeFor(a.dataset.page as PageId);
-      badge.textContent = text ?? '';
-      badge.hidden = !text;
-      if (text) badge.title = text;
-    });
+
+    // Conditional Performance destination (spec §3): visible only while
+    // the connected device reports Hall-effect capabilities.
+    perfA.hidden = !performanceNavVisible();
+
+    // Connection phase chip — derived from the state machine; hidden
+    // when disconnected so the bar stays calm (the status line + Home
+    // onboarding already explain the next step).
+    const phase = phaseFromApp(app);
+    const meta = phaseMeta(phase);
+    phaseChip.hidden = phase === 'disconnected';
+    phaseChip.textContent = t(meta.labelKey);
+    phaseChip.title = t(meta.hintKey);
+    phaseChip.className = `conn-phase phase-${meta.tone}`;
+
     musicBanner.hidden = !app.musicActive;
     // Show the read-only banner whenever the live session's write gate
     // is closed (silent reconnect / hot-plug connect / poison recovery).
@@ -225,12 +302,21 @@ export function mountShell(root: HTMLElement): void {
     refreshBtn.hidden = !connected;
     connectBtn.disabled = app.busy;
     refreshBtn.disabled = app.busy;
+    // No WebHID (Safari, Firefox, most mobile browsers): the picker can
+    // never open, so keep the button visible but explain why it's dead.
+    const webHid = typeof navigator !== 'undefined' && 'hid' in navigator;
+    if (!webHid) {
+      connectBtn.disabled = true;
+      connectBtn.title = t('shell.noWebHid');
+    } else {
+      connectBtn.title = '';
+    }
 
     const snap = app.snapshot;
     // Always name the actual device (product + model), never just
     // "connected" — critical after a silent auto-reconnect (R6).
     const label =
-      app.deviceLabel || snap?.info.catalogName || (connected ? 'Connected device' : 'No device');
+      app.deviceLabel || snap?.info.catalogName || (connected ? t('shell.connectedDevice') : t('shell.noDevice'));
     deviceName.textContent = label;
     deviceChip.replaceChildren();
     const dot = el('span', 'dot');
@@ -238,7 +324,7 @@ export function mountShell(root: HTMLElement): void {
       dot,
       document.createTextNode(
         snap
-          ? `${app.deviceLabel || snap.info.catalogName || 'Keyboard'} · Battery ${snap.power.percent}%`
+          ? `${app.deviceLabel || snap.info.catalogName || 'Keyboard'} · ${t('shell.battery')} ${snap.power.percent}%`
           : connected
             ? app.deviceLabel || 'Connected'
             : '',

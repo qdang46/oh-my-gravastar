@@ -90,6 +90,9 @@ Platform direction: **Full Custom + Agent-first + Safety-first** — see
 [docs/IMPLEMENTATION-ROADMAP.md](docs/IMPLEMENTATION-ROADMAP.md) (in progress)
 for the phased plan. Active work is tracked in beads (`br list`).
 
+- ✅ Agent config: schema-first desired-state CLI + Web guided apply
+  (`omg config schema|validate|apply|rollback`, shared
+  `schemas/device-config.schema.json` across Rust/Python/Web)
 - 🚧 Capability registry + safety/transaction engine + spec docs (Phase 0)
 - 🚧 Web UI: styled modals, profile history/diff, music-reactive page
 - ⬜ Keymap/Macro/Lighting Studio upgrades (Phase 1)
@@ -126,6 +129,32 @@ omg --version
 path, `VID:PID` (hex, `0x` prefix optional), or a unique case-insensitive
 substring of the product/manufacturer string. With exactly one matching
 device it is auto-selected.
+
+### Agent configuration surface
+
+The Agent workflow is schema-driven desired state — see
+[docs/device-config-schema.md](docs/device-config-schema.md). The shared
+Draft 2020-12 artifact (`schemas/device-config.schema.json`) is consumed
+identically by the CLI, `schemas/test_schema.py`, and the Web PWA (AJV):
+
+```sh
+omg config schema                    # print the desired-state JSON Schema
+omg config validate dev.json         # offline structural validation (all errors + JSON paths)
+omg config apply dev.json            # device match + per-section plan + plan_hash, no writes
+omg config apply dev.json --yes --approve <hash>  # apply; approval bound to the dry-run hash
+omg config rollback <id> --yes       # restore the pre-apply snapshot
+```
+
+`omg config` implements the desired-state envelope in
+`docs/device-config-schema.md` (`schemas/device-config.schema.json`).
+Apply coverage is intentionally partial — unsupported sections are
+reported `not_applied` with a reason, never silently skipped. Every
+apply persists a rollback snapshot before the first write; `config
+rollback` verifies device identity (protocol + VID + PID + usage page)
+before restoring. `omg cli-schema <cmd>` remains the machine-readable
+*command* contract, and the command-plan format (`omg plan`,
+[docs/plan-json.md](docs/plan-json.md)) remains the compatibility path
+for multi-step CLI automation.
 
 HE keyboard (needs an HE v2 board such as a Mercury V75):
 
@@ -169,17 +198,7 @@ omg kb916 light music --effect pulse --yes       # beat flash | bass | ambient |
 omg kb916 macro list|get|set|bind    # named macros + tag-3 key binds (docs/macro-schema.md)
 omg kb916 adv list|get|set          # MT/SOCD/TGL advanced keys (docs/advkeys-schema.md)
 omg kb916 doctor fn                  # read-only Fn-layer check: dead slots, opaque tags, Fn-key binding
-
-omg config schema                    # print the desired-state JSON Schema (Draft 2020-12)
-omg config validate dev.json         # offline structural validation (all errors + JSON paths)
-omg config apply dev.json            # device match + per-section plan + plan_hash, no writes
-omg config apply dev.json --yes --approve <hash>  # apply; approval bound to the dry-run hash
 ```
-
-`omg config` implements the desired-state envelope in
-`docs/device-config-schema.md` (`schemas/device-config.schema.json`).
-Apply coverage is intentionally partial — unsupported sections are
-reported `not_applied` with a reason, never silently skipped.
 
 Writes require `--yes` and are verified by read-back (live-verified on a
 K1 Pro):
@@ -255,6 +274,20 @@ current state to `~/.local/share/oh-my-gravastar/backups/<utc-ts>/` before
 writing, and verifies every change by read-back. khub916 and SparkPlayJoy
 are export-only for now (khub916 has verified `kb916 set` writes but no
 whole-profile import mapping; SparkPlayJoy has no write path).
+
+`omg profile watch` follows the foreground app and can auto-switch the
+HE keyboard profile (macOS only for now — Linux/Windows detection is
+documented future work):
+
+```sh
+omg profile watch --rules rules.json            # report app→profile matches
+omg profile watch --rules rules.json --apply --yes   # switch on match
+```
+
+`rules.json` is `{"rules":[{"app"|"bundle": "substring", "profile": N}]}`
+— first match wins, `profile` is the 0-based HE profile index. `--apply`
+opens the HE keyboard once, range-checks every switch and verifies by
+read-back; khub916 has no profile-switch command so apply is HE-only.
 
 ### JSON output
 

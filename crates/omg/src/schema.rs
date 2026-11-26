@@ -1,4 +1,6 @@
-//! `omg schema` — machine-readable command contract for agents.
+//! `omg cli-schema` — machine-readable *command* contract for agents.
+//! (The device desired-state schema lives at `omg config schema` —
+//! `crate::config`.)
 //!
 //! Argument lists are introspected from the same `clap` definitions that
 //! execute (`Cli::command()`), so a renamed/added flag cannot drift from
@@ -78,8 +80,8 @@ fn device_family(path0: &str) -> &'static str {
         "kb" => "he_keyboard_v2",
         "kb916" => "khub916",
         "mouse" => "compx_mouse",
-        "profile" | "devices" | "probe" | "device" => "all_supported",
-        "schema" => "none",
+        "profile" | "devices" | "probe" | "device" | "config" => "all_supported",
+        "cli-schema" => "none",
         _ => "unknown",
     }
 }
@@ -152,7 +154,7 @@ const OUTPUT_NOTES: &[(&[&str], &str)] = &[
         "{connected:bool,count,devices:[{path,vid_pid,kind,kind_label,product,manufacturer}]}",
     ),
     (
-        &["schema"],
+        &["cli-schema"],
         "{commands:[{command,writes,device}]} index, or a per-command schema doc",
     ),
 ];
@@ -238,9 +240,7 @@ fn json_type(parser: &clap::builder::ValueParser) -> &'static str {
     let id = parser.type_id();
     macro_rules! chk {
         ($t:ty, $n:expr) => {
-            if id
-                == clap::builder::ValueParser::from(value_parser!($t)).type_id()
-            {
+            if id == clap::builder::ValueParser::from(value_parser!($t)).type_id() {
                 return $n;
             }
         };
@@ -292,9 +292,7 @@ fn arg_json(path: &[String], arg: &Arg) -> Value {
         o["required"] = json!(true);
     } else if arg.is_positional()
         && arg.get_default_values().is_empty()
-        && arg
-            .get_num_args()
-            .is_some_and(|r| r.min_values() >= 1)
+        && arg.get_num_args().is_some_and(|r| r.min_values() >= 1)
     {
         // Positional value args are required unless they have a default.
         o["required"] = json!(true);
@@ -360,14 +358,15 @@ pub(crate) fn command_schema(path: &[String]) -> Option<Value> {
         "exit_codes": { "0": "ok", "1": "error", "2": "no device", "3": "unsupported" },
     });
     if has_native_dry_run(path) {
-        doc["dry_run"] = json!("native --dry-run prints the planned changes without sending anything");
+        doc["dry_run"] =
+            json!("native --dry-run prints the planned changes without sending anything");
     } else if writes {
         doc["dry_run"] = json!("global --dry-run previews the invocation without sending anything");
     }
     Some(doc)
 }
 
-/// `omg schema` with no path: index of every command.
+/// `omg cli-schema` with no path: index of every command.
 pub(crate) fn schema_index() -> Value {
     let commands: Vec<Value> = command_paths()
         .iter()
@@ -388,9 +387,7 @@ pub(crate) fn is_group_path(path: &[String]) -> bool {
     fn at(cmd: &Command, path: &[String]) -> bool {
         match path.split_first() {
             None => cmd.get_subcommands().next().is_some(),
-            Some((seg, rest)) => cmd
-                .find_subcommand(seg)
-                .is_some_and(|sub| at(sub, rest)),
+            Some((seg, rest)) => cmd.find_subcommand(seg).is_some_and(|sub| at(sub, rest)),
         }
     }
     at(&root_command(), path)
@@ -415,7 +412,11 @@ mod tests {
     #[test]
     fn every_command_has_a_schema() {
         let paths = command_paths();
-        assert!(paths.len() > 50, "expected many commands, got {}", paths.len());
+        assert!(
+            paths.len() > 50,
+            "expected many commands, got {}",
+            paths.len()
+        );
         for p in &paths {
             let doc = command_schema(p).unwrap_or_else(|| panic!("no schema for {}", p.join(" ")));
             assert_eq!(doc["command"], p.join(" "));
@@ -436,11 +437,19 @@ mod tests {
         assert_eq!(doc["device"], "khub916");
         let args = doc["args"].as_array().unwrap();
         assert!(args.iter().any(|a| a["long"] == "--yes"));
-        assert!(args.iter().any(|a| a["name"] == "index" && a["kind"] == "positional"));
-        assert!(args.iter().any(|a| a["name"] == "layer" && a["type"] == "integer"));
+        assert!(args
+            .iter()
+            .any(|a| a["name"] == "index" && a["kind"] == "positional"));
+        assert!(args
+            .iter()
+            .any(|a| a["name"] == "layer" && a["type"] == "integer"));
         // global flags are inherited and marked.
-        assert!(args.iter().any(|a| a["long"] == "--json" && a["global"] == true));
-        assert!(args.iter().any(|a| a["long"] == "--dry-run" && a["global"] == true));
+        assert!(args
+            .iter()
+            .any(|a| a["long"] == "--json" && a["global"] == true));
+        assert!(args
+            .iter()
+            .any(|a| a["long"] == "--dry-run" && a["global"] == true));
     }
 
     #[test]
@@ -470,10 +479,24 @@ mod tests {
         ] {
             assert!(!is_write_path(&p), "{}", p.join(" "));
         }
-        assert!(is_write_path(&["kb".to_string(), "keys".to_string(), "set".to_string()]));
-        assert!(is_write_path(&["profile".to_string(), "import".to_string()]));
-        assert!(has_native_dry_run(&["profile".to_string(), "import".to_string()]));
-        assert!(!has_native_dry_run(&["kb".to_string(), "keys".to_string(), "set".to_string()]));
+        assert!(is_write_path(&[
+            "kb".to_string(),
+            "keys".to_string(),
+            "set".to_string()
+        ]));
+        assert!(is_write_path(&[
+            "profile".to_string(),
+            "import".to_string()
+        ]));
+        assert!(has_native_dry_run(&[
+            "profile".to_string(),
+            "import".to_string()
+        ]));
+        assert!(!has_native_dry_run(&[
+            "kb".to_string(),
+            "keys".to_string(),
+            "set".to_string()
+        ]));
     }
 
     #[test]

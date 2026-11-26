@@ -2,8 +2,8 @@
 //!
 //! The plan document is the agent interchange format (docs/plan-json.md):
 //! `{ "version": 1, "steps": [{ "op": "kb916 set key", "args": {…} }] }`
-//! where `op` is any leaf command path from `omg schema` (device-driving
-//! families `kb`, `kb916`, `mouse`, `profile` only — `plan`/`schema`/
+//! where `op` is any leaf command path from `omg cli-schema` (device-driving
+//! families `kb`, `kb916`, `mouse`, `profile` only — `plan`/`cli-schema`/
 //! `device` introspection commands cannot be planned).
 //!
 //! Safety mapping (docs/SAFETY-SPEC.md §3): every step is classified
@@ -40,7 +40,7 @@ use crate::{device_matches, export_device_entry, print_json, run, Cli, Yes};
 #[derive(Subcommand)]
 pub(crate) enum PlanCommands {
     /// Parse a plan JSON file (`-` = stdin), validate every step against
-    /// the `omg schema` command contract, store it and print the plan id
+    /// the `omg cli-schema` command contract, store it and print the plan id
     /// plus a per-step summary: risk level, predicted writes, warnings.
     Create {
         /// Plan JSON file (see docs/plan-json.md); `-` reads stdin.
@@ -156,7 +156,7 @@ fn save_json(path: &Path, v: &Value) -> Result<()> {
 const PLAN_SCHEMA: u64 = 1;
 const MAX_STEPS: usize = 64;
 /// Command families a plan may drive. Introspection commands
-/// (`schema`, `device`, `devices`, `probe`) and `plan` itself are
+/// (`cli-schema`, `device`, `devices`, `probe`) and `plan` itself are
 /// rejected — a plan must describe device changes, not meta-commands.
 const PLAN_FAMILIES: &[&str] = &["kb", "kb916", "mouse", "profile"];
 
@@ -199,10 +199,7 @@ fn parse_plan(text: &str) -> Result<PlanDoc> {
     if version != PLAN_SCHEMA {
         bail!("unsupported plan version {version} (want {PLAN_SCHEMA})");
     }
-    let name = obj
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let name = obj.get("name").and_then(Value::as_str).map(str::to_string);
     let device = obj
         .get("device")
         .and_then(Value::as_str)
@@ -243,10 +240,7 @@ fn parse_plan(text: &str) -> Result<PlanDoc> {
             Some(Value::Object(m)) => m.clone(),
             Some(_) => bail!("step {} \"args\" must be an object", i + 1),
         };
-        let device = s
-            .get("device")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let device = s.get("device").and_then(Value::as_str).map(str::to_string);
         steps.push(PlanStep {
             index: i,
             op: op.to_string(),
@@ -343,10 +337,10 @@ fn capability_key(path: &[String]) -> Option<&'static str> {
         ["kb916", "set", "sleep"] => Some("sleep_timer"),
         ["kb916", "set", "light-mode"] => Some("lighting_modes"),
         ["kb916", "set", "light-color"] => Some("per_key_rgb"),
-        ["kb916", "light", "apply"] | ["kb916", "light", "stream"] => {
-            Some("lighting_json_apply")
-        }
-        ["kb916", "macro", "set"] | ["kb916", "macro", "bind"] | ["kb916", "macro", "unbind"]
+        ["kb916", "light", "apply"] | ["kb916", "light", "stream"] => Some("lighting_json_apply"),
+        ["kb916", "macro", "set"]
+        | ["kb916", "macro", "bind"]
+        | ["kb916", "macro", "unbind"]
         | ["kb916", "macro", "delete"] => Some("macro"),
         ["kb916", "adv", "set", ..] => Some("adv_keys"),
         // HE keyboard
@@ -372,7 +366,9 @@ fn capability_key(path: &[String]) -> Option<&'static str> {
 /// writes only exist on the wired interface (`kb916_session` refuses the
 /// wireless transport), so `Khub916Wired` is the gate.
 fn required_kind(path: &[String]) -> Option<DeviceKind> {
-    let family = schema::command_schema(path)?["device"].as_str()?.to_string();
+    let family = schema::command_schema(path)?["device"]
+        .as_str()?
+        .to_string();
     match family.as_str() {
         "khub916" => Some(DeviceKind::Khub916Wired),
         "he_keyboard_v2" => Some(DeviceKind::HeKeyboardV2),
@@ -415,7 +411,10 @@ struct StepCheck {
 
 /// Normalise an `args` key: accept the clap arg id (`interval_ms`) or
 /// its `--long` spelling (`interval-ms`).
-fn canonical_arg<'a>(meta: &'a Value, args: &'a Map<String, Value>) -> Option<(&'a str, &'a Value)> {
+fn canonical_arg<'a>(
+    meta: &'a Value,
+    args: &'a Map<String, Value>,
+) -> Option<(&'a str, &'a Value)> {
     let id = meta["name"].as_str()?;
     if let Some(v) = args.get(id) {
         return Some((id, v));
@@ -459,9 +458,9 @@ fn materialize_args(step: &PlanStep, for_exec: bool, tmp_dir: &Path) -> Result<M
     match path.as_slice() {
         ["kb916", "set", "keymap"] if args.contains_key("values") => {
             let vals = args.remove("values").expect("checked");
-            let arr = vals
-                .as_array()
-                .ok_or_else(|| anyhow!("kb916 set keymap 'values' must be an array of u32 values"))?;
+            let arr = vals.as_array().ok_or_else(|| {
+                anyhow!("kb916 set keymap 'values' must be an array of u32 values")
+            })?;
             let text = arr
                 .iter()
                 .map(value_token)
@@ -473,7 +472,10 @@ fn materialize_args(step: &PlanStep, for_exec: bool, tmp_dir: &Path) -> Result<M
             let cfg = args.remove("config").expect("checked");
             args.insert(
                 "file".into(),
-                json!(write_tmp("light.json", &serde_json::to_string_pretty(&cfg)?)?),
+                json!(write_tmp(
+                    "light.json",
+                    &serde_json::to_string_pretty(&cfg)?
+                )?),
             );
         }
         ["kb916", "macro", "set"] => {
@@ -528,25 +530,31 @@ fn build_argv(
         let flag = meta["long"]
             .as_str()
             .map(|l| l.trim_start_matches('-').to_string())
-            .or_else(|| meta["short"].as_str().map(|s| s.trim_start_matches('-').to_string()));
+            .or_else(|| {
+                meta["short"]
+                    .as_str()
+                    .map(|s| s.trim_start_matches('-').to_string())
+            });
         match kind {
-            "flag" => {
-                match val {
-                    Value::Bool(true) => {
-                        if let Some(f) = flag {
-                            argv.push(format!("--{f}"));
-                        } else {
-                            bail!("step '{}' arg '{}' is a flag without a long name", step.op, id);
-                        }
+            "flag" => match val {
+                Value::Bool(true) => {
+                    if let Some(f) = flag {
+                        argv.push(format!("--{f}"));
+                    } else {
+                        bail!(
+                            "step '{}' arg '{}' is a flag without a long name",
+                            step.op,
+                            id
+                        );
                     }
-                    Value::Bool(false) => bail!(
-                        "step '{}' arg '{}': boolean flags cannot be false in a plan — omit the arg",
-                        step.op,
-                        id
-                    ),
-                    _ => bail!("step '{}' arg '{}' wants true/false", step.op, id),
                 }
-            }
+                Value::Bool(false) => bail!(
+                    "step '{}' arg '{}': boolean flags cannot be false in a plan — omit the arg",
+                    step.op,
+                    id
+                ),
+                _ => bail!("step '{}' arg '{}' wants true/false", step.op, id),
+            },
             _ => {
                 // option or positional; arrays repeat the token.
                 let vals: Vec<Value> = match val {
@@ -577,8 +585,7 @@ fn build_argv(
             && !matches!(key.as_str(), "values" | "config")
             && !arg_meta.iter().any(|m| {
                 m["name"].as_str() == Some(key.as_str())
-                    || m["long"].as_str().map(|l| l.trim_start_matches('-'))
-                        == Some(key.as_str())
+                    || m["long"].as_str().map(|l| l.trim_start_matches('-')) == Some(key.as_str())
             })
         {
             bail!("step '{}': unknown argument '{key}'", step.op);
@@ -650,7 +657,8 @@ fn analyze_step(step: &PlanStep) -> StepCheck {
     if risk == Risk::L3 {
         warnings.push(match step.path.first().map(String::as_str) {
             Some("kb") if step.path.get(1).map(String::as_str) == Some("polling") => {
-                "L3: keyboard restarts and drops off the bus; read-back may report unverified".into()
+                "L3: keyboard restarts and drops off the bus; read-back may report unverified"
+                    .into()
             }
             Some("kb") if step.path.get(1).map(String::as_str) == Some("calibration") => {
                 "L3: recalibrates hall sensors — changes hardware behaviour".into()
@@ -665,9 +673,8 @@ fn analyze_step(step: &PlanStep) -> StepCheck {
         );
     }
     if cap.as_deref() == Some("profile_import") {
-        warnings.push(
-            "profile import applies to every matched connected device, not just one".into(),
-        );
+        warnings
+            .push("profile import applies to every matched connected device, not just one".into());
     }
 
     if status == "ok" && !warnings.is_empty() {
@@ -757,26 +764,77 @@ fn target_signature(step: &PlanStep) -> String {
                 Some("light-color") => &["color"][..],
                 _ => &[],
             },
-            Some("light") => &["file", "config", "pattern", "color", "to", "fps", "duration", "frames", "interval_ms", "loop"][..],
+            Some("light") => &[
+                "file",
+                "config",
+                "pattern",
+                "color",
+                "to",
+                "fps",
+                "duration",
+                "frames",
+                "interval_ms",
+                "loop",
+            ][..],
             Some("macro") => &["steps", "name", "key", "index", "macro_type", "loop_count"][..],
-            Some("adv") => &["tap", "hold", "time", "direction", "key_a", "key_b", "slot", "kind", "params"][..],
+            Some("adv") => &[
+                "tap",
+                "hold",
+                "time",
+                "direction",
+                "key_a",
+                "key_b",
+                "slot",
+                "kind",
+                "params",
+            ][..],
             _ => &[],
         },
         Some("kb") => match step.path.get(1).map(String::as_str) {
             Some("keys") => &["code", "codes"][..],
             Some("hk") => &["kcs", "trps", "dbs", "time", "delay"][..],
             Some("macro") => &["rep_num", "mode", "actions"][..],
-            Some("light") => &["on", "off", "mode", "brightness", "speed", "direction", "color"][..],
+            Some("light") => &[
+                "on",
+                "off",
+                "mode",
+                "brightness",
+                "speed",
+                "direction",
+                "color",
+            ][..],
             Some("light-sleep") => &["minutes"][..],
-            Some("perf") => &["mode", "actuation", "rt_first", "rt_press", "rt_release", "dz_press", "dz_release"][..],
+            Some("perf") => &[
+                "mode",
+                "actuation",
+                "rt_first",
+                "rt_press",
+                "rt_release",
+                "dz_press",
+                "dz_release",
+            ][..],
             Some("polling") => &["rate"][..],
             Some("os") => &["os"][..],
             Some("profile") => &["index"][..],
             _ => &[],
         },
         Some("mouse") => &[
-            "hz", "stage", "dpi", "color", "n", "i", "v", "mode", "speed", "brightness",
-            "ms", "on", "seconds", "slot", "kind", "param",
+            "hz",
+            "stage",
+            "dpi",
+            "color",
+            "n",
+            "i",
+            "v",
+            "mode",
+            "speed",
+            "brightness",
+            "ms",
+            "on",
+            "seconds",
+            "slot",
+            "kind",
+            "param",
         ][..],
         _ => &[],
     };
@@ -794,7 +852,10 @@ fn target_signature(step: &PlanStep) -> String {
 impl StepCheck {
     /// Path segments for helpers that only stored the rendered command.
     fn command_path(&self) -> Vec<String> {
-        self.command.split_whitespace().map(str::to_string).collect()
+        self.command
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -864,10 +925,7 @@ fn device_check(
 fn checks_summary(checks: &[StepCheck]) -> Value {
     let mut counts = Map::new();
     for c in checks {
-        let n = counts
-            .get(c.status)
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let n = counts.get(c.status).and_then(Value::as_u64).unwrap_or(0);
         counts.insert(c.status.to_string(), json!(n + 1));
     }
     json!({
@@ -901,8 +959,7 @@ fn cmd_create(cli: &Cli, input: &str) -> Result<ExitCode> {
         std::io::read_to_string(std::io::stdin())
             .map_err(|e| anyhow!("cannot read plan from stdin: {e}"))?
     } else {
-        std::fs::read_to_string(input)
-            .map_err(|e| anyhow!("cannot read plan '{input}': {e}"))?
+        std::fs::read_to_string(input).map_err(|e| anyhow!("cannot read plan '{input}': {e}"))?
     };
     let doc = parse_plan(&text)?;
 
@@ -995,8 +1052,8 @@ fn cmd_validate(cli: &Cli, id: &str) -> Result<ExitCode> {
     let mut doc = load_plan_doc(id)?;
     let plan_raw = doc["plan"].clone();
     let plan_text = serde_json::to_string(&plan_raw)?;
-    let plan = parse_plan(&plan_text)
-        .map_err(|e| anyhow!("stored plan '{id}' no longer parses: {e}"))?;
+    let plan =
+        parse_plan(&plan_text).map_err(|e| anyhow!("stored plan '{id}' no longer parses: {e}"))?;
 
     let mut checks: Vec<StepCheck> = plan.steps.iter().map(analyze_step).collect();
     conflict_warnings(&plan.steps, &mut checks);
@@ -1043,7 +1100,14 @@ fn cmd_validate(cli: &Cli, id: &str) -> Result<ExitCode> {
                 println!("       warn:  {w}");
             }
         }
-        println!("{}", if ok { "plan valid" } else { "plan has blocking problems" });
+        println!(
+            "{}",
+            if ok {
+                "plan valid"
+            } else {
+                "plan has blocking problems"
+            }
+        );
     }
     Ok(if ok {
         ExitCode::SUCCESS
@@ -1137,12 +1201,20 @@ fn step_sections(step: &PlanStep) -> Vec<String> {
     let arg = |k: &str, d: &str| {
         step.args
             .get(k)
-            .and_then(|v| v.as_str().map(str::to_string).or_else(|| value_token(v).ok()))
+            .and_then(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .or_else(|| value_token(v).ok())
+            })
             .unwrap_or_else(|| d.to_string())
     };
     match p.as_slice() {
         ["kb916", "set", "key"] | ["kb916", "set", "keymap"] => {
-            vec![format!("keymap|{}|{}", arg("layer", "0"), arg("system", "0"))]
+            vec![format!(
+                "keymap|{}|{}",
+                arg("layer", "0"),
+                arg("system", "0")
+            )]
         }
         ["kb916", "set", "sleep"] => vec!["profile|sleep".into()],
         ["kb916", "set", "light-mode"] => vec!["profile|light".into()],
@@ -1151,12 +1223,20 @@ fn step_sections(step: &PlanStep) -> Vec<String> {
         ["kb916", "macro", "set"] => {
             let mut v = vec![format!("macro|{}", arg("index", "next"))];
             if step.args.contains_key("key") {
-                v.push(format!("keymap|{}|{}", arg("layer", "0"), arg("system", "0")));
+                v.push(format!(
+                    "keymap|{}|{}",
+                    arg("layer", "0"),
+                    arg("system", "0")
+                ));
             }
             v
         }
         ["kb916", "macro", "bind"] | ["kb916", "macro", "unbind"] => {
-            vec![format!("keymap|{}|{}", arg("layer", "0"), arg("system", "0"))]
+            vec![format!(
+                "keymap|{}|{}",
+                arg("layer", "0"),
+                arg("system", "0")
+            )]
         }
         ["kb916", "macro", "delete"] => vec![format!("macro_delete|{}", arg("index", "?"))],
         ["kb", "keys", "set"] => vec![format!(
@@ -1165,7 +1245,9 @@ fn step_sections(step: &PlanStep) -> Vec<String> {
             num("row", "?"),
             num("col", "?")
         )],
-        ["kb", "keys", "set-row"] => vec![format!("he_row|{}|{}", arg("layer", "0"), num("row", "?"))],
+        ["kb", "keys", "set-row"] => {
+            vec![format!("he_row|{}|{}", arg("layer", "0"), num("row", "?"))]
+        }
         // HE profile/polling/os/light/perf/hk/macro and every mouse
         // write are covered by the whole-profile snapshot.
         ["kb", ..] | ["mouse", "set", ..] => vec!["profile".into()],
@@ -1191,7 +1273,8 @@ fn khub916_needs(steps: &[PlanStep]) -> Khub916Needs {
         let system = s.args.get("system").and_then(Value::as_u64).unwrap_or(0) as u8;
         match p.as_slice() {
             ["kb916", "set", "key"] | ["kb916", "set", "keymap"] => {
-                n.keymaps.insert(format!("{layer}|{system}"), (layer, system));
+                n.keymaps
+                    .insert(format!("{layer}|{system}"), (layer, system));
             }
             ["kb916", "set", "sleep"] | ["kb916", "set", "light-mode"] => n.profile = true,
             ["kb916", "set", "light-color"] => n.colors = true,
@@ -1210,7 +1293,8 @@ fn khub916_needs(steps: &[PlanStep]) -> Khub916Needs {
                 }
             }
             ["kb916", "macro", "bind"] | ["kb916", "macro", "unbind"] => {
-                n.keymaps.insert(format!("{layer}|{system}"), (layer, system));
+                n.keymaps
+                    .insert(format!("{layer}|{system}"), (layer, system));
             }
             _ => {}
         }
@@ -1306,36 +1390,62 @@ fn ensure_snapshot(
                 let reads = &mut snaps["devices"][&key]["reads"];
                 if needs.profile && reads["profile"].is_null() {
                     reads["profile"] = run_read(vec![
-                        "omg".into(), "--json".into(), "--device".into(), device.path.clone(),
-                        "kb916".into(), "profile".into(), "get".into(),
+                        "omg".into(),
+                        "--json".into(),
+                        "--device".into(),
+                        device.path.clone(),
+                        "kb916".into(),
+                        "profile".into(),
+                        "get".into(),
                     ])?;
                 }
                 if needs.light && reads["light"].is_null() {
                     reads["light"] = run_read(vec![
-                        "omg".into(), "--json".into(), "--device".into(), device.path.clone(),
-                        "kb916".into(), "light".into(), "get".into(),
+                        "omg".into(),
+                        "--json".into(),
+                        "--device".into(),
+                        device.path.clone(),
+                        "kb916".into(),
+                        "light".into(),
+                        "get".into(),
                     ])?;
                 }
                 if needs.colors && reads["colors"].is_null() {
                     reads["colors"] = run_read(vec![
-                        "omg".into(), "--json".into(), "--device".into(), device.path.clone(),
-                        "kb916".into(), "light-colors".into(), "get".into(),
+                        "omg".into(),
+                        "--json".into(),
+                        "--device".into(),
+                        device.path.clone(),
+                        "kb916".into(),
+                        "light-colors".into(),
+                        "get".into(),
                     ])?;
                 }
                 for (k, (layer, system)) in &needs.keymaps {
                     if reads[k].is_null() {
                         reads[k] = run_read(vec![
-                            "omg".into(), "--json".into(), "--device".into(), device.path.clone(),
-                            "kb916".into(), "keys".into(),
-                            "--layer".into(), layer.to_string(),
-                            "--system".into(), system.to_string(),
+                            "omg".into(),
+                            "--json".into(),
+                            "--device".into(),
+                            device.path.clone(),
+                            "kb916".into(),
+                            "keys".into(),
+                            "--layer".into(),
+                            layer.to_string(),
+                            "--system".into(),
+                            system.to_string(),
                         ])?;
                     }
                 }
                 if !needs.macros.is_empty() && reads["macro_list"].is_null() {
                     reads["macro_list"] = run_read(vec![
-                        "omg".into(), "--json".into(), "--device".into(), device.path.clone(),
-                        "kb916".into(), "macro".into(), "list".into(),
+                        "omg".into(),
+                        "--json".into(),
+                        "--device".into(),
+                        device.path.clone(),
+                        "kb916".into(),
+                        "macro".into(),
+                        "list".into(),
                     ])?;
                     reads["macro_count"] =
                         json!(reads["macro_list"]["count"].as_u64().unwrap_or(0));
@@ -1343,9 +1453,14 @@ fn ensure_snapshot(
                         let mk = format!("macro|{i}");
                         if reads[&mk].is_null() {
                             reads[&mk] = run_read(vec![
-                                "omg".into(), "--json".into(), "--device".into(),
-                                device.path.clone(), "kb916".into(), "macro".into(),
-                                "get".into(), i.to_string(),
+                                "omg".into(),
+                                "--json".into(),
+                                "--device".into(),
+                                device.path.clone(),
+                                "kb916".into(),
+                                "macro".into(),
+                                "get".into(),
+                                i.to_string(),
                             ])?;
                         }
                     }
@@ -1383,19 +1498,60 @@ fn he_read_argvs(step: &PlanStep, device_sel: Option<&str>) -> BTreeMap<String, 
     let p: Vec<&str> = step.path.iter().map(String::as_str).collect();
     match p.as_slice() {
         ["kb", "keys", "set"] => {
-            let layer = step.args.get("layer").map(value_token).transpose().ok().flatten().unwrap_or_else(|| "0".into());
-            let row = step.args.get("row").map(value_token).transpose().ok().flatten().unwrap_or_default();
-            let col = step.args.get("col").map(value_token).transpose().ok().flatten().unwrap_or_default();
+            let layer = step
+                .args
+                .get("layer")
+                .map(value_token)
+                .transpose()
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "0".into());
+            let row = step
+                .args
+                .get("row")
+                .map(value_token)
+                .transpose()
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let col = step
+                .args
+                .get("col")
+                .map(value_token)
+                .transpose()
+                .ok()
+                .flatten()
+                .unwrap_or_default();
             let sec = format!("he_key|{layer}|{row}|{col}");
-            push(sec, vec![
-                "--layer".into(), layer,
-                "--row".into(), row.clone(),
-                "--col".into(), col,
-            ]);
+            push(
+                sec,
+                vec![
+                    "--layer".into(),
+                    layer,
+                    "--row".into(),
+                    row.clone(),
+                    "--col".into(),
+                    col,
+                ],
+            );
         }
         ["kb", "keys", "set-row"] => {
-            let layer = step.args.get("layer").map(value_token).transpose().ok().flatten().unwrap_or_else(|| "0".into());
-            let row = step.args.get("row").map(value_token).transpose().ok().flatten().unwrap_or_default();
+            let layer = step
+                .args
+                .get("layer")
+                .map(value_token)
+                .transpose()
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "0".into());
+            let row = step
+                .args
+                .get("row")
+                .map(value_token)
+                .transpose()
+                .ok()
+                .flatten()
+                .unwrap_or_default();
             let sec = format!("he_row|{layer}|{row}");
             push(sec, vec!["--layer".into(), layer, "--row".into(), row]);
         }
@@ -1456,7 +1612,14 @@ fn cmd_apply(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
         let check = checks[step.index].clone();
         if check.risk == Risk::L4 {
             // Unreachable (validation refused) — belt and braces.
-            journal_push(&mut journal, step, &check, "skipped", None, Some("L4 refused".into()));
+            journal_push(
+                &mut journal,
+                step,
+                &check,
+                "skipped",
+                None,
+                Some("L4 refused".into()),
+            );
             status = "partial";
             break;
         }
@@ -1471,11 +1634,8 @@ fn cmd_apply(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
                 cli.device.as_deref(),
                 &devices,
             ) {
-                let device_sel = step_device_sel(
-                    step,
-                    plan.device.as_deref(),
-                    cli.device.as_deref(),
-                );
+                let device_sel =
+                    step_device_sel(step, plan.device.as_deref(), cli.device.as_deref());
                 let he_reads = he_read_argvs(step, device_sel.as_deref());
                 snap_key = Some(ensure_snapshot(
                     &exec_cli, &mut snaps, &d, &needs, &he_reads,
@@ -1492,7 +1652,14 @@ fn cmd_apply(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
                 a
             }
             Err(e) => {
-                journal_push(&mut journal, step, &check, "failed", None, Some(format!("{e:#}")));
+                journal_push(
+                    &mut journal,
+                    step,
+                    &check,
+                    "failed",
+                    None,
+                    Some(format!("{e:#}")),
+                );
                 save_json(&journal_file(id)?, &journal)?;
                 status = "partial";
                 break 'steps;
@@ -1694,8 +1861,14 @@ fn plan_dry_run(cli: &Cli, plan: &PlanDoc, id: &str) -> Result<ExitCode> {
     for step in &plan.steps {
         let check = analyze_step(step);
         let device_sel = step_device_sel(step, plan.device.as_deref(), cli.device.as_deref());
-        let argv = build_argv(step, device_sel.as_deref(), true, false, Path::new("/nonexistent"))
-            .unwrap_or_else(|e| vec![format!("<argv error: {e:#}>")]);
+        let argv = build_argv(
+            step,
+            device_sel.as_deref(),
+            true,
+            false,
+            Path::new("/nonexistent"),
+        )
+        .unwrap_or_else(|e| vec![format!("<argv error: {e:#}>")]);
         let target = resolve_step_device(
             step,
             plan.device.as_deref(),
@@ -1728,7 +1901,14 @@ fn plan_dry_run(cli: &Cli, plan: &PlanDoc, id: &str) -> Result<ExitCode> {
                 e["step"].as_u64().unwrap_or(0),
                 e["risk"].as_str().unwrap_or("?"),
                 e["op"].as_str().unwrap_or("?"),
-                e["argv"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default()
+                e["argv"]
+                    .as_array()
+                    .map(|a| a
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "))
+                    .unwrap_or_default()
             );
         }
         println!("(no bytes sent — re-run with --yes to apply)");
@@ -1739,7 +1919,10 @@ fn plan_dry_run(cli: &Cli, plan: &PlanDoc, id: &str) -> Result<ExitCode> {
 // ── rollback ───────────────────────────────────────────────────────────
 
 fn map_of(pairs: &[(&str, Value)]) -> Map<String, Value> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect()
 }
 
 /// argv for a synthetic restore step (always with --yes; --json first).
@@ -1804,9 +1987,12 @@ fn restore_plan_for_device(
                     restores.push((
                         format!("{kind}: restore whole-profile snapshot via profile import"),
                         vec![
-                            "omg".into(), "--json".into(),
-                            "profile".into(), "import".into(),
-                            f.to_string_lossy().into_owned(), "--yes".into(),
+                            "omg".into(),
+                            "--json".into(),
+                            "profile".into(),
+                            "import".into(),
+                            f.to_string_lossy().into_owned(),
+                            "--yes".into(),
                         ],
                     ));
                 }
@@ -1828,7 +2014,10 @@ fn restore_plan_for_device(
 
     if kind != "khub916_wired" {
         for (sec, _) in &secs {
-            skipped.push((sec.clone(), format!("no rollback path for device kind '{kind}'")));
+            skipped.push((
+                sec.clone(),
+                format!("no rollback path for device kind '{kind}'"),
+            ));
         }
         return (restores, skipped);
     }
@@ -1852,11 +2041,7 @@ fn restore_plan_for_device(
                             step_argv(&PlanStep {
                                 index: 0,
                                 op: "kb916 set keymap".into(),
-                                path: vec![
-                                    "kb916".into(),
-                                    "set".into(),
-                                    "keymap".into(),
-                                ],
+                                path: vec!["kb916".into(), "set".into(), "keymap".into()],
                                 args: map_of(&[
                                     ("file", json!(f.to_string_lossy())),
                                     ("layer", json!(parts[1])),
@@ -2217,7 +2402,9 @@ fn cmd_rollback(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if !yes {
-        bail!("refusing to roll back plan '{id}' without --yes (docs/plan.md §2: writes are opt-in)");
+        bail!(
+            "refusing to roll back plan '{id}' without --yes (docs/plan.md §2: writes are opt-in)"
+        );
     }
 
     let journal = load_or_init_journal(id, &plan_stub);
@@ -2278,7 +2465,11 @@ fn cmd_rollback(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
     save_json(&journal_file(id)?, &journal)?;
 
     let mut stored = load_plan_doc(id)?;
-    stored["status"] = json!(if failed { "rollback-partial" } else { "rolled-back" });
+    stored["status"] = json!(if failed {
+        "rollback-partial"
+    } else {
+        "rolled-back"
+    });
     stored["rolled_back_at"] = json!(profile::utc_now());
     save_json(&plan_file(id)?, &stored)?;
 
@@ -2334,14 +2525,16 @@ mod tests {
 
     #[test]
     fn parse_basic_plan() {
-        let doc = parse_plan(r#"{
+        let doc = parse_plan(
+            r#"{
             "version": 1,
             "name": "t",
             "steps": [
                 {"op": "kb916 set key", "args": {"index": 5, "value": "0x1234"}},
                 {"op": "kb916 light apply", "args": {"config": {"mode": 2}}}
             ]
-        }"#)
+        }"#,
+        )
         .unwrap();
         assert_eq!(doc.steps.len(), 2);
         assert_eq!(doc.steps[0].path, vec!["kb916", "set", "key"]);
@@ -2377,7 +2570,10 @@ mod tests {
             Risk::L3
         );
         assert_eq!(risk_of(&["kb916".into(), "keys".into()]), Risk::L0);
-        assert_eq!(risk_of(&["kb".into(), "keys".into(), "get".into()]), Risk::L0);
+        assert_eq!(
+            risk_of(&["kb".into(), "keys".into(), "get".into()]),
+            Risk::L0
+        );
     }
 
     #[test]
@@ -2406,7 +2602,10 @@ mod tests {
         assert_eq!(c.status, "error");
         assert!(c.errors.iter().any(|e| e.contains("invalid arguments")));
 
-        let s2 = step("kb916 set key", json!({"index": 5, "value": "0x1", "bogus": 1}));
+        let s2 = step(
+            "kb916 set key",
+            json!({"index": 5, "value": "0x1", "bogus": 1}),
+        );
         let c2 = analyze_step(&s2);
         assert_eq!(c2.status, "error");
         assert!(c2.errors.iter().any(|e| e.contains("unknown argument")));
@@ -2525,7 +2724,7 @@ mod tests {
     #[test]
     fn apply_with_mock_executor() {
         let mut journal = json!({"steps": []});
-        let plan_steps = vec![
+        let plan_steps = [
             step("kb916 set key", json!({"index": 1, "value": "0x1"})),
             step("kb916 set key", json!({"index": 2, "value": "0x2"})),
         ];
@@ -2667,10 +2866,13 @@ mod tests {
         let devices = mixed_devices();
         for s in &doc.steps {
             let sel = step_device_sel(s, doc.device.as_deref(), None);
-            let argv =
-                build_argv(s, sel.as_deref(), true, false, Path::new("/tmp")).unwrap();
+            let argv = build_argv(s, sel.as_deref(), true, false, Path::new("/tmp")).unwrap();
             let joined = argv.join(" ");
-            let expected = if s.index == 1 { "/dev/mouse0" } else { "/dev/kb0" };
+            let expected = if s.index == 1 {
+                "/dev/mouse0"
+            } else {
+                "/dev/kb0"
+            };
             assert!(
                 joined.contains(&format!("--device {expected}")),
                 "step {} argv missing --device {expected}: {joined}",
@@ -2692,13 +2894,9 @@ mod tests {
         assert_eq!(mouse.path, "/dev/mouse0");
         // Step 3 ('mouse info', no override) inherits the keyboard
         // selector → resolves to nothing of CompxMouse kind.
-        assert!(resolve_step_device(
-            &doc.steps[2],
-            doc.device.as_deref(),
-            None,
-            &devices,
-        )
-        .is_none());
+        assert!(
+            resolve_step_device(&doc.steps[2], doc.device.as_deref(), None, &devices,).is_none()
+        );
     }
 
     #[test]

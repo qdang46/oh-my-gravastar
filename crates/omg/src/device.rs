@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 /// Transport hint for a device kind.
 fn transport(kind: DeviceKind) -> &'static str {
     match kind {
-        DeviceKind::HeKeyboardV2 | DeviceKind::CompxMouse | DeviceKind::Khub916Wired
+        DeviceKind::HeKeyboardV2
+        | DeviceKind::CompxMouse
+        | DeviceKind::Khub916Wired
         | DeviceKind::Khub916Screen => "usb",
         DeviceKind::SparkPlayJoy => "usb",
         DeviceKind::Khub916Wireless => "2.4 GHz dongle",
@@ -91,7 +93,7 @@ pub(crate) fn capabilities(kind: DeviceKind) -> Value {
             "profile_import": {"supported": false, "reason": "not-implemented",
                 "detail": "export-only; no whole-profile mapping"},
             "factory_reset": {"supported": false, "blacklisted": true, "reason": "not-implemented",
-                "detail": "protocol blacklist: cmd 17 reset and all writes per docs/protocol-khub916.md §6"},
+                "detail": "cmd 17 exists (fire-and-forget, no read-back) but reset coverage is unverified — see docs/research/reset-coverage.md; L4-blocked pending reset_verified evidence"},
         }),
         DeviceKind::Khub916Screen => json!({
             "verification": "code-verified",
@@ -233,7 +235,15 @@ mod tests {
         let families = doc["families"].as_array().unwrap();
         assert_eq!(families.len(), 6);
         for f in families {
-            for key in ["kind", "kind_label", "protocol", "transport", "wired", "match", "capabilities"] {
+            for key in [
+                "kind",
+                "kind_label",
+                "protocol",
+                "transport",
+                "wired",
+                "match",
+                "capabilities",
+            ] {
                 assert!(f.get(key).is_some(), "family missing {key}: {f}");
             }
             assert!(f["capabilities"].is_object());
@@ -263,7 +273,10 @@ mod tests {
             let caps = capabilities(kind);
             assert_ne!(caps["verification"], "live-verified", "{kind:?}");
             let s = caps.to_string();
-            assert!(!s.contains("\"verified\":\"live-verified\""), "{kind:?}: {s}");
+            assert!(
+                !s.contains("\"verified\":\"live-verified\""),
+                "{kind:?}: {s}"
+            );
         }
         // Every supported:false entry must carry a reason.
         for kind in [
@@ -280,8 +293,10 @@ mod tests {
                 }
                 let cap = cap.as_object().unwrap();
                 if cap.get("supported") == Some(&json!(false)) {
-                    assert!(cap.get("reason").is_some() || cap.get("blacklisted") == Some(&json!(true)),
-                        "{kind:?}.{name} unsupported without reason");
+                    assert!(
+                        cap.get("reason").is_some() || cap.get("blacklisted") == Some(&json!(true)),
+                        "{kind:?}.{name} unsupported without reason"
+                    );
                 }
             }
         }

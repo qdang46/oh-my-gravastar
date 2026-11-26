@@ -2,8 +2,8 @@
 
 Exhaustive inventory of every CLI flag/arg across every `omg` subcommand, built
 to support the planned migration from scattered per-command flags to a unified
-desired-state JSON config (`omg config validate`/`omg config apply` — not yet
-implemented; see `docs/plan.md` for the target architecture this feeds into).
+desired-state JSON config (`omg config validate`/`omg config apply` —
+implemented; see `docs/device-config-schema.md` for the shipped surface).
 
 Scope: every `#[arg(...)]`, positional, and flattened-`Yes`/`HkSet`/`PerfWrite`
 field across all `enum *Commands` blocks in `crates/omg/src/main.rs`, plus the
@@ -19,8 +19,8 @@ sweep).
   dry-run, action verb, stream pacing/stop-condition). Stays a flag regardless
   of config migration.
 - **MIGRATE** — a value that should become a JSON field in a desired-state
-  doc; the current command becomes a compat wrapper once `omg config apply`
-  exists, and is deprecated only after parity + tests confirm the JSON path
+  doc; commands not yet covered by `omg config apply` remain the primary
+  path, and are deprecated only after parity + tests confirm the JSON path
   reproduces it exactly (per AGENTS.md: never delete a flag before its
   replacement is verified).
 - **CONTEXT** — a pure scope selector (`--layer`, `--system`, `row`/`col`,
@@ -261,11 +261,11 @@ SIGINT/SIGTERM restore handling regardless of how flags are reorganized.
 | `inspect/validate/apply/rollback <id>` | string | CONTEXT |
 | `apply`/`rollback --yes` | bool | KEEP |
 
-## 7. `omg schema <path...>`
+## 7. `omg cli-schema <path...>`
 
 `Vec<String>` command-path segments — KEEP (agent introspection of the Clap
-command tree; not a device-config schema, see AGENTS.md discussion of this
-distinction).
+command tree; the device desired-state schema is `omg config schema`,
+a different artifact — see AGENTS.md discussion of this distinction).
 
 ## Safety-flag audit
 

@@ -49,8 +49,12 @@ fn main() -> Result<()> {
     // Solid-colour frame: planar [R×126][G×126][B×126].
     // --color rrggbb|r,g,b (default ff0000 red).
     let (r, g, b) = {
-        let c = args.iter().position(|a| a == "--color")
-            .and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "ff0000".into());
+        let c = args
+            .iter()
+            .position(|a| a == "--color")
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+            .unwrap_or_else(|| "ff0000".into());
         let c = c.trim_start_matches('#');
         if c.len() == 6 {
             let v = u32::from_str_radix(c, 16).unwrap();
@@ -77,7 +81,11 @@ fn main() -> Result<()> {
                     println!("frame {i}: reply {} bytes", resp.len());
                     if std::env::var("GIF_PROBE_DUMP").is_ok() {
                         for (j, chunk) in resp.chunks(32).enumerate() {
-                            println!("  {:04x}: {}", j*32, chunk.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                            println!(
+                                "  {:04x}: {}",
+                                j * 32,
+                                chunk.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                            );
                         }
                     } else {
                         println!("  head: {:02x?}", &resp[..resp.len().min(32)]);

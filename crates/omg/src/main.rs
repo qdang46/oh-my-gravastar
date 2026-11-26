@@ -21,13 +21,15 @@ use serde_json::json;
 mod config;
 mod device;
 mod kb916_adv;
-mod plan;
 mod kb916_doctor;
-mod kb916_macro;
 mod kb916_light;
+mod kb916_macro;
 mod kb916_music;
+mod plan;
 mod profile;
+mod runtime;
 mod schema;
+mod watch;
 
 #[derive(Parser)]
 #[command(
@@ -98,11 +100,11 @@ enum Commands {
         #[command(subcommand)]
         command: ProfileCommands,
     },
-    /// Machine-readable command schema for agents. With no path, lists
-    /// every command; with a path (`omg schema kb916 set key`) emits the
-    /// JSON schema document for that command's arguments, write flag,
-    /// target device family and output shape. Always JSON.
-    Schema {
+    /// Machine-readable *command* schema for agents. With no path, lists every command; with
+    /// a path (`omg cli-schema kb916 set key`) emits the JSON schema
+    /// document for that command's arguments, write flag, target device
+    /// family and output shape. Always JSON.
+    CliSchema {
         /// Command path segments, e.g. `kb916 set key`.
         path: Vec<String>,
     },
@@ -125,6 +127,15 @@ enum Commands {
     Plan {
         #[command(subcommand)]
         command: plan::PlanCommands,
+    },
+    /// Live runtime sessions (spec §4.4 — `runtime`, not persistent
+    /// config): music-reactive and LED pixel-art cmd-8 frame streams to
+    /// a khub916 wired keyboard. `start` requires `--yes` (without it
+    /// the plan is printed and nothing is sent); `stop` is always
+    /// allowed; both restore the pre-session lighting on exit.
+    Runtime {
+        #[command(subcommand)]
+        command: runtime::RuntimeCommands,
     },
 }
 
@@ -164,6 +175,27 @@ enum ProfileCommands {
         file: String,
         /// Confirm the writes. Without it (and without --dry-run) the
         /// command refuses before any bytes are sent.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Watch the foreground app and auto-switch the HE keyboard profile
+    /// when it changes (bead oh-my-gravastar-of1). macOS only for now.
+    /// `--apply` performs the profile write and requires `--yes`; without
+    /// it the command only reports what it would switch to. khub916 has
+    /// no profile-switch command, so apply targets HE keyboards only.
+    Watch {
+        /// Rules JSON file: {"rules":[{"app"|"bundle": "...", "profile": N}]}.
+        /// Without it, app changes are reported but nothing is matched.
+        #[arg(long, value_name = "FILE")]
+        rules: Option<String>,
+        /// Poll interval in milliseconds (default 1000; osascript costs
+        /// ~100 ms per query on macOS).
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+        /// Actually switch the profile on match (HE keyboards only).
+        #[arg(long)]
+        apply: bool,
+        /// Required with `--apply` (docs/plan.md §2 write contract).
         #[arg(long)]
         yes: bool,
     },
@@ -412,10 +444,11 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Commands::Kb916 { command } => cmd_kb916(cli, command),
         Commands::Mouse { command } => cmd_mouse(cli, command),
         Commands::Profile { command } => cmd_profile(cli, command),
-        Commands::Schema { path } => cmd_schema(cli, path),
+        Commands::CliSchema { path } => cmd_schema(cli, path),
         Commands::Device { command } => cmd_device(cli, command),
         Commands::Config { command } => config::run(cli, command),
         Commands::Plan { command } => plan::cmd_plan(cli, command),
+        Commands::Runtime { command } => runtime::run(cli, command),
     }
 }
 
@@ -423,7 +456,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
 
 fn cmd_schema(cli: &Cli, path: &[String]) -> Result<ExitCode> {
     if path.is_empty() {
-        // The index is JSON either way — `omg schema` is the agent surface.
+        // The index is JSON either way — `omg cli-schema` is the agent surface.
         return print_json(&schema::schema_index()).map(|_| ExitCode::SUCCESS);
     }
     match schema::command_schema(path) {
@@ -435,7 +468,7 @@ fn cmd_schema(cli: &Cli, path: &[String]) -> Result<ExitCode> {
         None => {
             let msg = if schema::is_group_path(path) {
                 format!(
-                    "'{}' is a command group — append a subcommand (see `omg schema`)",
+                    "'{}' is a command group — append a subcommand (see `omg cli-schema`)",
                     path.join(" ")
                 )
             } else {
@@ -451,7 +484,7 @@ fn cmd_schema(cli: &Cli, path: &[String]) -> Result<ExitCode> {
                 }))?;
             } else {
                 eprintln!("error: {msg}");
-                eprintln!("run `omg schema` for the command index");
+                eprintln!("run `omg cli-schema` for the command index");
             }
             Ok(ExitCode::from(1))
         }
@@ -494,7 +527,11 @@ fn device_targets(cli: &Cli) -> Result<Option<Vec<DeviceInfo>>> {
             None => Ok(None),
         };
     }
-    Ok(if devices.is_empty() { None } else { Some(devices) })
+    Ok(if devices.is_empty() {
+        None
+    } else {
+        Some(devices)
+    })
 }
 
 fn cmd_device(cli: &Cli, command: &DeviceCommands) -> Result<ExitCode> {
@@ -519,8 +556,7 @@ fn cmd_device(cli: &Cli, command: &DeviceCommands) -> Result<ExitCode> {
         }
         DeviceCommands::Status => {
             let devices = find_devices()?;
-            let entries: Vec<serde_json::Value> =
-                devices.iter().map(device_entry).collect();
+            let entries: Vec<serde_json::Value> = devices.iter().map(device_entry).collect();
             if cli.json {
                 print_json(&json!({
                     "connected": !devices.is_empty(),
@@ -2451,8 +2487,7 @@ fn csv_u16(s: &str) -> Result<Vec<u16>> {
 fn csv_u8(s: &str) -> Result<Vec<u8>> {
     s.split(',')
         .map(|p| {
-            let v = parse_maybe_hex(p.trim())
-                .map_err(|_| anyhow!("invalid byte '{p}' in list"))?;
+            let v = parse_maybe_hex(p.trim()).map_err(|_| anyhow!("invalid byte '{p}' in list"))?;
             u8::try_from(v).map_err(|_| anyhow!("value {v} out of byte range in '{s}'"))
         })
         .collect()
@@ -2494,7 +2529,10 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
         if !bad.is_empty() {
             bail!(
                 "parameter(s) {} not used by --mode {}",
-                bad.iter().map(|n| format!("--{n}")).collect::<Vec<_>>().join(", "),
+                bad.iter()
+                    .map(|n| format!("--{n}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 a.mode
             );
         }
@@ -2515,7 +2553,11 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
     let kcs = |n: usize| -> Result<Vec<u16>> {
         let v = csv_u16(req("kcs")?)?;
         if v.len() != n {
-            bail!("--kcs for mode {} needs exactly {n} values, got {}", a.mode, v.len());
+            bail!(
+                "--kcs for mode {} needs exactly {n} values, got {}",
+                a.mode,
+                v.len()
+            );
         }
         Ok(v)
     };
@@ -2537,7 +2579,10 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
             let k = kcs(4)?;
             let t = csv_u8(req("trps")?)?;
             if t.len() != 4 {
-                bail!("--trps for mode dks needs exactly 4 values, got {}", t.len());
+                bail!(
+                    "--trps for mode dks needs exactly 4 values, got {}",
+                    t.len()
+                );
             }
             let d = csv_f32(req("dbs")?)?;
             if d.len() != 2 {
@@ -2578,10 +2623,7 @@ fn hk_params(a: &HkSet) -> Result<he::HigherKeyParams> {
             reject_extras(&["kcs", "time"])?;
             let k = kcs(1)?;
             let time = req_u16("time", a.time)?;
-            Ok(he::HigherKeyParams::Tgl(he::TglParams {
-                kcs: k[0],
-                time,
-            }))
+            Ok(he::HigherKeyParams::Tgl(he::TglParams { kcs: k[0], time }))
         }
         "end" => {
             reject_extras(&["kcs", "delay"])?;
@@ -2664,11 +2706,9 @@ fn hk_config_text(c: &he::HigherKeyConfig) -> String {
             hk_kcs_text(&params.kcs),
             params.dbs
         ),
-        he::HigherKeyConfig::Mt { params, .. } => format!(
-            "mt kcs=[{}] time={}",
-            hk_kcs_text(&params.kcs),
-            params.time
-        ),
+        he::HigherKeyConfig::Mt { params, .. } => {
+            format!("mt kcs=[{}] time={}", hk_kcs_text(&params.kcs), params.time)
+        }
         he::HigherKeyConfig::Tgl { params, .. } => {
             format!("tgl kc=0x{:04X} time={}", params.kcs, params.time)
         }
@@ -2704,20 +2744,16 @@ fn hk_params_text(p: &he::HigherKeyParams) -> String {
             d.trps,
             d.dbs
         ),
-        he::HigherKeyParams::Mpt(m) => format!(
-            "mpt kcs=[{}] dbs={:?} mm",
-            hk_kcs_text(&m.kcs),
-            m.dbs
-        ),
+        he::HigherKeyParams::Mpt(m) => {
+            format!("mpt kcs=[{}] dbs={:?} mm", hk_kcs_text(&m.kcs), m.dbs)
+        }
         he::HigherKeyParams::Mt(m) => {
             format!("mt kcs=[{}] time={}", hk_kcs_text(&m.kcs), m.time)
         }
         he::HigherKeyParams::Tgl(t) => format!("tgl kc=0x{:04X} time={}", t.kcs, t.time),
-        he::HigherKeyParams::End(e) => format!(
-            "end kcs=[{}] delay={}",
-            hk_kcs_text(&e.kcs),
-            e.delay
-        ),
+        he::HigherKeyParams::End(e) => {
+            format!("end kcs=[{}] delay={}", hk_kcs_text(&e.kcs), e.delay)
+        }
         he::HigherKeyParams::Socd(s) => format!(
             "socd partner=r{}c{} kcs=[{}] delay={} dir={:?}",
             s.row2,
@@ -2850,7 +2886,10 @@ fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
                     println!("row {r}:");
                     for (col, &c) in codes.iter().enumerate() {
                         if c != 0 {
-                            println!("  col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                            println!(
+                                "  col {col:<2} 0x{c:04X}  {}",
+                                omg_model::key_label(c, false)
+                            );
                         }
                     }
                 }
@@ -2947,11 +2986,7 @@ fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
                 ExitCode::from(1)
             })
         }
-        KbKeys::Default {
-            system,
-            func,
-            row,
-        } => {
+        KbKeys::Default { system, func, row } => {
             if *system > 15 || *func > 15 {
                 bail!("system/func are nibbles and must be 0..=15");
             }
@@ -2970,7 +3005,10 @@ fn cmd_kb_keys(cli: &Cli, command: &KbKeys) -> Result<ExitCode> {
                 println!("default layout system {system} func {func} row {row}:");
                 for (col, &c) in layout.key_codes.iter().enumerate() {
                     if c != 0 {
-                        println!("  col {col:<2} 0x{c:04X}  {}", omg_model::key_label(c, false));
+                        println!(
+                            "  col {col:<2} 0x{c:04X}  {}",
+                            omg_model::key_label(c, false)
+                        );
                     }
                 }
             }
@@ -3084,12 +3122,23 @@ fn cmd_kb_macro(cli: &Cli, command: &KbMacro) -> Result<ExitCode> {
                 );
                 for e in &entries {
                     if let Some(err) = e.get("error") {
-                        println!("  slot {}: unreadable ({})", e["id"], err.as_str().unwrap_or("?"));
+                        println!(
+                            "  slot {}: unreadable ({})",
+                            e["id"],
+                            err.as_str().unwrap_or("?")
+                        );
                     } else {
                         println!(
                             "  slot {}: {} actions, rep {}, mode {}{}",
-                            e["id"], e["act_num"], e["rep_num"], e["mode"],
-                            if e["valid"] == json!(true) { "" } else { " (invalid)" }
+                            e["id"],
+                            e["act_num"],
+                            e["rep_num"],
+                            e["mode"],
+                            if e["valid"] == json!(true) {
+                                ""
+                            } else {
+                                " (invalid)"
+                            }
                         );
                     }
                 }
@@ -4244,13 +4293,13 @@ enum Kb916Light {
         #[command(flatten)]
         yes: Yes,
     },
-    /// Music-reactive lighting: capture system audio (macOS
-    /// ScreenCaptureKit loopback, needs Screen Recording permission) or
-    /// the microphone, analyse with FFT and drive cmd-8 frames in real
-    /// time (omg-music crate). Requires `--yes`; snapshots and restores
-    /// the pre-run lighting on exit/Ctrl-C.
+    /// Music-reactive lighting: capture system audio (WASAPI loopback on
+    /// Windows, ScreenCaptureKit on macOS) or the microphone, analyse
+    /// with FFT and drive cmd-8 frames in real time (omg-music crate).
+    /// Requires `--yes`; snapshots and restores the pre-run lighting on
+    /// exit/Ctrl-C.
     Music {
-        /// Audio source: `system` (output loopback, macOS only) or `mic`.
+        /// Audio source: `system` (output loopback) or `mic`.
         #[arg(long, default_value = "system")]
         source: String,
         /// Frames per second for LED updates (default 10; vendor report
@@ -4264,11 +4313,16 @@ enum Kb916Light {
         /// Output brightness 0.0-1.0 (default 1.0 = full).
         #[arg(long, default_value_t = 1.0)]
         brightness: f32,
-        /// Visualiser: `beat` (onset-driven kick/snare/hat motion over a
-        /// dim spectrum base — hybrid, default), `pulse` (whole-keyboard
-        /// beat flash), `bass` (brightness follows bass energy),
-        /// `ambient` (follows overall level), or `spectrum` (frequency
-        /// mapped across keys).
+        /// Visualiser, per engine. `legacy`: `beat` (default), `pulse`,
+        /// `bass`, `ambient`, `spectrum`. `mixer`: a scene preset
+        /// (`spectrum`, `party`, `lava`, `equalizer`, `rainstorm`,
+        /// `starry`, `pulse`, `breathing`, `wave`, `spectrum-stars`) or a
+        /// comma-separated layer list with optional `=level`
+        /// (`solid,breathing=0.5,spectrum`). `modes`: a rhythm-mode
+        /// shader (`dance-soft`, `dazzling-rock`, `clouds-rise`,
+        /// `light-field`, `gurgling-stream`, `blooming-passion`, `sine`,
+        /// `dynamic-spectrum` — default). The clap default `beat`
+        /// selects each engine's default scene/mode.
         #[arg(long, default_value = "beat")]
         effect: String,
         /// Dim uniform base brightness between beats, 0.0-1.0
@@ -4286,23 +4340,71 @@ enum Kb916Light {
         /// lingers (default 1.0, range 0.25-4.0).
         #[arg(long, default_value_t = 1.0)]
         decay: f32,
-        /// LED byte order in the 378-byte frame: `planar` = [R×126][G×126]
-        /// [B×126] (K1 Pro assumption), `interleaved` = per-LED RGB
-        /// (Aula F75 family per raghavt20/aula-f75-macos).
-        #[arg(long, default_value = "planar")]
+        /// LED byte order in the 378-byte frame: `interleaved` = per-LED
+        /// RGB (live-verified on the K1 Pro: probe lit Q/P/→ at the
+        /// expected keys), `planar` = [R×126][G×126][B×126] (unverified
+        /// legacy assumption).
+        #[arg(long, default_value = "interleaved")]
         pixel_order: String,
-        /// Renderer engine: `legacy` (BeatViz/SpectrumViz/PulseViz) or
-        /// `f75` (vendor F75 layer-mixer port: spectrum/wave/pulse/
-        /// ripple/rain/starry layers, palette hues, per-layer levels —
-        /// layout per raghavt20/aula-f75-macos).
-        #[arg(long, default_value = "legacy")]
+        /// Renderer engine: `mixer` (additive layer mixer: spectrum/
+        /// wave/pulse/ripple/rain/starry/breathing/lava layers blended
+        /// with per-layer levels and palette hues, geometry mapped from
+        /// the keymap — default), `modes` (single-shader rhythm modes:
+        /// column fills, chase heads, scrolling palette, bouncing beam,
+        /// gradient pattern), or `legacy` (BeatViz/SpectrumViz/
+        /// PulseViz renderers).
+        #[arg(long, default_value = "mixer")]
         engine: String,
-        /// Palette for `--engine f75`: rainbow|heat|ocean|sunset|neon|mono.
-        #[arg(long, default_value = "sunset")]
+        /// Palette for `--engine mixer`/`modes`: auto (preset palette,
+        /// or rainbow for modes — default), rainbow|heat|ocean|sunset|
+        /// neon|mono. An explicit name overrides the preset's palette.
+        #[arg(long, default_value = "auto")]
         palette: String,
-        /// Effect speed 0.25-3.0 for `--engine f75` (vendor `speed`).
+        /// Effect speed 0.25-3.0 for `--engine mixer`/`modes`.
         #[arg(long, default_value_t = 1.0)]
         speed: f32,
+        /// Single colour `#rrggbb` for `--palette mono` (default white).
+        #[arg(long)]
+        color: Option<String>,
+        /// Stop after this many seconds (default: until Ctrl-C).
+        #[arg(long)]
+        duration: Option<f64>,
+        #[command(flatten)]
+        yes: Yes,
+    },
+    /// LED pixel-art: render text (built-in 5x7 font) or scroll it
+    /// across the physical key grid as cmd-8 frames — the same engine
+    /// `omg runtime start` kind `pixel-art` drives. Requires `--yes`;
+    /// snapshots and restores the pre-run lighting on exit/Ctrl-C.
+    PixelArt {
+        /// Text to display (A-Z 0-9 punctuation; longer strings scroll).
+        #[arg(long)]
+        text: String,
+        /// Motion: static|scroll_left|scroll_right (default static).
+        #[arg(long, default_value = "static")]
+        motion: String,
+        /// Lit colour `#rrggbb` (default white).
+        #[arg(long)]
+        color: Option<String>,
+        /// Palette colour cycling: rainbow|heat|ocean|sunset|neon|mono
+        /// (default: solid --color).
+        #[arg(long)]
+        palette: Option<String>,
+        /// Scroll speed in cells/sec (default 6.0).
+        #[arg(long, default_value_t = 6.0)]
+        speed: f32,
+        /// Canvas columns visible across the strip (default 21).
+        #[arg(long, default_value_t = 21)]
+        cols: usize,
+        /// Canvas rows (default 6 — K1 Pro physical row count).
+        #[arg(long, default_value_t = 6)]
+        rows: usize,
+        /// LED byte order: interleaved (live-verified) | planar.
+        #[arg(long, default_value = "interleaved")]
+        pixel_order: String,
+        /// Frames per second (default 10; vendor cadence ~5 pkt/s).
+        #[arg(long, default_value_t = 10.0)]
+        fps: f64,
         /// Stop after this many seconds (default: until Ctrl-C).
         #[arg(long)]
         duration: Option<f64>,
@@ -4697,7 +4799,7 @@ fn cmd_kb916(cli: &Cli, command: &Kb916Commands) -> Result<ExitCode> {
         | Kb916Commands::Macro { .. }
         | Kb916Commands::Light { .. }
         | Kb916Commands::Adv { .. }
-        | Kb916Commands::Doctor { .. } => unreachable!("handled before the session is opened")
+        | Kb916Commands::Doctor { .. } => unreachable!("handled before the session is opened"),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -5022,8 +5124,7 @@ fn screen_push_plan(
     // frame_delay after each frame.
     let est_secs = |p: khub::ScreenPacing| -> f64 {
         frames as f64
-            * (chunks_per_frame as f64 * p.chunk_delay.as_secs_f64()
-                + p.frame_delay.as_secs_f64())
+            * (chunks_per_frame as f64 * p.chunk_delay.as_secs_f64() + p.frame_delay.as_secs_f64())
     };
     Ok(json!({
         "width": width,
@@ -5217,6 +5318,142 @@ fn cmd_profile(cli: &Cli, command: &ProfileCommands) -> Result<ExitCode> {
     match command {
         ProfileCommands::Export { file, full } => cmd_profile_export(cli, file, *full),
         ProfileCommands::Import { file, yes } => cmd_profile_import(cli, file, *yes),
+        ProfileCommands::Watch {
+            rules,
+            interval_ms,
+            apply,
+            yes,
+        } => cmd_profile_watch(cli, rules.as_deref(), *interval_ms, *apply, *yes),
+    }
+}
+
+/// `omg profile watch` — poll the foreground app, match rules, optionally
+/// switch the HE profile. Emits one event per change (JSONL with --json,
+/// human lines otherwise). Ctrl-C exits cleanly; nothing to restore —
+/// a profile switch is a persistent device setting, not a stream.
+fn cmd_profile_watch(
+    cli: &Cli,
+    rules_path: Option<&str>,
+    interval_ms: u64,
+    apply: bool,
+    yes: bool,
+) -> Result<ExitCode> {
+    if apply && !yes {
+        bail!("refusing to write without --yes (docs/plan.md §2: writes are opt-in)");
+    }
+    let rules = match rules_path {
+        Some(p) => Some(watch::WatchRules::load(p)?),
+        None => None,
+    };
+
+    // With --apply the HE keyboard is opened once and held for the watch;
+    // profile_count bounds every switch before it is sent.
+    let mut kb_ctx = if apply {
+        match open_kb(cli)? {
+            Some((device, mut kb)) => {
+                let count = kb.profile_count()?;
+                if count == 0 {
+                    bail!("device reports 0 profiles — nothing to switch to");
+                }
+                if cli.json {
+                    print_json(&json!({
+                        "event": "watching",
+                        "mode": "apply",
+                        "device": device.vid_pid(),
+                        "profiles": count,
+                        "interval_ms": interval_ms,
+                    }))?;
+                } else {
+                    println!(
+                        "watching foreground app → HE profile ({} profiles, {} ms poll)",
+                        count, interval_ms
+                    );
+                }
+                Some((kb, count))
+            }
+            None => return kb_absent(cli),
+        }
+    } else {
+        if cli.json {
+            print_json(&json!({
+                "event": "watching",
+                "mode": "report",
+                "interval_ms": interval_ms,
+            }))?;
+        } else {
+            println!("watching foreground app (report only — pass --apply --yes to switch)");
+        }
+        None
+    };
+
+    // Dedup key: what we last reported/applied.
+    let mut last: Option<(String, Option<String>, Option<u8>)> = None;
+    let period = watch::interval(interval_ms.max(50));
+    loop {
+        let app = watch::foreground_app()?;
+        let profile = rules.as_ref().and_then(|r| r.profile_for(&app));
+        let key = (app.name.clone(), app.bundle_id.clone(), profile);
+        if last.as_ref() != Some(&key) {
+            last = Some(key);
+            emit_watch_event(cli, &app, profile, apply, kb_ctx.as_mut());
+        }
+        std::thread::sleep(period);
+    }
+}
+
+/// Print one watch event; with `--apply` also perform + verify the
+/// profile switch on the held HE handle.
+fn emit_watch_event(
+    cli: &Cli,
+    app: &watch::ForegroundApp,
+    profile: Option<u8>,
+    apply: bool,
+    kb_ctx: Option<&mut (he::HeKeyboard, u8)>,
+) {
+    let mut event = json!({
+        "event": "app",
+        "name": app.name,
+        "bundle_id": app.bundle_id,
+        "profile": profile,
+        "applied": false,
+        "verified": false,
+    });
+    if apply {
+        if let Some(p) = profile {
+            if let Some((kb, count)) = kb_ctx {
+                if p < *count {
+                    match kb.set_profile(p).and_then(|()| kb.profile()) {
+                        Ok(actual) => {
+                            event["applied"] = json!(true);
+                            event["verified"] = json!(actual == p);
+                            event["actual"] = json!(actual);
+                        }
+                        Err(e) => {
+                            event["error"] = json!(e.to_string());
+                        }
+                    }
+                } else {
+                    event["error"] = json!(format!("profile {p} out of range (0..{})", *count - 1));
+                }
+            }
+        }
+    }
+    if cli.json {
+        // JSONL: one object per line.
+        println!("{}", serde_json::to_string(&event).unwrap_or_default());
+    } else {
+        let mut line = format!("{} ({})", app.name, app.bundle_id.as_deref().unwrap_or("?"));
+        if let Some(p) = profile {
+            line.push_str(&format!(" → profile {}", p + 1));
+            if event["verified"] == json!(true) {
+                line.push_str(" (verified)");
+            } else if event["applied"] == json!(true) {
+                line.push_str(" (unverified)");
+            } else if apply {
+                line.push_str(" (not applied)");
+            }
+        }
+        println!("{line}");
     }
 }
 
@@ -5844,10 +6081,7 @@ mod tests {
         a.direction = Some("cover".into());
         assert!(hk_params(&a).is_err());
         a.direction = None;
-        assert!(matches!(
-            hk_params(&a).unwrap(),
-            he::HigherKeyParams::Rs(_)
-        ));
+        assert!(matches!(hk_params(&a).unwrap(), he::HigherKeyParams::Rs(_)));
 
         // blacklisted keycodes rejected while building params.
         let mut a = hkset("mt");
@@ -5882,9 +6116,6 @@ mod tests {
             params.delay = 99;
         }
         assert!(!hk_same(&other, &p));
-        assert!(!hk_same(
-            &he::HigherKeyConfig::None { row: 1, col: 2 },
-            &p
-        ));
+        assert!(!hk_same(&he::HigherKeyConfig::None { row: 1, col: 2 }, &p));
     }
 }
