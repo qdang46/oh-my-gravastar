@@ -684,12 +684,13 @@ fn snap_khub_macros(kb: &mut omg_proto_khub916::Khub916, macros: &[Value]) -> Re
         let key = b["key"].as_u64().unwrap_or(u64::MAX) as usize;
         kb916_macro::check_keymap_args(layer, system)?;
         let arg = kb916_macro::keymap_arg(layer, system);
-        if !cache.contains_key(&arg) {
-            cache.insert(arg, kb.key_values(arg)?);
-        }
+        let values = match cache.entry(arg) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(e) => e.insert(kb.key_values(arg)?),
+        };
         // A key slot past the end of the live table cannot be written —
         // apply's preflight refuses it — so there is nothing to restore.
-        if let Some(&old) = cache[&arg].get(key) {
+        if let Some(&old) = values.get(key) {
             binds.push(json!({"layer":layer,"system":system,"key":key,"value":old}));
         }
     }
@@ -797,6 +798,38 @@ fn write_apply_journal(
         "results": results,
     });
     save_store_json(&store_path(id, "journal.json")?, &journal)
+}
+
+/// Verify the device a session actually opened matches the config
+/// document's `device` block (VID + PID always; usage_page when the doc
+/// specifies it). `matching_devices` selects on the same fields, but the
+/// session openers resolve "first device of this protocol" — without
+/// this check a doc targeting device A could write to device B of the
+/// same family.
+fn verify_apply_device(want: &Value, got: &DeviceInfo) -> Result<()> {
+    let wv = want["vid"].as_u64();
+    let wp = want["pid"].as_u64();
+    if wv != Some(got.vid as u64) || wp != Some(got.pid as u64) {
+        bail!(
+            "connected device {} does not match the config's device block \
+             (want vid {:?} pid {:?}, connected {})",
+            got.vid_pid(),
+            wv.map(|v| format!("{v:#06x}")),
+            wp.map(|v| format!("{v:#06x}")),
+            got.vid_pid(),
+        );
+    }
+    if let Some(wp_) = want.get("usage_page").and_then(Value::as_u64) {
+        if wp_ != got.usage_page as u64 {
+            bail!(
+                "connected device {} usage_page {:#06x} does not match the config's \
+                 usage_page {wp_:#06x}",
+                got.vid_pid(),
+                got.usage_page,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Refuse rollback when the connected device does not match the identity
@@ -967,6 +1000,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                             Some(s) => s,
                             None => bail!("no Compx mouse detected"),
                         };
+                        verify_apply_device(&doc["device"], &d)?;
                         snap_sections = snap_compx(&mut m, &doc)?
                             .as_object()
                             .cloned()
@@ -979,6 +1013,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                             Ok(s) => s,
                             Err(code) => return Ok(code),
                         };
+                        verify_apply_device(&doc["device"], &d)?;
                         snap_sections = snap_khub916(&mut kb, &doc)?
                             .as_object()
                             .cloned()
@@ -1569,6 +1604,28 @@ mod tests {
         // usage_page absent in the snapshot is tolerated (older writers).
         let no_page = json!({"vid":0x1e7d,"pid":0xf501,"vid_pid":"1E7D:F501"});
         assert!(verify_rollback_device(&no_page, &dev(0x1e7d, 0xf501, 0x0001)).is_ok());
+    }
+
+    #[test]
+    fn apply_device_must_match_doc_block() {
+        let dev = |vid: u16, pid: u16, page: u16| DeviceInfo {
+            path: "test".into(),
+            vid,
+            pid,
+            product: None,
+            manufacturer: None,
+            usage_page: page,
+            usage: 0,
+            kind: omg_hid::DeviceKind::CompxMouse,
+        };
+        let want = json!({"protocol":"compx","vid":0x258a,"pid":0x010c});
+        assert!(verify_apply_device(&want, &dev(0x258a, 0x010c, 0xff02)).is_ok());
+        // Same protocol family, different PID → refuse (wrong mouse).
+        assert!(verify_apply_device(&want, &dev(0x258a, 0x010d, 0xff02)).is_err());
+        // Doc usage_page enforced when present.
+        let want_page = json!({"protocol":"compx","vid":0x258a,"pid":0x010c,"usage_page":0xff02});
+        assert!(verify_apply_device(&want_page, &dev(0x258a, 0x010c, 0xff02)).is_ok());
+        assert!(verify_apply_device(&want_page, &dev(0x258a, 0x010c, 0x0001)).is_err());
     }
 
     #[test]
