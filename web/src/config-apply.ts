@@ -21,6 +21,7 @@
  */
 
 import type { PlannedOp, WriteOutcomeLike } from './safety/transaction.ts';
+import type { DeviceSnapshot, SnapshotSectionName } from './safety/snapshots.ts';
 import {
   parseMacroRegion,
   buildMacroRegion,
@@ -106,6 +107,13 @@ export function planConfigSections(doc: Record<string, unknown>): ConfigSectionP
  */
 export function configSemanticErrors(doc: Record<string, unknown>): string[] {
   const errs: string[] = [];
+  const protocol = (doc.device as Record<string, unknown> | undefined)?.protocol;
+  if (
+    protocol === 'sparkplayjoy' &&
+    ['keymap', 'lighting', 'settings', 'macros', 'advanced_keys'].some((k) => k in doc)
+  ) {
+    errs.push('sparkplayjoy has no writable config sections');
+  }
   const targets = new Map<string, string>();
   const claim = (arg: number, slot: number, who: string): void => {
     const k = `${arg}|${slot}`;
@@ -156,6 +164,37 @@ export function configSemanticErrors(doc: Record<string, unknown>): string[] {
     });
   }
   return errs;
+}
+
+/**
+ * Snapshot sections each planned op needs for a proven rollback. A
+ * desired-state apply must NOT proceed when any of these is missing or
+ * failed to capture — the user was promised a restore point.
+ */
+export const NEEDED_SNAPSHOT: Record<string, SnapshotSectionName[]> = {
+  keymap: ['keymap'],
+  // macros writes the region AND tag-3 bind slots inside keymap tables.
+  macros: ['macro', 'keymap'],
+  // settings.sleep_seconds rewrites the profile blob.
+  settings: ['profile'],
+};
+
+/**
+ * Sections the ops require that the snapshot failed to capture —
+ * non-empty means abort before any write. Pure so the gate is smoke-
+ * testable without a DOM.
+ */
+export function missingSnapshotSections(
+  ops: readonly PlannedOp[],
+  snap: Pick<DeviceSnapshot, 'sections' | 'errors'>,
+): SnapshotSectionName[] {
+  const needed = new Set<SnapshotSectionName>();
+  for (const op of ops) {
+    for (const s of NEEDED_SNAPSHOT[op.section ?? ''] ?? []) needed.add(s);
+  }
+  return [...needed].filter(
+    (s) => snap.sections[s] === undefined || snap.errors?.[s] !== undefined,
+  );
 }
 
 // ── Lowering ────────────────────────────────────────────────────────────

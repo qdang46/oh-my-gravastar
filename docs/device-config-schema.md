@@ -747,7 +747,12 @@ there's a specific document shape to apply it to:
   crate embedded via `include_str!` (`crates/omg/src/config.rs`), and Web
   AJV 2020-12 importing the same file (`web/src/device-config.ts`).
   `schemas/fixtures/cases.json` is exercised by all three so they must
-  agree. Layer-2 semantic checks live in the apply engines — the Web
+  agree. Layer-2 semantic checks live in the apply engines — Rust
+  `semantic_errors` (`crates/omg/src/config.rs`) and Web
+  `configSemanticErrors` (`web/src/config-apply.ts`) — and both consume
+  `schemas/fixtures/semantic-cases.json` (duplicate patch indices,
+  (arg, slot) conflicts, duplicate macro indices, sparkplayjoy
+  rejection) so the checks cannot drift apart. The Web
   guided apply (`web/src/config-apply.ts` + the Custom config page)
   lowers the same khub916 subset through the safety transaction layer
   (confirm = approval, SnapshotStore restore point, journal,

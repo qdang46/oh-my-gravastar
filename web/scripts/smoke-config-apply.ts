@@ -13,9 +13,11 @@ import {
   planConfigSections,
   configSemanticErrors,
   configToOps,
+  missingSnapshotSections,
   type ConfigSession,
 } from '../src/config-apply.ts';
 import { macroKeyValue } from '../src/proto/macro916.ts';
+import semanticFixtures from '../../schemas/fixtures/semantic-cases.json' with { type: 'json' };
 
 const KHUB = { protocol: 'khub916', vid: 0x1e7d, pid: 0xf501 };
 
@@ -320,11 +322,68 @@ function mockSession(over: Partial<ConfigSession> = {}): MockSession {
     }),
     s,
   );
-  const out = await ops[0]!.apply();
+  const out = (await ops[0]!.apply()) as { verified?: boolean } | undefined;
   check(
     'unverified region write skips binds',
-    out.verified === false && s.calls.writeKeymap.length === 0,
+    out?.verified === false && s.calls.writeKeymap.length === 0,
   );
+}
+
+// ── missingSnapshotSections — the pre-write restore-point gate ──
+
+{
+  const ops = configToOps(
+    doc({
+      keymap: { mode: 'patch', layer: 0, system: 0, entries: [{ index: 1, value: 'KeyA' }] },
+      macros: [{ index: 0, steps: [{ action: 'press', key: 'KeyA' }] }],
+      settings: { sleep_seconds: 30 },
+    }),
+    mockSession(),
+  );
+  const full = {
+    sections: { keymap: { '0': [1] }, macro: 'bb', profile: 'cc' },
+  };
+  check('complete snapshot passes gate', missingSnapshotSections(ops, full).length === 0);
+  const missingMacro = {
+    sections: { keymap: { '0': [1] }, profile: 'cc' },
+    errors: { macro: 'timeout' },
+  };
+  const missing = missingSnapshotSections(ops, missingMacro);
+  check(
+    'missing+errored macro section blocks apply',
+    missing.includes('macro') && !missing.includes('keymap'),
+    missing.join(','),
+  );
+  const emptySnap = { sections: {} };
+  check(
+    'empty snapshot blocks all needed sections',
+    missingSnapshotSections(ops, emptySnap).sort().join(',') === 'keymap,macro,profile',
+  );
+}
+
+// ── shared semantic fixtures (schemas/fixtures/semantic-cases.json) ──
+// Same cases the Rust `shared_semantic_fixtures` test runs — both
+// implementations must agree on every doc.
+
+{
+  const fixture = semanticFixtures as unknown as {
+    cases: {
+      name: string;
+      doc: Record<string, unknown>;
+      expect_errors: string[];
+      expect_ok: boolean;
+    }[];
+  };
+  for (const c of fixture.cases) {
+    const errs = configSemanticErrors(c.doc);
+    const joined = errs.join('\n');
+    if (c.expect_ok) {
+      check(`semantic fixture ok: ${c.name}`, errs.length === 0, joined);
+    } else {
+      const missing = c.expect_errors.filter((w) => !joined.includes(w));
+      check(`semantic fixture: ${c.name}`, missing.length === 0, `missing ${missing}`);
+    }
+  }
 }
 
 if (failures) {

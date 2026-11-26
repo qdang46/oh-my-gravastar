@@ -24,6 +24,7 @@ import {
   planConfigSections,
   configSemanticErrors,
   configToOps,
+  missingSnapshotSections,
 } from './config-apply.ts';
 import { dryRun, runTransaction } from './safety/transaction.ts';
 import { confirmDialog } from './modal.ts';
@@ -31,7 +32,6 @@ import {
   SnapshotStore,
   snapshotBeforeWrite,
   type DeviceSnapshot,
-  type SnapshotSectionName,
 } from './safety/snapshots.ts';
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -317,19 +317,6 @@ export function renderCustomConfig(root: HTMLElement): void {
     });
   }
 
-  /**
-   * Snapshot sections each planned op needs for a proven rollback. A
-   * config apply must NOT proceed when any of these is missing or failed
-   * to capture — the user was promised a restore point.
-   */
-  const NEEDED_SNAPSHOT: Record<string, SnapshotSectionName[]> = {
-    keymap: ['keymap'],
-    // macros writes the region AND tag-3 bind slots inside keymap tables.
-    macros: ['macro', 'keymap'],
-    // settings.sleep_seconds rewrites the profile blob.
-    settings: ['profile'],
-  };
-
   async function doApply(
     doc: Record<string, unknown>,
     ops: ReturnType<typeof configToOps>,
@@ -353,13 +340,7 @@ export function renderCustomConfig(root: HTMLElement): void {
     }
     // Hard gate: every section the ops will touch must be captured
     // cleanly, or there is no proven rollback — do not write.
-    const needed = new Set<SnapshotSectionName>();
-    for (const op of ops) {
-      for (const s of NEEDED_SNAPSHOT[op.section ?? ''] ?? []) needed.add(s);
-    }
-    const missing = [...needed].filter(
-      (s) => snap.sections[s] === undefined || snap.errors?.[s] !== undefined,
-    );
+    const missing = missingSnapshotSections(ops, snap);
     if (missing.length > 0) {
       applying = false;
       statusLine.textContent =

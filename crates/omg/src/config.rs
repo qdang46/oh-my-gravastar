@@ -832,6 +832,40 @@ fn verify_apply_device(want: &Value, got: &DeviceInfo) -> Result<()> {
     Ok(())
 }
 
+/// Roll up per-section journal rows into the apply's overall status.
+/// `applied` is reserved for "at least one write landed AND nothing
+/// failed AND nothing is unverified" — a doc that wrote nothing, or
+/// wrote something we could not confirm, is never reported `applied`.
+fn overall_status(results: &[Value]) -> &'static str {
+    let applied = results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r["status"].as_str(),
+                Some("applied_verified" | "applied_unverified")
+            )
+        })
+        .count();
+    let unverified = results
+        .iter()
+        .filter(|r| r["status"] == "applied_unverified")
+        .count();
+    let failed = results.iter().filter(|r| r["status"] == "failed").count();
+    if applied == 0 && failed == 0 {
+        "not_applied"
+    } else if failed > 0 {
+        if applied > 0 {
+            "partial"
+        } else {
+            "failed"
+        }
+    } else if unverified > 0 {
+        "applied_unverified"
+    } else {
+        "applied"
+    }
+}
+
 /// Refuse rollback when the connected device does not match the identity
 /// recorded in the snapshot (protocol + VID + PID + usage page). Prevents
 /// restoring device A's state onto a different device B of the same
@@ -1225,6 +1259,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
 
             // Honest overall status: `applied` requires at least one
             // write AND zero failures AND zero unverified writes.
+            let status = overall_status(&results);
             let applied_count = results
                 .iter()
                 .filter(|r| {
@@ -1234,24 +1269,6 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                     )
                 })
                 .count();
-            let unverified_count = results
-                .iter()
-                .filter(|r| r["status"] == "applied_unverified")
-                .count();
-            let failed_count = results.iter().filter(|r| r["status"] == "failed").count();
-            let status = if applied_count == 0 && failed_count == 0 {
-                "not_applied"
-            } else if failed_count > 0 {
-                if applied_count > 0 {
-                    "partial"
-                } else {
-                    "failed"
-                }
-            } else if unverified_count > 0 {
-                "applied_unverified"
-            } else {
-                "applied"
-            };
             if let Err(e) = write_apply_journal(&apply_id, file, &device_json, status, &json!(results))
             {
                 eprintln!("warning: could not write final apply journal: {e:#}");
@@ -1650,6 +1667,63 @@ mod tests {
             ],
         });
         assert!(semantic_errors(&doc2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn overall_status_rolls_up_honestly() {
+        let row = |s: &str| json!({"status": s});
+        // Nothing written at all → not_applied, never "applied".
+        assert_eq!(
+            overall_status(&[row("not_applied"), row("not_applied")]),
+            "not_applied"
+        );
+        // Verified write + untouched sections → applied.
+        assert_eq!(
+            overall_status(&[row("applied_verified"), row("not_applied")]),
+            "applied"
+        );
+        // Unverified write must not report success.
+        assert_eq!(overall_status(&[row("applied_unverified")]), "applied_unverified");
+        assert_eq!(
+            overall_status(&[row("applied_verified"), row("applied_unverified")]),
+            "applied_unverified"
+        );
+        // Failure + some applied → partial; failure only → failed.
+        assert_eq!(
+            overall_status(&[row("applied_verified"), row("failed")]),
+            "partial"
+        );
+        assert_eq!(overall_status(&[row("failed")]), "failed");
+        // Unverified write also counts toward "applied" for partiality.
+        assert_eq!(
+            overall_status(&[row("applied_unverified"), row("failed")]),
+            "partial"
+        );
+    }
+
+    /// Shared semantic fixtures — the same cases the web smoke test runs
+    /// against `configSemanticErrors`, so both implementations must agree.
+    #[test]
+    fn shared_semantic_fixtures() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/fixtures/semantic-cases.json"
+        ))
+        .expect("semantic fixtures readable");
+        let cases: Value = serde_json::from_str(&text).unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let errs = semantic_errors(&case["doc"]).unwrap();
+            let joined = errs.join("\n");
+            if case["expect_ok"].as_bool().unwrap() {
+                assert!(errs.is_empty(), "{name}: unexpected errors: {joined}");
+            } else {
+                for want in case["expect_errors"].as_array().unwrap() {
+                    let want = want.as_str().unwrap();
+                    assert!(joined.contains(want), "{name}: missing '{want}' in: {joined}");
+                }
+            }
+        }
     }
 
     /// The embedded schema must be byte-identical to the repo artifact —
