@@ -300,8 +300,19 @@ export function renderCustomConfig(root: HTMLElement): void {
 
     applyBtn.addEventListener('click', () => {
       if (applying || !app.connected) return;
-      const ops = configToOps(doc, app.connected.session);
-      if (ops.length === 0) return;
+      // Lock synchronously, before any `await`/`.then()` boundary: the
+      // dialog below is async, and a second click (or double Enter)
+      // while it is still open must not slip past this guard and start
+      // a second concurrent plan/approve/write flow against the same
+      // session. Every exit path below (cancel, error, race-abort,
+      // completion) must release the lock exactly once.
+      applying = true;
+      const sessionAtPlan = app.connected.session;
+      const ops = configToOps(doc, sessionAtPlan);
+      if (ops.length === 0) {
+        applying = false;
+        return;
+      }
       const summary = ops.map((o) => `• ${o.label ?? o.type}`).join('\n');
       // Approval is bound to this exact plan: the hash covers the doc,
       // the section plan and the connected device — shown in the dialog
@@ -311,20 +322,42 @@ export function renderCustomConfig(root: HTMLElement): void {
         vendorId: c.device.vendorId,
         productId: c.device.productId,
         usagePage: c.collection.usagePage,
-      }).then((hash) =>
-        confirmDialog({
-          title: 'Apply this config to the keyboard?',
-          bodyText:
-            'This writes the changes below to the keyboard and checks each ' +
-            'step was saved. A restore point is saved first — you can roll ' +
-            'back from the Backup & restore page.',
-          preText: `${summary}\nplan ${hash.slice(0, 16)}`,
-          hint: 'Sections marked not_applied are skipped and reported.',
-          confirmLabel: 'Apply to keyboard',
-        }).then((ok) => {
-          if (ok) void doApply(doc, ops, statusLine, hash);
-        }),
-      );
+      })
+        .then((hash) =>
+          confirmDialog({
+            title: 'Apply this config to the keyboard?',
+            bodyText:
+              'This writes the changes below to the keyboard and checks each ' +
+              'step was saved. A restore point is saved first — you can roll ' +
+              'back from the Backup & restore page.',
+            preText: `${summary}\nplan ${hash.slice(0, 16)}`,
+            hint: 'Sections marked not_applied are skipped and reported.',
+            confirmLabel: 'Apply to keyboard',
+          }).then((ok) => {
+            if (!ok) {
+              applying = false;
+              return;
+            }
+            // The dialog was open for an arbitrary amount of time —
+            // re-check the session is still the one the plan/approval
+            // was built against. A disconnect/reconnect (or a different
+            // device) during approval must not let a stale `ops` closure
+            // (captured over `sessionAtPlan`) write to the wrong session.
+            if (!app.connected || app.connected.session !== sessionAtPlan) {
+              applying = false;
+              statusLine.textContent =
+                'Device changed while the approval dialog was open — apply ' +
+                'aborted, nothing was written. Re-open Apply to try again.';
+              return;
+            }
+            // doApply owns the lock from here (including its release).
+            void doApply(doc, ops, statusLine, hash);
+          }),
+        )
+        .catch((e) => {
+          applying = false;
+          statusLine.textContent = `Apply aborted: ${e instanceof Error ? e.message : String(e)}`;
+        });
     });
   }
 
@@ -334,9 +367,14 @@ export function renderCustomConfig(root: HTMLElement): void {
     statusLine: HTMLElement,
     planHash?: string,
   ): Promise<void> {
+    // `applying` is already true here — the caller (applyBtn handler)
+    // sets the lock before this is invoked and it owns releasing it on
+    // every exit path below; doApply never sets it, only clears it.
     const c = app.connected;
-    if (!c || applying) return;
-    applying = true;
+    if (!c) {
+      applying = false;
+      return;
+    }
     statusLine.textContent = 'Saving a restore point…';
     let snap: DeviceSnapshot;
     try {
