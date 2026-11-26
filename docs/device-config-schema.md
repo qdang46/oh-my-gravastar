@@ -759,14 +759,21 @@ there's a specific document shape to apply it to:
   `macros` (with the `StepKind::Other` fail-closed guard and post-write
   entry comparison), `macros[].bind`, and `settings.sleep_seconds`.
   Every other section reports `not_applied` with an explicit reason.
-  `apply --yes` snapshots every section before its first write (from the
-  same read the lowering used as its base) into `<id>.snapshots.json` and
-  journals per-section results into `<id>.journal.json` next to the plan
-  journals; `omg config rollback <id> --yes` restores them through the
-  same verified write paths. **Known gaps vs §3.5:** no plan-hash
-  approval binding (approval is the `--yes` flag itself, as with every
-  other write command), and per-op L0–L4 classification is implicit in
-  the lowering rather than a separate policy table.
+  `apply --yes` captures a read-only snapshot of every section BEFORE
+  the first write and persists it as `<id>.snapshots.json` — if the
+  snapshot cannot be written, the apply aborts before any bytes are
+  sent. The journal `<id>.journal.json` is rewritten after every section
+  (and once more with the final status), so a mid-apply crash still
+  leaves an accurate record. Apply stops at the first hard failure AND
+  at the first `applied_unverified` write; `omg config rollback <id>
+  --yes` verifies the connected device's protocol + VID + PID + usage
+  page against the recorded identity before restoring through the same
+  verified write paths. The legacy `kb916 macro set|delete|bind|unbind`
+  commands persist the same snapshot format before writing, so they are
+  rollback-able via `omg config rollback` too. **Known gaps vs §3.5:**
+  no plan-hash approval binding (approval is the `--yes` flag itself, as
+  with every other write command), and per-op L0–L4 classification is
+  implicit in the lowering rather than a separate policy table.
 - ~~No decision on whether `omg plan`'s existing step-based format wraps
   this envelope~~ — decided (docs/plan-json.md "Relationship to `omg
   config`"): they are complementary. `config` is not a plan family yet —

@@ -346,6 +346,55 @@ pub(crate) fn check_keymap_args(layer: u8, system: u8) -> Result<()> {
     Ok(())
 }
 
+/// Keymap arg byte for the cmd-131/3 table access:
+/// `layer & 3 | (system & 1) << 2`.
+pub(crate) fn keymap_arg(layer: u8, system: u8) -> u8 {
+    (layer & 3) | ((system & 1) << 2)
+}
+
+// ── Rollback snapshots ─────────────────────────────────────────────────
+//
+// Every mutating `kb916 macro` subcommand persists a snapshot in the
+// `omg config` store BEFORE its first device write, so
+// `omg config rollback <id> --yes` can restore it. Snapshot shapes match
+// `crates/omg/src/config.rs`:
+//   "macros"  → {"kind":"khub916-macros","region":hex,"binds":[…]}
+//   "keymap"  → {"kind":"khub916-keymap","args":[{layer,system,values}]}
+
+/// Full-table keymap snapshot for one (layer, system) arg.
+fn keymap_snapshot(
+    kb: &mut omg_proto_khub916::Khub916,
+    layer: u8,
+    system: u8,
+) -> Result<Value> {
+    check_keymap_args(layer, system)?;
+    let values = kb.key_values(keymap_arg(layer, system))?;
+    Ok(json!({"kind":"khub916-keymap","args":[{
+        "layer": layer, "system": system, "values": values,
+    }]}))
+}
+
+/// Pre-write macro-region snapshot (binds restored via "keymap" sections).
+fn macro_region_snapshot(raw: &[u8]) -> Value {
+    json!({
+        "kind": "khub916-macros",
+        "region": crate::config::hex(raw),
+        "binds": [],
+    })
+}
+
+/// Persist the snapshot and return its id for the rollback hint. Any
+/// failure aborts the caller BEFORE a device write — no write without a
+/// durable rollback record.
+fn persist_macro_snapshot(
+    device: &omg_hid::DeviceInfo,
+    sections: Value,
+) -> Result<String> {
+    let id = crate::config::persist_snapshot(device, "khub916", sections)?;
+    eprintln!("rollback snapshot {id} — restore with: omg config rollback {id} --yes");
+    Ok(id)
+}
+
 /// One keymap slot write request (cmd 3, read-modify-write + verify).
 struct KeySlotWrite<'a> {
     layer: u8,
@@ -530,6 +579,13 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                         bail!("--loop-count must be ≥ 1 (vendor `num` field)");
                     }
                     let value = macro916::macro_key_value(*macro_type, *loop_count, *index as u8);
+                    // Snapshot the full keymap table before the write.
+                    let mut sections = serde_json::Map::new();
+                    sections.insert(
+                        "keymap".into(),
+                        keymap_snapshot(&mut kb, *layer, *system)?,
+                    );
+                    persist_macro_snapshot(&device, Value::Object(sections))?;
                     bind_key_slot(
                         &mut kb,
                         &device,
@@ -548,6 +604,13 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                 }
                 Kb916Macro::Unbind { key, layer, system, .. } => {
                     check_keymap_args(*layer, *system)?;
+                    // Snapshot the full keymap table before the write.
+                    let mut sections = serde_json::Map::new();
+                    sections.insert(
+                        "keymap".into(),
+                        keymap_snapshot(&mut kb, *layer, *system)?,
+                    );
+                    persist_macro_snapshot(&device, Value::Object(sections))?;
                     bind_key_slot(
                         &mut kb,
                         &device,
@@ -635,6 +698,12 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
             } else {
                 macro916::build_macro_region(&entries)?
             };
+            // Snapshot the pre-delete region BEFORE the write so
+            // `config rollback` can restore it (binds realign because the
+            // region is positional).
+            let mut sections = serde_json::Map::new();
+            sections.insert("macros".into(), macro_region_snapshot(&raw));
+            persist_macro_snapshot(&device, Value::Object(sections))?;
             let outcome = kb.write_macro_region(&region)?;
             kb916_write_report(
                 cli,
@@ -720,6 +789,46 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                 entries[slot] = new_entry;
             }
             let region = macro916::build_macro_region(&entries)?;
+
+            // Preflight the optional bind BEFORE the first write: every
+            // condition that can fail without mutating must pass now, so
+            // an invalid bind can never leave a rewritten macro region
+            // behind a failed command. The live table read doubles as
+            // the rollback snapshot's keymap section.
+            let mut bind_table: Option<(u8, u8, usize, Vec<u32>)> = None;
+            if let Some(k) = key {
+                if *loop_count == 0 {
+                    bail!("--loop-count must be ≥ 1 (vendor `num` field)");
+                }
+                if slot > u8::MAX as usize {
+                    bail!("macro index {slot} does not fit the tag-3 u8 field");
+                }
+                check_keymap_args(*layer, *system)?;
+                let arg = keymap_arg(*layer, *system);
+                let values = kb.key_values(arg)?;
+                if *k >= values.len() {
+                    bail!(
+                        "key slot {k} out of range: keymap has {} entries (arg 0x{arg:02X})",
+                        values.len()
+                    );
+                }
+                bind_table = Some((*layer, *system, *k, values));
+            }
+
+            // Durable rollback record BEFORE the first write: the
+            // pre-write region plus (when binding) the full keymap table.
+            let mut sections = serde_json::Map::new();
+            sections.insert("macros".into(), macro_region_snapshot(&raw));
+            if let Some((l, s, _, ref values)) = bind_table {
+                sections.insert(
+                    "keymap".into(),
+                    json!({"kind":"khub916-keymap","args":[{
+                        "layer": l, "system": s, "values": values,
+                    }]}),
+                );
+            }
+            persist_macro_snapshot(&device, Value::Object(sections))?;
+
             let outcome = kb.write_macro_region(&region)?;
             let mut report = format!(
                 "macro[{slot}] \"{entry_name}\" — {} steps written",
@@ -736,22 +845,16 @@ pub fn run(cli: &Cli, command: &Kb916Macro) -> Result<ExitCode> {
                 println!("{report} — write cmd {} verified by read-back", outcome.command);
             }
             if let Some(k) = key {
-                if *loop_count == 0 {
-                    bail!("--loop-count must be ≥ 1 (vendor `num` field)");
-                }
-                if slot > u8::MAX as usize {
-                    bail!("macro index {slot} does not fit the tag-3 u8 field");
-                }
-                check_keymap_args(*layer, *system)?;
+                // Bind inputs were fully preflighted before the region
+                // write; `write_keymap_rmw` still re-validates the base
+                // read at write time (§Safety 6) in case the table
+                // changed since the snapshot.
                 let value = macro916::macro_key_value(*macro_type, *loop_count, slot as u8);
-                let arg = (*layer & 3) | ((*system & 1) << 2);
-                // `write_keymap_rmw` validates the base read (AGENTS.md
-                // §Safety 6) — a short read is refused, not zero-padded.
                 let mut old = 0u32;
                 let outcome2 = kb.write_keymap_rmw(*layer, *system, |values| {
                     if *k >= values.len() {
                         bail!(
-                            "key slot {k} out of range: keymap has {} entries (arg 0x{arg:02X})",
+                            "key slot {k} out of range: keymap has {} entries",
                             values.len()
                         );
                     }

@@ -78,11 +78,20 @@ A desired-state document can never express an L3 op — disruptive fields
 (e.g. HE `polling_hz`, which restarts the keyboard) are either absent from
 the schema or reported `not_applied` until their lowering implements the
 L3 confirmation path explicitly. L4 has no representation in the config
-envelope at all. Each `--yes` apply snapshots every section before its
-first write (`<id>.snapshots.json`), journals per-section results
-(`<id>.journal.json`), stops at the first hard failure, and restores via
-`omg config rollback <id> --yes` — the same backup→write→verify→journal
-shape as §4, scoped per section rather than per plan step.
+envelope at all. Each `--yes` apply captures read-only snapshots of every
+section it will write and persists `<id>.snapshots.json` BEFORE the first
+write byte — if the snapshot cannot be written, the apply aborts. The
+journal `<id>.journal.json` is rewritten after every section, apply stops
+at the first hard failure AND the first `applied_unverified` write, and
+`omg config rollback <id> --yes` re-verifies the connected device's
+protocol + VID + PID + usage page against the recorded identity before
+restoring — the same backup→write→verify→journal shape as §4, scoped per
+section rather than per plan step. The legacy `kb916 macro
+set|delete|bind|unbind` writes persist the same snapshot format before
+their first write, so they are rollback-able through `omg config
+rollback` as well. On the Web, the Custom config apply refuses to run
+unless every snapshot section the planned ops need was captured without
+errors (`web/src/custom-config.ts`).
 
 ## 4. Layer 4 — Transaction executor
 

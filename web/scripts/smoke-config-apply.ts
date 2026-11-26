@@ -233,6 +233,100 @@ function mockSession(over: Partial<ConfigSession> = {}): MockSession {
   check('non-khub916 doc produces no ops', ops.length === 0);
 }
 
+// ── Safety regressions (review P0/P1) ──
+
+{
+  const errs = configSemanticErrors(
+    doc({
+      macros: [
+        { index: 2, steps: [{ action: 'down', key: 'KeyA' }] },
+        { index: 2, steps: [{ action: 'down', key: 'KeyB' }] },
+      ],
+    }),
+  );
+  check('duplicate macro index flagged', errs.some((e) => e.includes('duplicate index 2')));
+}
+
+{
+  // A bind that fails preflight must abort BEFORE the region write.
+  const s = mockSession();
+  const ops = configToOps(
+    doc({
+      macros: [{
+        index: 'next',
+        steps: [{ action: 'down', key: 'KeyA' }],
+        bind: { layer: 0, system: 0, key: 99, macro_type: 1, loop_count: 1 },
+      }],
+    }),
+    s,
+  );
+  let threw = '';
+  try {
+    await ops[0]!.apply();
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  check(
+    'bad bind preflight aborts before region write',
+    /out of range/.test(threw) &&
+      s.calls.writeMacroRegion === 0 &&
+      s.calls.writeKeymap.length === 0,
+    `${threw} writes=${s.calls.writeMacroRegion}`,
+  );
+}
+
+{
+  // Duplicate resolved slots ("next" colliding with an explicit index of
+  // the append position) must be rejected before any write.
+  const s = mockSession();
+  const ops = configToOps(
+    doc({
+      macros: [
+        { index: 'next', steps: [{ action: 'down', key: 'KeyA' }] },
+        { index: 0, steps: [{ action: 'down', key: 'KeyB' }] },
+      ],
+    }),
+    s,
+  );
+  // Empty region → "next" resolves to 0, same as explicit index 0.
+  let threw = '';
+  try {
+    await ops[0]!.apply();
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  check(
+    'duplicate resolved slot rejected before write',
+    /duplicate resolved index/.test(threw) && s.calls.writeMacroRegion === 0,
+    threw,
+  );
+}
+
+{
+  // Unverified region write must not be followed by bind writes.
+  const s = mockSession({
+    writeMacroRegion: async () => {
+      s.calls.writeMacroRegion++;
+      return { verified: false };
+    },
+  });
+  const ops = configToOps(
+    doc({
+      macros: [{
+        index: 'next',
+        steps: [{ action: 'down', key: 'KeyA' }],
+        bind: { layer: 0, system: 0, key: 1, macro_type: 1, loop_count: 1 },
+      }],
+    }),
+    s,
+  );
+  const out = await ops[0]!.apply();
+  check(
+    'unverified region write skips binds',
+    out.verified === false && s.calls.writeKeymap.length === 0,
+  );
+}
+
 if (failures) {
   console.error(`smoke-config-apply: ${failures} failure(s)`);
   process.exit(1);

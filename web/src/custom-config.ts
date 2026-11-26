@@ -27,7 +27,12 @@ import {
 } from './config-apply.ts';
 import { dryRun, runTransaction } from './safety/transaction.ts';
 import { confirmDialog } from './modal.ts';
-import { SnapshotStore, snapshotBeforeWrite } from './safety/snapshots.ts';
+import {
+  SnapshotStore,
+  snapshotBeforeWrite,
+  type DeviceSnapshot,
+  type SnapshotSectionName,
+} from './safety/snapshots.ts';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -197,13 +202,23 @@ export function renderCustomConfig(root: HTMLElement): void {
     const protocol = dev?.protocol;
     const vid = dev?.vid;
     const pid = dev?.pid;
+    // Optional usage_page in the doc must match the live interface —
+    // same check `matching_devices` does on the CLI.
+    const wantPage = dev?.usage_page;
+    const pageOk =
+      wantPage === undefined ||
+      wantPage === null ||
+      !app.connected ||
+      app.connected.collection.usagePage === wantPage;
+    const livePage = app.connected?.collection.usagePage;
     const deviceMatch =
       detected && detected.protocol !== 'unknown' && app.connected
         ? detected.protocol === protocol &&
           app.connected.device.vendorId === vid &&
-          app.connected.device.productId === pid
+          app.connected.device.productId === pid &&
+          pageOk
           ? 'matches'
-          : `does NOT match (connected: ${detected.protocol} ${app.connected.device.vendorId.toString(16)}/${app.connected.device.productId.toString(16)})`
+          : `does NOT match (connected: ${detected.protocol} ${app.connected.device.vendorId.toString(16)}/${app.connected.device.productId.toString(16)} page ${livePage?.toString(16) ?? '?'})`
         : 'no editable device connected';
 
     const ul = el('ul', 'fact-list');
@@ -232,7 +247,8 @@ export function renderCustomConfig(root: HTMLElement): void {
       detected.protocol !== 'unknown' &&
       detected.protocol === protocol &&
       app.connected.device.vendorId === vid &&
-      app.connected.device.productId === pid;
+      app.connected.device.productId === pid &&
+      pageOk;
 
     if (!app.connected) {
       applyBody.append(
@@ -301,6 +317,19 @@ export function renderCustomConfig(root: HTMLElement): void {
     });
   }
 
+  /**
+   * Snapshot sections each planned op needs for a proven rollback. A
+   * config apply must NOT proceed when any of these is missing or failed
+   * to capture — the user was promised a restore point.
+   */
+  const NEEDED_SNAPSHOT: Record<string, SnapshotSectionName[]> = {
+    keymap: ['keymap'],
+    // macros writes the region AND tag-3 bind slots inside keymap tables.
+    macros: ['macro', 'keymap'],
+    // settings.sleep_seconds rewrites the profile blob.
+    settings: ['profile'],
+  };
+
   async function doApply(
     doc: Record<string, unknown>,
     ops: ReturnType<typeof configToOps>,
@@ -310,32 +339,55 @@ export function renderCustomConfig(root: HTMLElement): void {
     if (!c || applying) return;
     applying = true;
     statusLine.textContent = 'Saving a restore point…';
-    let snapId = '';
+    let snap: DeviceSnapshot;
     try {
-      const snap = await snapshotBeforeWrite(
+      snap = await snapshotBeforeWrite(
         new SnapshotStore(),
         c.session,
         'Custom config apply',
       );
-      snapId = snap.id;
-      statusLine.textContent = snap.errors
-        ? `Restore point saved (partial — ${snap.id}); applying…`
-        : `Restore point saved (${snap.id}); applying…`;
-    } catch {
-      statusLine.textContent = 'Restore point failed — continuing without one…';
+    } catch (e) {
+      applying = false;
+      statusLine.textContent = `Restore point failed (${e instanceof Error ? e.message : e}) — apply aborted, nothing was written.`;
+      return;
     }
+    // Hard gate: every section the ops will touch must be captured
+    // cleanly, or there is no proven rollback — do not write.
+    const needed = new Set<SnapshotSectionName>();
+    for (const op of ops) {
+      for (const s of NEEDED_SNAPSHOT[op.section ?? ''] ?? []) needed.add(s);
+    }
+    const missing = [...needed].filter(
+      (s) => snap.sections[s] === undefined || snap.errors?.[s] !== undefined,
+    );
+    if (missing.length > 0) {
+      applying = false;
+      statusLine.textContent =
+        `Restore point incomplete (missing/failed: ${missing.join(', ')}) — ` +
+        'apply aborted, nothing was written. Try again or use the CLI.';
+      return;
+    }
+    statusLine.textContent = `Restore point saved (${snap.id}); applying…`;
     const result = await runTransaction(ops, {
       approve: () => true, // the confirmDialog above IS the approval
+      // Desired-state: an unverified write stops the apply and is not
+      // reported as success — same stop policy as `omg config apply`.
+      stopOnUnverified: true,
     });
     applying = false;
     const lines = result.journal.map(
       (j) =>
         `${j.section ?? j.op}: ${j.result}${j.error ? ` — ${j.error}` : ''}`,
     );
+    const verdict = result.ok
+      ? 'Done'
+      : result.completed
+        ? 'Finished with unverified writes'
+        : 'Stopped early';
     statusLine.textContent =
-      `Done: ${result.counts.success} ok, ${result.counts.unverified} unverified, ` +
+      `${verdict}: ${result.counts.success} ok, ${result.counts.unverified} unverified, ` +
       `${result.counts.failed} failed${result.completed ? '' : ' (stopped early)'}. ` +
-      (snapId ? `Restore point: ${snapId} (Backup & restore page).` : '');
+      `Restore point: ${snap.id} (Backup & restore page).`;
     const ul = el('ul', 'fact-list');
     for (const l of lines) ul.append(el('li', '', l));
     applyBody.append(ul);

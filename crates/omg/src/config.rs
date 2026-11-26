@@ -230,7 +230,17 @@ fn semantic_errors(doc: &Value) -> Result<Vec<String>> {
         }
     }
     if let Some(macros) = doc.get("macros").and_then(Value::as_array) {
+        // Two entries resolving to the same region slot would silently
+        // overwrite each other in document order. Explicit numeric
+        // duplicates are detectable here; collisions involving "next"
+        // depend on the live region size and are rejected at apply time.
+        let mut idx_seen = BTreeSet::new();
         for (i, m) in macros.iter().enumerate() {
+            if let Some(n) = m["index"].as_u64() {
+                if !idx_seen.insert(n) {
+                    errs.push(format!("macros: duplicate index {n}"));
+                }
+            }
             if let Some(b) = m.get("bind") {
                 let arg = ((b["layer"].as_u64().unwrap_or(0) as u8) & 3)
                     | (((b["system"].as_u64().unwrap_or(0) as u8) & 1) << 2);
@@ -333,12 +343,10 @@ fn mouse_lighting_to_light(l: &Value) -> Result<omg_proto_mouse::Light> {
 // ── khub916 lowering ───────────────────────────────────────────────────
 
 /// Apply `keymap` patch entries / replace values through the verified
-/// read-modify-write path. Returns change lines plus the base table the
-/// rmw read (for rollback snapshots).
-fn apply_khub_keymap(
-    kb: &mut omg_proto_khub916::Khub916,
-    km: &Value,
-) -> Result<(Vec<String>, Option<Vec<u32>>)> {
+/// read-modify-write path. Rollback snapshots are captured separately
+/// *before* this runs — see `snap_khub916` — so a write-then-verify
+/// failure can never lose the pre-write state.
+fn apply_khub_keymap(kb: &mut omg_proto_khub916::Khub916, km: &Value) -> Result<Vec<String>> {
     let layer = km["layer"].as_u64().unwrap_or(0) as u8;
     let system = km["system"].as_u64().unwrap_or(0) as u8;
     kb916_macro::check_keymap_args(layer, system)?;
@@ -355,9 +363,7 @@ fn apply_khub_keymap(
             edits.insert(idx, v);
         }
         let mut changes = Vec::new();
-        let mut base: Option<Vec<u32>> = None;
         let outcome = kb.write_keymap_rmw(layer, system, |values| {
-            base = Some(values.clone());
             for (idx, v) in &edits {
                 if *idx >= values.len() {
                     bail!(
@@ -376,7 +382,7 @@ fn apply_khub_keymap(
         if !outcome.verified {
             bail!("{arg_desc}: write not verified by read-back");
         }
-        return Ok((changes, base));
+        return Ok(changes);
     }
 
     // replace: values[] must match the live table length exactly.
@@ -389,9 +395,7 @@ fn apply_khub_keymap(
         })
         .transpose()?
         .unwrap_or_default();
-    let mut base: Option<Vec<u32>> = None;
     let outcome = kb.write_keymap_rmw(layer, system, |values| {
-        base = Some(values.clone());
         if wants.len() != values.len() {
             bail!(
                 "{arg_desc} replace: config has {} values but device reports {} slots",
@@ -405,24 +409,23 @@ fn apply_khub_keymap(
     if !outcome.verified {
         bail!("{arg_desc}: replace write not verified by read-back");
     }
-    Ok((
-        vec![format!("{arg_desc}: replaced {} slots", wants.len())],
-        base,
-    ))
+    Ok(vec![format!(
+        "{arg_desc}: replaced {} slots",
+        wants.len()
+    )])
 }
 
-/// Bind-slot pre-write values captured for rollback:
-/// `(layer, system, key index, old u32)`.
-type BindSnap = (u8, u8, usize, u32);
-
 /// Apply the `macros` section: patch entries by index (`next` appends),
-/// rebuild the region through the same codec as `macro set`, then verify
-/// by re-reading and comparing the parsed entries. Also returns the raw
-/// region bytes and every bind slot's old value for rollback snapshots.
+/// rebuild the region through the same codec as `macro set`, verify by
+/// re-reading and comparing the parsed entries, then write the tag-3
+/// bind slots. Every check that can fail runs before the first write —
+/// including a full bind preflight — so a bad bind can never leave a
+/// rewritten region behind a failed section. Rollback snapshots are
+/// captured separately before this runs (`snap_khub916`).
 fn apply_khub_macros(
     kb: &mut omg_proto_khub916::Khub916,
     macros: &[Value],
-) -> Result<(Vec<String>, Vec<u8>, Vec<BindSnap>)> {
+) -> Result<Vec<String>> {
     let raw = kb.macro_region()?;
     let mut entries = macro916::parse_macro_region(&raw)?;
 
@@ -441,6 +444,14 @@ fn apply_khub_macros(
             _ => bail!("macros[{i}]: bad index"),
         };
         resolved.push((i, slot));
+    }
+    // Two doc entries resolving to the same slot would overwrite each
+    // other in order — reject instead of silently picking a winner.
+    let mut seen_slots = BTreeSet::new();
+    for &(_, s) in &resolved {
+        if !seen_slots.insert(s) {
+            bail!("macros: duplicate resolved index {s} — entries would overwrite each other");
+        }
     }
     let replaced: Vec<usize> = resolved
         .iter()
@@ -491,6 +502,33 @@ fn apply_khub_macros(
         ));
     }
 
+    // Bind preflight — BEFORE the region write. Every condition the bind
+    // writes depend on (tag-3 u8 range, loop count, keymap args, live key
+    // slot bounds) is checked here with read-only queries; a failure
+    // aborts the section before a single byte is written.
+    for (i, m) in macros.iter().enumerate() {
+        let Some(b) = m.get("bind") else { continue };
+        let slot = resolved[i].1;
+        if slot > u8::MAX as usize {
+            bail!("macros[{i}]: index {slot} does not fit the tag-3 u8 field");
+        }
+        let layer = b["layer"].as_u64().unwrap_or(0) as u8;
+        let system = b["system"].as_u64().unwrap_or(0) as u8;
+        let key = b["key"].as_u64().unwrap_or(u64::MAX) as usize;
+        let loops = b["loop_count"].as_u64().unwrap_or(0) as u8;
+        kb916_macro::check_keymap_args(layer, system)?;
+        if loops == 0 {
+            bail!("macros[{i}].bind: loop_count must be >= 1");
+        }
+        let values = kb.key_values(kb916_macro::keymap_arg(layer, system))?;
+        if key >= values.len() {
+            bail!(
+                "macros[{i}].bind: key slot {key} out of range (keymap has {} slots)",
+                values.len()
+            );
+        }
+    }
+
     // Space pre-check for appends (vendor MacroConfiguration `ae()`):
     // the rebuilt region must still fit the 512-byte payload.
     let region = macro916::build_macro_region(&entries)?;
@@ -506,31 +544,23 @@ fn apply_khub_macros(
         bail!("macro region read-back does not match intended entries");
     }
 
-    // binds: tag-3 keymap writes (same lowering as `macro bind`).
-    let mut bind_changes = Vec::new();
-    let mut bind_snaps: Vec<BindSnap> = Vec::new();
+    // binds: tag-3 keymap writes (same lowering as `macro bind`). All
+    // inputs were preflighted above; the rmw still re-validates the base
+    // read at write time (§Safety 6).
     for (i, m) in macros.iter().enumerate() {
         let Some(b) = m.get("bind") else { continue };
         let slot = resolved[i].1;
-        if slot > u8::MAX as usize {
-            bail!("macros[{i}]: index {slot} does not fit the tag-3 u8 field");
-        }
         let layer = b["layer"].as_u64().unwrap_or(0) as u8;
         let system = b["system"].as_u64().unwrap_or(0) as u8;
         let key = b["key"].as_u64().unwrap_or(u64::MAX) as usize;
         let mtype = b["macro_type"].as_u64().unwrap_or(0) as u8;
         let loops = b["loop_count"].as_u64().unwrap_or(0) as u8;
-        kb916_macro::check_keymap_args(layer, system)?;
-        if loops == 0 {
-            bail!("macros[{i}].bind: loop_count must be >= 1");
-        }
         let value = macro916::macro_key_value(mtype, loops, slot as u8);
         let outcome2 = kb.write_keymap_rmw(layer, system, |values| {
             if key >= values.len() {
                 bail!("macros[{i}].bind: key slot {key} out of range");
             }
-            bind_snaps.push((layer, system, key, values[key]));
-            bind_changes.push(format!(
+            changes.push(format!(
                 "key[{key}] layer {layer} system {system}: -> macro[{slot}] (0x{value:08X})"
             ));
             values[key] = value;
@@ -540,20 +570,19 @@ fn apply_khub_macros(
             bail!("macros[{i}].bind: keymap write not verified");
         }
     }
-    changes.extend(bind_changes);
-    Ok((changes, raw, bind_snaps))
+    Ok(changes)
 }
 
 // ── Snapshot / journal storage ─────────────────────────────────────────
 //
-// `config apply --yes` snapshots every section before its first write and
-// journals per-section results, mirroring `omg plan`'s model but keyed to
-// the config document. Files live in the same directory as plan journals
-// (`$OMG_PLAN_DIR` or `~/.local/share/omg/plans`):
-//   <id>.snapshots.json  — pre-write state, input to `config rollback`
-//   <id>.journal.json    — per-section results + final status
-// Snapshots are taken from the *same read* the lowering used as its base
-// (the rmw closure's `values`), never from a guessed or re-read table.
+// `config apply --yes` snapshots every section BEFORE the first write,
+// persists `<id>.snapshots.json`, then journals per-section results —
+// mirroring `omg plan`'s model but keyed to the config document. Files
+// live in the same directory as plan journals (`$OMG_PLAN_DIR` or
+// `~/.local/share/omg/plans`):
+//   <id>.snapshots.json  — pre-write state, input to `config rollback`;
+//                          written and verified BEFORE any device write
+//   <id>.journal.json    — rewritten after every section + final status
 
 fn new_apply_id() -> String {
     let stamp = crate::profile::utc_stamp()
@@ -586,7 +615,7 @@ fn save_store_json(path: &PathBuf, v: &Value) -> Result<()> {
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -618,6 +647,191 @@ fn light_from_snapshot(v: &Value) -> Result<omg_proto_mouse::Light> {
         speed: v["speed"].as_u64().unwrap_or(1) as u8,
         brightness: v["brightness"].as_u64().unwrap_or(1) as u8,
     })
+}
+
+// ── Pre-write snapshots ────────────────────────────────────────────────
+//
+// Every `apply --yes` MUST persist a rollback snapshot before the first
+// device write. These functions are read-only: they run after the
+// session is opened but before any mutation, and any error aborts the
+// apply. Snapshots are therefore independent of whether the lowering
+// later returns Ok or Err — a write-then-verify failure can never lose
+// the pre-write state.
+
+/// Snapshot one khub916 `keymap` section: the full live value table for
+/// its (layer, system) arg.
+fn snap_khub_keymap(kb: &mut omg_proto_khub916::Khub916, km: &Value) -> Result<Value> {
+    let layer = km["layer"].as_u64().unwrap_or(0) as u8;
+    let system = km["system"].as_u64().unwrap_or(0) as u8;
+    kb916_macro::check_keymap_args(layer, system)?;
+    let values = kb.key_values(kb916_macro::keymap_arg(layer, system))?;
+    Ok(json!({"kind":"khub916-keymap","args":[{
+        "layer": layer, "system": system, "values": values,
+    }]}))
+}
+
+/// Snapshot the khub916 `macros` section: raw region bytes plus the old
+/// value of every bind slot the doc will write. Keymap tables are read
+/// once per unique arg and cached.
+fn snap_khub_macros(kb: &mut omg_proto_khub916::Khub916, macros: &[Value]) -> Result<Value> {
+    let raw = kb.macro_region()?;
+    let mut binds = Vec::new();
+    let mut cache: BTreeMap<u8, Vec<u32>> = BTreeMap::new();
+    for m in macros {
+        let Some(b) = m.get("bind") else { continue };
+        let layer = b["layer"].as_u64().unwrap_or(0) as u8;
+        let system = b["system"].as_u64().unwrap_or(0) as u8;
+        let key = b["key"].as_u64().unwrap_or(u64::MAX) as usize;
+        kb916_macro::check_keymap_args(layer, system)?;
+        let arg = kb916_macro::keymap_arg(layer, system);
+        if !cache.contains_key(&arg) {
+            cache.insert(arg, kb.key_values(arg)?);
+        }
+        // A key slot past the end of the live table cannot be written —
+        // apply's preflight refuses it — so there is nothing to restore.
+        if let Some(&old) = cache[&arg].get(key) {
+            binds.push(json!({"layer":layer,"system":system,"key":key,"value":old}));
+        }
+    }
+    Ok(json!({
+        "kind": "khub916-macros",
+        "region": hex(&raw),
+        "binds": binds,
+    }))
+}
+
+/// Snapshot every khub916 section present in the doc that apply can
+/// execute. Mirrors `plan_sections`/the execution arms exactly.
+fn snap_khub916(kb: &mut omg_proto_khub916::Khub916, doc: &Value) -> Result<Value> {
+    let mut sections = serde_json::Map::new();
+    if let Some(km) = doc.get("keymap") {
+        if matches!(km["mode"].as_str(), Some("patch") | Some("replace")) {
+            sections.insert("keymap".into(), snap_khub_keymap(kb, km)?);
+        }
+    }
+    if let Some(macros) = doc.get("macros").and_then(Value::as_array) {
+        sections.insert("macros".into(), snap_khub_macros(kb, macros)?);
+    }
+    if doc
+        .get("settings")
+        .is_some_and(|st| st.get("sleep_seconds").is_some())
+    {
+        let p = kb.profile()?;
+        sections.insert(
+            "settings".into(),
+            json!({"kind":"khub916-profile","raw":hex(&p.raw)}),
+        );
+    }
+    Ok(Value::Object(sections))
+}
+
+/// Snapshot every compx section `apply` can execute (replace-mode
+/// settings + lighting).
+fn snap_compx(m: &mut omg_proto_mouse::CompxMouse, doc: &Value) -> Result<Value> {
+    let mut sections = serde_json::Map::new();
+    if doc
+        .get("settings")
+        .is_some_and(|s| s["mode"].as_str() == Some("replace"))
+    {
+        let state = crate::profile::mouse_state(m)?;
+        sections.insert(
+            "settings".into(),
+            json!({"kind":"compx-settings","state":state}),
+        );
+    }
+    if doc
+        .get("lighting")
+        .is_some_and(|l| l["mode"].as_str() == Some("replace"))
+    {
+        let light = m.read_config()?.light;
+        sections.insert(
+            "lighting".into(),
+            json!({"kind":"compx-lighting","light":light_snapshot(&light)}),
+        );
+    }
+    Ok(Value::Object(sections))
+}
+
+/// Persist `<id>.snapshots.json` for a set of pre-write section
+/// snapshots. Called BEFORE the first device write; failure aborts the
+/// apply (no write without a durable rollback record). Returns the id.
+pub(crate) fn persist_snapshot(
+    device: &DeviceInfo,
+    protocol: &str,
+    sections: Value,
+) -> Result<String> {
+    let id = new_apply_id();
+    let snaps = json!({
+        "id": id,
+        "device": {
+            "protocol": protocol,
+            "vid": device.vid,
+            "pid": device.pid,
+            "usage_page": device.usage_page,
+            "vid_pid": device.vid_pid(),
+            "path": device.path,
+        },
+        "schema_version": 1,
+        "sections": sections,
+        "status": "captured",
+    });
+    save_store_json(&store_path(&id, "snapshots.json")?, &snaps)?;
+    Ok(id)
+}
+
+/// Write/refresh `<id>.journal.json`. Best-effort at call sites that
+/// cannot fail safely (mid-apply); the snapshots file is the artifact
+/// rollback depends on.
+fn write_apply_journal(
+    id: &str,
+    file: &PathBuf,
+    device: &Value,
+    status: &str,
+    results: &Value,
+) -> Result<()> {
+    let journal = json!({
+        "id": id,
+        "file": file,
+        "device": device,
+        "status": status,
+        "results": results,
+    });
+    save_store_json(&store_path(id, "journal.json")?, &journal)
+}
+
+/// Refuse rollback when the connected device does not match the identity
+/// recorded in the snapshot (protocol + VID + PID + usage page). Prevents
+/// restoring device A's state onto a different device B of the same
+/// protocol family.
+fn verify_rollback_device(snap_dev: &Value, got: &DeviceInfo) -> Result<()> {
+    // VID/PID are mandatory — a snapshot without a recorded identity
+    // cannot prove which device it belongs to, so rollback refuses.
+    let (Some(wv), Some(wp)) = (snap_dev["vid"].as_u64(), snap_dev["pid"].as_u64()) else {
+        bail!(
+            "rollback refused: snapshot has no device identity (vid/pid) — \
+             it cannot be proven to belong to the connected {}",
+            got.vid_pid(),
+        );
+    };
+    for (field, w, g) in [
+        ("vid", wv, got.vid as u64),
+        ("pid", wp, got.pid as u64),
+        (
+            "usage_page",
+            snap_dev["usage_page"].as_u64().unwrap_or(got.usage_page as u64),
+            got.usage_page as u64,
+        ),
+    ] {
+        if w != g {
+            bail!(
+                "rollback refused: snapshot device {} does not match the connected \
+                 device {} — {field} differs (snapshot {w:#06x}, connected {g:#06x})",
+                snap_dev["vid_pid"].as_str().unwrap_or("?"),
+                got.vid_pid(),
+            );
+        }
+    }
+    Ok(())
 }
 
 // ── Command entry ──────────────────────────────────────────────────────
@@ -728,36 +942,112 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                 return Ok(ExitCode::SUCCESS);
             }
 
-            // --yes: execute supported sections. Each section is isolated:
-            // a failure stops the apply (§Safety: stop at first failure),
-            // is journaled as `failed`, and sections already written keep
-            // their snapshots for `config rollback`.
-            let apply_id = new_apply_id();
-            let mut snaps = json!({
-                "id": apply_id,
-                "file": file,
-                "device": device,
-                "schema_version": 1,
-                "sections": {},
-            });
-            let snap_sections = snaps["sections"].as_object_mut().unwrap();
+            // --yes: snapshot every section BEFORE the first write,
+            // persist it, then execute. A section failure stops the
+            // apply; the journal is rewritten after every section so a
+            // crash mid-apply still leaves an accurate record.
+            let protocol = doc["device"]["protocol"].as_str().unwrap_or("");
+            let has_planned = plan
+                .iter()
+                .any(|p| p.status == SectionStatus::ApplyPlanned);
+
+            // Open the session and capture read-only snapshots first.
+            // No write happens until `persist_snapshot` succeeds.
+            enum Session {
+                Compx(omg_proto_mouse::CompxMouse),
+                Khub916(omg_proto_khub916::Khub916),
+            }
+            let mut session: Option<Session> = None;
+            let mut opened: Option<DeviceInfo> = None;
+            let mut snap_sections = serde_json::Map::new();
+            if has_planned {
+                match protocol {
+                    "compx" => {
+                        let (d, mut m) = match crate::open_mouse(cli)? {
+                            Some(s) => s,
+                            None => bail!("no Compx mouse detected"),
+                        };
+                        snap_sections = snap_compx(&mut m, &doc)?
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default();
+                        session = Some(Session::Compx(m));
+                        opened = Some(d);
+                    }
+                    "khub916" => {
+                        let (d, mut kb) = match kb916_session(cli)? {
+                            Ok(s) => s,
+                            Err(code) => return Ok(code),
+                        };
+                        snap_sections = snap_khub916(&mut kb, &doc)?
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default();
+                        session = Some(Session::Khub916(kb));
+                        opened = Some(d);
+                    }
+                    _ => {}
+                }
+            }
+
+            let apply_id;
+            if has_planned && !snap_sections.is_empty() {
+                let d = opened
+                    .as_ref()
+                    .expect("session opened when sections are plannable");
+                // Durable rollback record FIRST — abort before any write
+                // if it cannot be persisted.
+                apply_id = persist_snapshot(
+                    d,
+                    protocol,
+                    Value::Object(snap_sections.clone()),
+                )?;
+                if let Err(e) = write_apply_journal(
+                    &apply_id,
+                    file,
+                    &json!({"protocol":protocol,"vid":d.vid,"pid":d.pid,
+                            "usage_page":d.usage_page,"vid_pid":d.vid_pid()}),
+                    "in_progress",
+                    &json!([]),
+                ) {
+                    eprintln!("warning: could not write apply journal: {e:#}");
+                }
+            } else {
+                apply_id = new_apply_id();
+            }
+
             let mut results: Vec<Value> = Vec::new();
             let mut any_failed = false;
             let mut stop = false;
+            let device_json = json!({
+                "protocol": protocol,
+                "vid": opened.as_ref().map(|d| d.vid),
+                "pid": opened.as_ref().map(|d| d.pid),
+                "usage_page": opened.as_ref().map(|d| d.usage_page),
+                "vid_pid": opened.as_ref().map(|d| d.vid_pid()),
+            });
+            macro_rules! flush_journal {
+                () => {
+                    let _ = write_apply_journal(
+                        &apply_id,
+                        file,
+                        &device_json,
+                        "in_progress",
+                        &json!(results),
+                    );
+                };
+            }
 
-            type SectionOut = Result<(Vec<String>, Option<Value>, &'static str, bool)>;
-            // Body returns (change lines, snapshot, status, hard_fail).
-            // `hard_fail` marks applied-but-unverified writes: they count
-            // toward `partial`/`failed` exit status without stopping the
-            // remaining sections (the write itself landed).
+            type SectionOut = Result<(Vec<String>, &'static str, bool)>;
+            // Body returns (change lines, status, hard_fail). `hard_fail`
+            // marks applied-but-unverified writes: they count toward a
+            // non-clean exit AND stop the remaining sections — desired-
+            // state apply never continues past an unverified write.
             macro_rules! section {
                 ($name:literal, $body:expr) => {{
                     if !stop {
                         match $body {
-                            Ok((lines, snap, status, hard_fail)) => {
-                                if let Some(s) = snap {
-                                    snap_sections.insert($name.to_string(), s);
-                                }
+                            Ok((lines, status, hard_fail)) => {
                                 results.push(json!({
                                     "section": $name,
                                     "status": status,
@@ -765,7 +1055,9 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                                 }));
                                 if hard_fail {
                                     any_failed = true;
+                                    stop = true;
                                 }
+                                flush_journal!();
                             }
                             Err(e) => {
                                 results.push(json!({
@@ -775,151 +1067,129 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                                 }));
                                 any_failed = true;
                                 stop = true;
+                                flush_journal!();
                             }
                         }
                     }
                 }};
             }
 
-            let protocol = doc["device"]["protocol"].as_str().unwrap_or("");
-            match protocol {
-                "compx" => {
-                    let (_d, mut m) = match crate::open_mouse(cli)? {
-                        Some(s) => s,
-                        None => bail!("no Compx mouse detected"),
-                    };
+            match session.as_mut() {
+                Some(Session::Compx(m)) => {
                     if let Some(s) = doc.get("settings") {
                         if s["mode"].as_str() == Some("replace") {
                             section!(
                                 "settings",
                                 (|| -> SectionOut {
-                                    let state = crate::profile::mouse_state(&mut m)?;
+                                    let state = crate::profile::mouse_state(m)?;
                                     let cur = crate::profile::mouse_config_from_json(&state)?;
                                     let want = mouse_settings_overlay(&cur, s)?;
-                                    crate::profile::mouse_apply(&mut m, &want)?;
-                                    let problems = crate::profile::mouse_verify(&mut m, &want)?;
-                                    let snap = json!({"kind":"compx-settings","state":state});
+                                    crate::profile::mouse_apply(m, &want)?;
+                                    let problems = crate::profile::mouse_verify(m, &want)?;
                                     let (status, hard) = if problems.is_empty() {
                                         ("applied_verified", false)
                                     } else {
                                         ("applied_unverified", true)
                                     };
-                                    Ok((problems, Some(snap), status, hard))
+                                    Ok((problems, status, hard))
                                 })()
                             );
                         }
                     }
-                    if !stop {
-                        if let Some(l) = doc.get("lighting") {
-                            if l["mode"].as_str() == Some("replace") {
-                                section!(
-                                    "lighting",
-                                    (|| -> SectionOut {
-                                        let before = m.read_config()?;
-                                        let light = mouse_lighting_to_light(l)?;
-                                        m.set_light(&light)?;
-                                        let after = m.read_config()?;
-                                        if after.light != light {
-                                            bail!("lighting read-back differs");
-                                        }
-                                        Ok((
-                                            vec!["read-back verified".into()],
-                                            Some(json!({
-                                                "kind": "compx-lighting",
-                                                "light": light_snapshot(&before.light),
-                                            })),
-                                            "applied_verified",
-                                            false,
-                                        ))
-                                    })()
-                                );
-                            }
+                    if let Some(l) = doc.get("lighting") {
+                        if l["mode"].as_str() == Some("replace") {
+                            section!(
+                                "lighting",
+                                (|| -> SectionOut {
+                                    let light = mouse_lighting_to_light(l)?;
+                                    m.set_light(&light)?;
+                                    let after = m.read_config()?;
+                                    if after.light != light {
+                                        bail!("lighting read-back differs");
+                                    }
+                                    Ok((
+                                        vec!["read-back verified".into()],
+                                        "applied_verified",
+                                        false,
+                                    ))
+                                })()
+                            );
                         }
                     }
                 }
-                "khub916" => {
-                    let (_device, mut kb) = match kb916_session(cli)? {
-                        Ok(s) => s,
-                        Err(code) => return Ok(code),
-                    };
+                Some(Session::Khub916(kb)) => {
                     if let Some(km) = doc.get("keymap") {
                         section!(
                             "keymap",
                             (|| -> SectionOut {
-                                let (changes, base) = apply_khub_keymap(&mut kb, km)?;
-                                let layer = km["layer"].as_u64().unwrap_or(0) as u8;
-                                let system = km["system"].as_u64().unwrap_or(0) as u8;
-                                let snap = base.map(|values| {
-                                    json!({"kind":"khub916-keymap","args":[{
-                                        "layer": layer, "system": system, "values": values,
-                                    }]})
-                                });
-                                Ok((changes, snap, "applied_verified", false))
+                                let changes = apply_khub_keymap(kb, km)?;
+                                Ok((changes, "applied_verified", false))
                             })()
                         );
                     }
-                    if !stop {
-                        if let Some(macros) = doc.get("macros").and_then(Value::as_array) {
+                    if let Some(macros) = doc.get("macros").and_then(Value::as_array) {
+                        section!(
+                            "macros",
+                            (|| -> SectionOut {
+                                let changes = apply_khub_macros(kb, macros)?;
+                                Ok((changes, "applied_verified", false))
+                            })()
+                        );
+                    }
+                    if let Some(st) = doc.get("settings") {
+                        if let Some(secs) = st.get("sleep_seconds").and_then(Value::as_u64) {
                             section!(
-                                "macros",
+                                "settings",
                                 (|| -> SectionOut {
-                                    let (changes, region, binds) =
-                                        apply_khub_macros(&mut kb, macros)?;
-                                    let snap = json!({
-                                        "kind": "khub916-macros",
-                                        "region": hex(&region),
-                                        "binds": binds.iter().map(|(l, s, k, v)| json!({
-                                            "layer": l, "system": s, "key": k, "value": v,
-                                        })).collect::<Vec<_>>(),
-                                    });
-                                    Ok((changes, Some(snap), "applied_verified", false))
+                                    let p = kb.profile()?;
+                                    let raw = p.with_sleep_seconds(secs as u8)?;
+                                    let outcome = kb.write_profile(&raw)?;
+                                    let (status, hard) = if outcome.verified {
+                                        ("applied_verified", false)
+                                    } else {
+                                        ("applied_unverified", true)
+                                    };
+                                    Ok((
+                                        vec![format!("sleep_seconds -> {secs} ({status})")],
+                                        status,
+                                        hard,
+                                    ))
                                 })()
                             );
                         }
                     }
-                    if !stop {
-                        if let Some(st) = doc.get("settings") {
-                            if let Some(secs) = st.get("sleep_seconds").and_then(Value::as_u64) {
-                                section!(
-                                    "settings",
-                                    (|| -> SectionOut {
-                                        let p = kb.profile()?;
-                                        let raw = p.with_sleep_seconds(secs as u8)?;
-                                        let outcome = kb.write_profile(&raw)?;
-                                        let (status, hard) = if outcome.verified {
-                                            ("applied_verified", false)
-                                        } else {
-                                            ("applied_unverified", true)
-                                        };
-                                        Ok((
-                                            vec![format!("sleep_seconds -> {secs} ({status})")],
-                                            Some(json!({
-                                                "kind": "khub916-profile",
-                                                "raw": hex(&p.raw),
-                                            })),
-                                            status,
-                                            hard,
-                                        ))
-                                    })()
-                                );
-                            }
-                        }
-                    }
                 }
-                _ => {}
+                None => {}
             }
-            let _ = stop; // last section!'s stop=true is intentionally unread
-                          // Sections the plan marked not_applied are reported honestly.
+
+            // Sections the plan could not execute — either rejected up
+            // front (NotApplied, with reason) or never reached because an
+            // earlier section failed or verified poorly.
             for p in &plan {
-                if p.status == SectionStatus::NotApplied {
-                    results
-                        .push(json!({"section":p.name,"status":"not_applied","detail":p.detail}));
+                let ran = results.iter().any(|r| r["section"] == p.name);
+                if ran {
+                    continue;
+                }
+                match p.status {
+                    SectionStatus::NotApplied => results.push(json!({
+                        "section": p.name,
+                        "status": "not_applied",
+                        "detail": p.detail,
+                    })),
+                    SectionStatus::ApplyPlanned => results.push(json!({
+                        "section": p.name,
+                        "status": "not_applied",
+                        "detail": if stop {
+                            "not attempted — apply stopped after an earlier section failed"
+                        } else {
+                            "not attempted — no executable lowering for this section"
+                        },
+                    })),
                 }
             }
 
-            // Journal + snapshots — written even on partial failure so
-            // `config rollback <id>` can restore what landed.
-            let failed_count = results.iter().filter(|r| r["status"] == "failed").count();
+            // Honest overall status: `applied` requires at least one
+            // write AND zero failures AND zero unverified writes.
             let applied_count = results
                 .iter()
                 .filter(|r| {
@@ -929,39 +1199,45 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                     )
                 })
                 .count();
-            let status = if failed_count == 0 {
-                "applied"
-            } else if applied_count > 0 {
-                "partial"
+            let unverified_count = results
+                .iter()
+                .filter(|r| r["status"] == "applied_unverified")
+                .count();
+            let failed_count = results.iter().filter(|r| r["status"] == "failed").count();
+            let status = if applied_count == 0 && failed_count == 0 {
+                "not_applied"
+            } else if failed_count > 0 {
+                if applied_count > 0 {
+                    "partial"
+                } else {
+                    "failed"
+                }
+            } else if unverified_count > 0 {
+                "applied_unverified"
             } else {
-                "failed"
+                "applied"
             };
-            snaps["status"] = json!(status);
-            let journal = json!({
-                "id": apply_id,
-                "file": file,
-                "device": device,
-                "status": status,
-                "results": results,
-            });
-            if let Err(e) = save_store_json(&store_path(&apply_id, "snapshots.json")?, &snaps)
-                .and_then(|_| save_store_json(&store_path(&apply_id, "journal.json")?, &journal))
+            if let Err(e) = write_apply_journal(&apply_id, file, &device_json, status, &json!(results))
             {
-                eprintln!("warning: could not write apply journal: {e:#}");
+                eprintln!("warning: could not write final apply journal: {e:#}");
             }
 
             if cli.json {
                 print_json(&json!({
-                    "file":file,"applied":true,"id":apply_id,"device":device,
+                    "file":file,"applied":applied_count>0,"id":apply_id,"device":device_json,
                     "status":status,"results":results,
                 }))?;
             } else {
                 println!(
                     "applied config for {} ({}) — id {apply_id}, status {status}",
-                    device.vid_pid(),
-                    device.path
+                    opened.as_ref().map(|d| d.vid_pid()).unwrap_or_default(),
+                    opened.as_ref().map(|d| d.path.as_str()).unwrap_or("?")
                 );
-                println!("  rollback: omg config rollback {apply_id} --yes");
+                if snap_sections.is_empty() {
+                    println!("  (no rollback snapshot — nothing was written)");
+                } else {
+                    println!("  rollback: omg config rollback {apply_id} --yes");
+                }
                 for r in &results {
                     println!(
                         "  {:<15} {}",
@@ -1021,10 +1297,13 @@ fn cmd_rollback(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
     let mut any_failed = false;
     match protocol.as_str() {
         "khub916" => {
-            let (_device, mut kb) = match kb916_session(cli)? {
+            let (d, mut kb) = match kb916_session(cli)? {
                 Ok(s) => s,
                 Err(code) => return Ok(code),
             };
+            // Never restore onto a different device than the one the
+            // snapshot was taken from.
+            verify_rollback_device(&snaps["device"], &d)?;
             // Keymap args first (macro binds live in keymap slots), then
             // the macro region, then the profile blob.
             if let Some(k) = sections.get("keymap") {
@@ -1115,10 +1394,11 @@ fn cmd_rollback(cli: &Cli, id: &str, yes: bool) -> Result<ExitCode> {
             }
         }
         "compx" => {
-            let (_d, mut m) = match crate::open_mouse(cli)? {
+            let (d, mut m) = match crate::open_mouse(cli)? {
                 Some(s) => s,
                 None => bail!("no Compx mouse detected"),
             };
+            verify_rollback_device(&snaps["device"], &d)?;
             if let Some(s) = sections.get("settings") {
                 let state = &s["state"];
                 match crate::profile::mouse_config_from_json(state).and_then(|want| {
@@ -1258,6 +1538,61 @@ mod tests {
         };
         let back = light_from_snapshot(&light_snapshot(&l)).unwrap();
         assert_eq!(back, l);
+    }
+
+    #[test]
+    fn rollback_device_identity_enforced() {
+        let dev = |vid: u16, pid: u16, page: u16| DeviceInfo {
+            path: "test".into(),
+            vid,
+            pid,
+            product: None,
+            manufacturer: None,
+            usage_page: page,
+            usage: 0,
+            kind: omg_hid::DeviceKind::Khub916Wired,
+        };
+        // Matching identity passes.
+        let snap = json!({"vid":0x1e7d,"pid":0xf501,"usage_page":0x00ff,"vid_pid":"1E7D:F501"});
+        assert!(verify_rollback_device(&snap, &dev(0x1e7d, 0xf501, 0x00ff)).is_ok());
+        // Wrong PID / usage page / VID all refuse.
+        for bad in [
+            dev(0x1e7d, 0xf502, 0x00ff),
+            dev(0x1e7d, 0xf501, 0x0001),
+            dev(0x1234, 0xf501, 0x00ff),
+        ] {
+            assert!(verify_rollback_device(&snap, &bad).is_err());
+        }
+        // A snapshot without vid/pid cannot prove its device — refuse.
+        let no_id = json!({"vid_pid":"1E7D:F501"});
+        assert!(verify_rollback_device(&no_id, &dev(0x1e7d, 0xf501, 0x00ff)).is_err());
+        // usage_page absent in the snapshot is tolerated (older writers).
+        let no_page = json!({"vid":0x1e7d,"pid":0xf501,"vid_pid":"1E7D:F501"});
+        assert!(verify_rollback_device(&no_page, &dev(0x1e7d, 0xf501, 0x0001)).is_ok());
+    }
+
+    #[test]
+    fn semantic_rejects_duplicate_macro_index() {
+        let doc = json!({
+            "schema_version": 1,
+            "device": {"protocol":"khub916","vid":0x1e7d,"pid":0xf501},
+            "macros": [
+                {"index": 0, "steps": [{"action":"press","key":"KeyA"}]},
+                {"index": 0, "steps": [{"action":"press","key":"KeyB"}]},
+            ],
+        });
+        let errs = semantic_errors(&doc).unwrap();
+        assert!(errs.iter().any(|e| e.contains("duplicate index 0")), "{errs:?}");
+        // "next" appends cannot collide with each other.
+        let doc2 = json!({
+            "schema_version": 1,
+            "device": {"protocol":"khub916","vid":0x1e7d,"pid":0xf501},
+            "macros": [
+                {"index": "next", "steps": [{"action":"press","key":"KeyA"}]},
+                {"index": "next", "steps": [{"action":"press","key":"KeyB"}]},
+            ],
+        });
+        assert!(semantic_errors(&doc2).unwrap().is_empty());
     }
 
     /// The embedded schema must be byte-identical to the repo artifact —

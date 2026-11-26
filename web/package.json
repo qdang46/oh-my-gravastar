@@ -2,7 +2,7 @@
   "name": "omg-web",
   "private": true,
   "version": "0.1.0",
-  "description": "oh-my-gravastar web UI \u00e2\u20ac\u201d offline PWA for GravaStar keyboards via WebHID (khub916 wired, read-only MVP)",
+  "description": "oh-my-gravastar web UI — offline PWA for GravaStar keyboards via WebHID (khub916 wired writes + guided desired-state config apply)",
   "type": "module",
   "scripts": {
     "dev": "vite",

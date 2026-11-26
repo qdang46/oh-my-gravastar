@@ -135,8 +135,18 @@ export function configSemanticErrors(doc: Record<string, unknown>): string[] {
   }
   const macros = doc.macros;
   if (Array.isArray(macros)) {
+    // Two entries resolving to the same region slot would overwrite each
+    // other — explicit numeric duplicates are detectable here; "next"
+    // collisions depend on the live region and are rejected in applyMacros.
+    const idxSeen = new Set<number>();
     macros.forEach((m, i) => {
-      const b = (m as Record<string, unknown>).bind as Record<string, unknown> | undefined;
+      const rec = m as Record<string, unknown>;
+      const idx = rec.index;
+      if (typeof idx === 'number' && Number.isInteger(idx)) {
+        if (idxSeen.has(idx)) errs.push(`macros: duplicate index ${idx}`);
+        idxSeen.add(idx);
+      }
+      const b = rec.bind as Record<string, unknown> | undefined;
       if (b && typeof b === 'object') {
         const layer = typeof b.layer === 'number' ? b.layer : 0;
         const system = typeof b.system === 'number' ? b.system : 0;
@@ -248,6 +258,12 @@ async function applyMacros(
   const entries = parseMacroRegion(raw);
   const slots = resolveMacroIndices(macros, entries.length);
 
+  // Two doc entries resolving to the same slot would overwrite each
+  // other in order — reject instead of silently picking a winner.
+  if (new Set(slots).size !== slots.length) {
+    throw new Error('macros: duplicate resolved index — entries would overwrite each other');
+  }
+
   // Fail closed: untouched entries must be preservable (no opaque steps).
   const replaced = new Set(slots.filter((s) => s < entries.length));
   for (let i = 0; i < entries.length; i++) {
@@ -279,31 +295,56 @@ async function applyMacros(
     }
   }
 
+  // Bind preflight — BEFORE the region write (mirrors config.rs): every
+  // condition that can fail must pass while nothing has been written,
+  // so a bad bind can never leave a rewritten region behind a failed op.
+  interface BindPlan {
+    layer: number;
+    system: number;
+    key: number;
+    value: number;
+  }
+  const bindPlans: BindPlan[] = [];
+  {
+    const argCache = new Map<number, number[]>();
+    for (let i = 0; i < macros.length; i++) {
+      const b = macros[i]!.bind as Record<string, unknown> | undefined;
+      if (!b || typeof b !== 'object') continue;
+      const slot = slots[i]!;
+      if (slot > 0xff) {
+        throw new Error(`macros[${i}]: index ${slot} does not fit the tag-3 u8 field`);
+      }
+      const layer = typeof b.layer === 'number' ? b.layer : 0;
+      const system = typeof b.system === 'number' ? b.system : 0;
+      const key = typeof b.key === 'number' ? b.key : Number.MAX_SAFE_INTEGER;
+      const mtype = typeof b.macro_type === 'number' ? b.macro_type : 0;
+      const loops = typeof b.loop_count === 'number' ? b.loop_count : 0;
+      if (loops < 1) throw new Error(`macros[${i}].bind: loop_count must be >= 1`);
+      const arg = keymapArg(layer, system);
+      if (!argCache.has(arg)) argCache.set(arg, await session.keyValues(arg));
+      const base = argCache.get(arg)!;
+      if (key >= base.length) {
+        throw new Error(`macros[${i}].bind: key slot ${key} out of range`);
+      }
+      bindPlans.push({ layer, system, key, value: macroKeyValue(mtype, loops, slot) });
+    }
+  }
+
   const region = buildMacroRegion(entries);
   const out = await session.writeMacroRegion(region);
+  // An unverified region write must not be followed by bind writes —
+  // the transaction records `unverified` and (stopOnUnverified) halts.
+  if (out.verified === false) {
+    return out;
+  }
 
   // binds: tag-3 keymap writes (macroKeyValue port of the vendor bind).
-  for (let i = 0; i < macros.length; i++) {
-    const b = macros[i]!.bind as Record<string, unknown> | undefined;
-    if (!b || typeof b !== 'object') continue;
-    const slot = slots[i]!;
-    if (slot > 0xff) {
-      throw new Error(`macros[${i}]: index ${slot} does not fit the tag-3 u8 field`);
-    }
-    const layer = typeof b.layer === 'number' ? b.layer : 0;
-    const system = typeof b.system === 'number' ? b.system : 0;
-    const key = typeof b.key === 'number' ? b.key : Number.MAX_SAFE_INTEGER;
-    const mtype = typeof b.macro_type === 'number' ? b.macro_type : 0;
-    const loops = typeof b.loop_count === 'number' ? b.loop_count : 0;
-    if (loops < 1) throw new Error(`macros[${i}].bind: loop_count must be >= 1`);
-    const arg = keymapArg(layer, system);
+  for (const bp of bindPlans) {
+    const arg = keymapArg(bp.layer, bp.system);
     const base = await session.keyValues(arg);
-    if (key >= base.length) {
-      throw new Error(`macros[${i}].bind: key slot ${key} out of range`);
-    }
     const values = base.slice();
-    values[key] = macroKeyValue(mtype, loops, slot);
-    await session.writeKeymap(layer, system, values);
+    values[bp.key] = bp.value;
+    await session.writeKeymap(bp.layer, bp.system, values);
   }
   return out;
 }
