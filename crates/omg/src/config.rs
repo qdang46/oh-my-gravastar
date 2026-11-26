@@ -1763,6 +1763,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn store_path_rejects_bad_ids_and_json_roundtrips() {
+        // Rollback ids come from filenames — traversal must be impossible.
+        for bad in ["", "../x", "a/b", "a\\b", "id;rm", " spaced "] {
+            assert!(store_path(bad, "snapshots.json").is_err(), "id {bad:?}");
+        }
+        assert!(store_path("config-2026-01-01-0000-abcd", "snapshots.json").is_ok());
+        // The durable-write primitive the pre-write snapshot relies on.
+        let dir = std::env::temp_dir().join(format!(
+            "omg-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("x.snapshots.json");
+        save_store_json(&path, &json!({"sections":{"keymap":"aa"}})).unwrap();
+        let back: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back["sections"]["keymap"], "aa");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The embedded schema must be byte-identical to the repo artifact —
     /// `include_str!` makes drift impossible at compile time, but assert
     /// anyway so a stale binary can't silently diverge in tests.
