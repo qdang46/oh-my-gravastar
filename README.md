@@ -172,8 +172,8 @@ omg kb916 doctor fn                  # read-only Fn-layer check: dead slots, opa
 
 omg config schema                    # print the desired-state JSON Schema (Draft 2020-12)
 omg config validate dev.json         # offline structural validation (all errors + JSON paths)
-omg config apply dev.json            # device match + per-section plan, no writes
-omg config apply dev.json --yes      # apply supported sections, verify by read-back
+omg config apply dev.json            # device match + per-section plan + plan_hash, no writes
+omg config apply dev.json --yes --approve <hash>  # apply; approval bound to the dry-run hash
 ```
 
 `omg config` implements the desired-state envelope in

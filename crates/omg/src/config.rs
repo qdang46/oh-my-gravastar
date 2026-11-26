@@ -40,9 +40,11 @@ pub enum ConfigCommands {
         /// Path to the desired-state JSON document.
         file: PathBuf,
     },
-    /// Validate, plan and (with `--yes`) apply a desired-state config.
-    /// Without `--yes` this is a dry run: structural validation, device
-    /// match and the per-section plan are printed, nothing is written.
+    /// Validate, plan and (with `--yes --approve <hash>`) apply a
+    /// desired-state config. Without `--yes` this is a dry run: structural
+    /// validation, device match, the per-section plan and the `plan_hash`
+    /// are printed, nothing is written. `--approve` must name the hash a
+    /// dry run printed, binding approval to the exact previewed plan.
     Apply {
         /// Path to the desired-state JSON document.
         file: PathBuf,
@@ -52,6 +54,11 @@ pub enum ConfigCommands {
         /// Explicit dry run (same as omitting `--yes`).
         #[arg(long)]
         dry_run: bool,
+        /// Plan hash printed by a dry run — binds this approval to
+        /// exactly the previewed document, device and section plan.
+        /// Required together with `--yes`.
+        #[arg(long)]
+        approve: Option<String>,
     },
     /// Restore the pre-apply snapshot written by `config apply --yes`.
     /// Snapshots live next to plan journals (`$OMG_PLAN_DIR` or
@@ -197,6 +204,39 @@ fn plan_sections(doc: &Value) -> Vec<SectionPlan> {
     out
 }
 
+/// sha256 (hex) of the canonical apply plan — binds `--approve` to
+/// exactly what a dry run previewed: the document, the selected device
+/// identity, and the per-section plan. serde_json maps are BTreeMaps, so
+/// `to_vec` output is canonical (sorted keys) already.
+fn plan_hash(doc: &Value, device: &DeviceInfo, plan: &[SectionPlan]) -> String {
+    use sha2::Digest;
+    let payload = json!({
+        "schema_version": 1,
+        "doc": doc,
+        "device": {
+            "vid": device.vid,
+            "pid": device.pid,
+            "usage_page": device.usage_page,
+            "kind": format!("{:?}", device.kind),
+        },
+        "sections": plan
+            .iter()
+            .map(|p| {
+                json!({
+                    "name": p.name,
+                    "status": match p.status {
+                        SectionStatus::ApplyPlanned => "planned",
+                        SectionStatus::NotApplied => "not_applied",
+                    },
+                    "detail": p.detail,
+                })
+            })
+            .collect::<Vec<_>>(),
+    });
+    let bytes = serde_json::to_vec(&payload).expect("plan payload serializes");
+    format!("{:x}", sha2::Sha256::digest(&bytes))
+}
+
 // ── Layer 2 semantic checks ────────────────────────────────────────────
 
 /// Collect semantic problems that the schema cannot express.
@@ -219,6 +259,7 @@ fn semantic_errors(doc: &Value) -> Result<Vec<String>> {
         let layer = km["layer"].as_u64().unwrap_or(0) as u8;
         let system = km["system"].as_u64().unwrap_or(0) as u8;
         let arg = (layer & 3) | ((system & 1) << 2);
+        let mode = km["mode"].as_str().unwrap_or("");
         if let Some(entries) = km.get("entries").and_then(Value::as_array) {
             let mut seen = BTreeSet::new();
             for e in entries {
@@ -227,6 +268,14 @@ fn semantic_errors(doc: &Value) -> Result<Vec<String>> {
                     errs.push(format!("keymap patch: duplicate index {idx}"));
                 }
                 claim(arg, idx, "keymap.entries".into(), &mut errs);
+            }
+        }
+        // Replace writes the whole table — every position is a target.
+        if mode == "replace" {
+            if let Some(values) = km.get("values").and_then(Value::as_array) {
+                for slot in 0..values.len() {
+                    claim(arg, slot, "keymap.values".into(), &mut errs);
+                }
             }
         }
     }
@@ -247,6 +296,24 @@ fn semantic_errors(doc: &Value) -> Result<Vec<String>> {
                     | (((b["system"].as_u64().unwrap_or(0) as u8) & 1) << 2);
                 let slot = b["key"].as_u64().unwrap_or(u64::MAX) as usize;
                 claim(arg, slot, format!("macros[{i}].bind"), &mut errs);
+            }
+        }
+    }
+    // advanced_keys entries implicitly write keymap arg 0 at their slot(s)
+    // (D7): mt→key, socd→key_a+key_b, tgl→key+toggle.
+    if let Some(adv) = doc.get("advanced_keys").and_then(Value::as_array) {
+        for (i, e) in adv.iter().enumerate() {
+            let who = format!("advanced_keys[{i}]");
+            let slots: &[&str] = match e["kind"].as_str().unwrap_or("") {
+                "mt" => &["key"],
+                "tgl" => &["key", "toggle"],
+                "socd" => &["key_a", "key_b"],
+                _ => &[],
+            };
+            for field in slots {
+                if let Some(slot) = e[field].as_u64() {
+                    claim(0, slot as usize, who.clone(), &mut errs);
+                }
             }
         }
     }
@@ -790,11 +857,13 @@ fn write_apply_journal(
     device: &Value,
     status: &str,
     results: &Value,
+    plan_hash: &str,
 ) -> Result<()> {
     let journal = json!({
         "id": id,
         "file": file,
         "device": device,
+        "plan_hash": plan_hash,
         "status": status,
         "results": results,
     });
@@ -932,7 +1001,12 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                 Ok(ExitCode::FAILURE)
             }
         }
-        ConfigCommands::Apply { file, yes, dry_run } => {
+        ConfigCommands::Apply {
+            file,
+            yes,
+            dry_run,
+            approve,
+        } => {
             if yes.yes && *dry_run {
                 bail!("--yes and --dry-run are mutually exclusive");
             }
@@ -974,6 +1048,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
             };
 
             let plan = plan_sections(&doc);
+            let hash = plan_hash(&doc, &device, &plan);
             if !yes.yes {
                 // Dry run: print the plan, write nothing.
                 let mut rows = Vec::new();
@@ -990,7 +1065,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                 if cli.json {
                     print_json(&json!({
                         "file": file, "dry_run": true, "device": device,
-                        "sections": rows,
+                        "plan_hash": hash, "sections": rows,
                     }))?;
                 } else {
                     println!("dry run — no writes performed");
@@ -1006,8 +1081,28 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                             p.detail
                         );
                     }
+                    println!("plan_hash: {hash}");
+                    println!("to apply: omg config apply {} --yes --approve {hash}", file.display());
                 }
                 return Ok(ExitCode::SUCCESS);
+            }
+
+            // Approval is bound to the previewed plan: --approve must name
+            // the hash a dry run printed for THIS doc + device + plan.
+            // A changed doc, different device or different plan yields a
+            // different hash and is refused before any snapshot or write.
+            match approve.as_deref() {
+                None => bail!(
+                    "--yes requires --approve <plan_hash> from a dry run \
+                     (omg config apply {} --dry-run prints it)",
+                    file.display()
+                ),
+                Some(got) if got != hash => bail!(
+                    "--approve hash does not match the current plan — the \
+                     document, device or section plan changed since the \
+                     preview; re-run the dry run and approve the new hash"
+                ),
+                _ => {}
             }
 
             // --yes: snapshot every section BEFORE the first write,
@@ -1079,6 +1174,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                             "usage_page":d.usage_page,"vid_pid":d.vid_pid()}),
                     "in_progress",
                     &json!([]),
+                    &hash,
                 ) {
                     eprintln!("warning: could not write apply journal: {e:#}");
                 }
@@ -1104,6 +1200,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                         &device_json,
                         "in_progress",
                         &json!(results),
+                        &hash,
                     );
                 };
             }
@@ -1270,7 +1367,8 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
                     )
                 })
                 .count();
-            if let Err(e) = write_apply_journal(&apply_id, file, &device_json, status, &json!(results))
+            if let Err(e) =
+                write_apply_journal(&apply_id, file, &device_json, status, &json!(results), &hash)
             {
                 eprintln!("warning: could not write final apply journal: {e:#}");
             }
@@ -1278,7 +1376,7 @@ pub fn run(cli: &Cli, command: &ConfigCommands) -> Result<ExitCode> {
             if cli.json {
                 print_json(&json!({
                     "file":file,"applied":applied_count>0,"id":apply_id,"device":device_json,
-                    "status":status,"results":results,
+                    "plan_hash":hash,"status":status,"results":results,
                 }))?;
             } else {
                 println!(
@@ -1761,6 +1859,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn plan_hash_binds_doc_device_and_plan() {
+        let dev = |vid: u16, pid: u16, page: u16| DeviceInfo {
+            path: "test".into(),
+            vid,
+            pid,
+            product: None,
+            manufacturer: None,
+            usage_page: page,
+            usage: 0,
+            kind: omg_hid::DeviceKind::Khub916Wired,
+        };
+        let doc = json!({
+            "schema_version": 1,
+            "device": {"protocol":"khub916","vid":0x1e7d,"pid":0xf501},
+            "settings": {"sleep_seconds": 30},
+        });
+        let plan = plan_sections(&doc);
+        let h1 = plan_hash(&doc, &dev(0x1e7d, 0xf501, 0), &plan);
+        // Deterministic for identical inputs.
+        assert_eq!(h1, plan_hash(&doc, &dev(0x1e7d, 0xf501, 0), &plan));
+        assert_eq!(h1.len(), 64);
+        // Any change to doc, device or plan changes the hash.
+        let doc2 = json!({
+            "schema_version": 1,
+            "device": {"protocol":"khub916","vid":0x1e7d,"pid":0xf501},
+            "settings": {"sleep_seconds": 60},
+        });
+        assert_ne!(h1, plan_hash(&doc2, &dev(0x1e7d, 0xf501, 0), &plan_sections(&doc2)));
+        assert_ne!(h1, plan_hash(&doc, &dev(0x1e7d, 0xf502, 0), &plan));
+        assert_ne!(h1, plan_hash(&doc, &dev(0x1e7d, 0xf501, 1), &plan));
     }
 
     #[test]

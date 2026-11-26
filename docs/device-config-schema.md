@@ -779,10 +779,15 @@ there's a specific document shape to apply it to:
   page against the recorded identity before restoring through the same
   verified write paths. The legacy `kb916 macro set|delete|bind|unbind`
   commands persist the same snapshot format before writing, so they are
-  rollback-able via `omg config rollback` too. **Known gaps vs §3.5:**
-  no plan-hash approval binding (approval is the `--yes` flag itself, as
-  with every other write command), and per-op L0–L4 classification is
-  implicit in the lowering rather than a separate policy table.
+  rollback-able via `omg config rollback` too. Approval is bound to the
+  previewed plan: the dry run prints a `plan_hash` (sha256 over the
+  canonical doc + selected device identity + section plan) and `--yes`
+  refuses to run without `--approve <hash>` matching it — a changed
+  doc, different device or different plan produces a different hash.
+  The hash is recorded in `<id>.journal.json`. **Remaining gap vs
+  §3.5:** per-op L0–L4 classification is implicit in the lowering
+  rather than a separate policy table (the Web side has
+  `web/src/safety/policy.ts`).
 - ~~No decision on whether `omg plan`'s existing step-based format wraps
   this envelope~~ — decided (docs/plan-json.md "Relationship to `omg
   config`"): they are complementary. `config` is not a plan family yet —

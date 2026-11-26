@@ -101,9 +101,10 @@ export function planConfigSections(doc: Record<string, unknown>): ConfigSectionP
 
 /**
  * Doc-internal semantic checks the schema cannot express — mirrors
- * `semantic_errors` in config.rs for the khub916 subset: duplicate patch
- * indices and (arg, slot) conflicts between `keymap.entries` and
- * `macros[].bind`.
+ * `semantic_errors` in config.rs: duplicate patch indices, duplicate
+ * macro indices, and (arg, slot) conflicts between every implicit
+ * keymap writer — `keymap.entries`/`keymap.values` (replace),
+ * `macros[].bind`, and `advanced_keys` (always arg 0).
  */
 export function configSemanticErrors(doc: Record<string, unknown>): string[] {
   const errs: string[] = [];
@@ -140,6 +141,12 @@ export function configSemanticErrors(doc: Record<string, unknown>): string[] {
         }
       }
     }
+    // Replace writes the whole table — every position is a target.
+    if (km.mode === 'replace' && Array.isArray(km.values)) {
+      for (let slot = 0; slot < km.values.length; slot++) {
+        claim(arg, slot, 'keymap.values');
+      }
+    }
   }
   const macros = doc.macros;
   if (Array.isArray(macros)) {
@@ -163,6 +170,22 @@ export function configSemanticErrors(doc: Record<string, unknown>): string[] {
       }
     });
   }
+  // advanced_keys entries implicitly write keymap arg 0 at their slot(s)
+  // (D7): mt→key, socd→key_a+key_b, tgl→key+toggle.
+  if (Array.isArray(doc.advanced_keys)) {
+    doc.advanced_keys.forEach((e, i) => {
+      const rec = e as Record<string, unknown>;
+      const fields: Record<string, string[]> = {
+        mt: ['key'],
+        tgl: ['key', 'toggle'],
+        socd: ['key_a', 'key_b'],
+      };
+      for (const f of fields[String(rec.kind)] ?? []) {
+        const slot = rec[f];
+        if (typeof slot === 'number') claim(0, slot, `advanced_keys[${i}]`);
+      }
+    });
+  }
   return errs;
 }
 
@@ -178,6 +201,40 @@ export const NEEDED_SNAPSHOT: Record<string, SnapshotSectionName[]> = {
   // settings.sleep_seconds rewrites the profile blob.
   settings: ['profile'],
 };
+
+/** Deterministic JSON: object keys sorted recursively (arrays keep order). */
+function canonicalJson(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  const o = v as Record<string, unknown>;
+  return `{${Object.keys(o)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`)
+    .join(',')}}`;
+}
+
+/**
+ * sha256 (hex) of the canonical apply plan — the web counterpart of
+ * `plan_hash` in crates/omg/src/config.rs. Binds the confirm-dialog
+ * approval to exactly the previewed document, section plan and device
+ * identity; any change produces a different hash.
+ */
+export async function configPlanHash(
+  doc: Record<string, unknown>,
+  plans: readonly ConfigSectionPlan[],
+  device?: { vendorId?: number; productId?: number; usagePage?: number },
+): Promise<string> {
+  const payload = canonicalJson({
+    doc,
+    device: device ?? null,
+    sections: plans.map((p) => ({ name: p.name, status: p.status, detail: p.detail })),
+  });
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(payload),
+  );
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * Sections the ops require that the snapshot failed to capture —

@@ -1748,6 +1748,7 @@ dependencies = [
  "omg-proto-sparkplayjoy",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -24,3 +24,4 @@ omg-music = { path = "../music" }
 serde.workspace = true
 serde_json.workspace = true
 jsonschema = "0.30"
+sha2 = "0.10"

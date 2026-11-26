@@ -24,6 +24,7 @@ import {
   planConfigSections,
   configSemanticErrors,
   configToOps,
+  configPlanHash,
   missingSnapshotSections,
 } from './config-apply.ts';
 import { dryRun, runTransaction } from './safety/transaction.ts';
@@ -302,18 +303,28 @@ export function renderCustomConfig(root: HTMLElement): void {
       const ops = configToOps(doc, app.connected.session);
       if (ops.length === 0) return;
       const summary = ops.map((o) => `• ${o.label ?? o.type}`).join('\n');
-      void confirmDialog({
-        title: 'Apply this config to the keyboard?',
-        bodyText:
-          'This writes the changes below to the keyboard and checks each ' +
-          'step was saved. A restore point is saved first — you can roll ' +
-          'back from the Backup & restore page.',
-        preText: summary,
-        hint: 'Sections marked not_applied are skipped and reported.',
-        confirmLabel: 'Apply to keyboard',
-      }).then((ok) => {
-        if (ok) void doApply(doc, ops, statusLine);
-      });
+      // Approval is bound to this exact plan: the hash covers the doc,
+      // the section plan and the connected device — shown in the dialog
+      // so the user approves a specific, reproducible state.
+      const c = app.connected;
+      void configPlanHash(doc, plan, {
+        vendorId: c.device.vendorId,
+        productId: c.device.productId,
+        usagePage: c.collection.usagePage,
+      }).then((hash) =>
+        confirmDialog({
+          title: 'Apply this config to the keyboard?',
+          bodyText:
+            'This writes the changes below to the keyboard and checks each ' +
+            'step was saved. A restore point is saved first — you can roll ' +
+            'back from the Backup & restore page.',
+          preText: `${summary}\nplan ${hash.slice(0, 16)}`,
+          hint: 'Sections marked not_applied are skipped and reported.',
+          confirmLabel: 'Apply to keyboard',
+        }).then((ok) => {
+          if (ok) void doApply(doc, ops, statusLine, hash);
+        }),
+      );
     });
   }
 
@@ -321,6 +332,7 @@ export function renderCustomConfig(root: HTMLElement): void {
     doc: Record<string, unknown>,
     ops: ReturnType<typeof configToOps>,
     statusLine: HTMLElement,
+    planHash?: string,
   ): Promise<void> {
     const c = app.connected;
     if (!c || applying) return;
@@ -368,7 +380,8 @@ export function renderCustomConfig(root: HTMLElement): void {
     statusLine.textContent =
       `${verdict}: ${result.counts.success} ok, ${result.counts.unverified} unverified, ` +
       `${result.counts.failed} failed${result.completed ? '' : ' (stopped early)'}. ` +
-      `Restore point: ${snap.id} (Backup & restore page).`;
+      `Restore point: ${snap.id} (Backup & restore page).` +
+      (planHash ? ` Plan: ${planHash.slice(0, 16)}.` : '');
     const ul = el('ul', 'fact-list');
     for (const l of lines) ul.append(el('li', '', l));
     applyBody.append(ul);

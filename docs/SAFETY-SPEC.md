@@ -73,7 +73,12 @@ The CLI enforces the same classes via `--yes` (L2/L3) and omission (L4);
 `--dry-run` covers L1.
 
 `omg config apply` inherits this unchanged: `--dry-run`/no flag is L1
-(validate + plan only, no bytes sent), `--yes` is L2 per effective write.
+(validate + plan only, no bytes sent). `--yes` is L2 per effective write
+AND is bound to the previewed plan: the dry run prints a `plan_hash`
+(sha256 over the canonical document + selected device identity +
+section plan) and apply refuses without `--approve <hash>` matching it —
+the approval names exactly what was previewed, and the hash is recorded
+in the apply journal.
 A desired-state document can never express an L3 op — disruptive fields
 (e.g. HE `polling_hz`, which restarts the keyboard) are either absent from
 the schema or reported `not_applied` until their lowering implements the

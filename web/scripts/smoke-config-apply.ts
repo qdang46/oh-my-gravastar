@@ -13,6 +13,7 @@ import {
   planConfigSections,
   configSemanticErrors,
   configToOps,
+  configPlanHash,
   missingSnapshotSections,
   type ConfigSession,
 } from '../src/config-apply.ts';
@@ -385,6 +386,37 @@ function mockSession(over: Partial<ConfigSession> = {}): MockSession {
       check(`semantic fixture: ${c.name}`, missing.length === 0, `missing ${missing}`);
     }
   }
+}
+
+// ── configPlanHash — approval bound to the previewed plan ──
+
+{
+  const d = doc({ settings: { sleep_seconds: 30 } });
+  const plans = planConfigSections(d);
+  const dev = { vendorId: 0x1e7d, productId: 0xf501, usagePage: 0xff };
+  const h1 = await configPlanHash(d, plans, dev);
+  check('plan hash is sha256 hex', /^[0-9a-f]{64}$/.test(h1));
+  check(
+    'plan hash deterministic',
+    (await configPlanHash(d, plans, dev)) === h1,
+  );
+  const d2 = doc({ settings: { sleep_seconds: 60 } });
+  check(
+    'doc change → different hash',
+    (await configPlanHash(d2, planConfigSections(d2), dev)) !== h1,
+  );
+  check(
+    'device change → different hash',
+    (await configPlanHash(d, plans, { ...dev, productId: 0xf502 })) !== h1,
+  );
+  // Key order in the source JSON must not matter (canonical form).
+  const reordered = JSON.parse(
+    JSON.stringify({ device: KHUB, schema_version: 1, settings: { sleep_seconds: 30 } }),
+  ) as Record<string, unknown>;
+  check(
+    'key order irrelevant',
+    (await configPlanHash(reordered, plans, dev)) === h1,
+  );
 }
 
 // ── shared plan fixtures (schemas/fixtures/plan-cases.json) ──
